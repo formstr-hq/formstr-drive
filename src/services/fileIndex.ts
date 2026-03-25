@@ -29,10 +29,8 @@ async function decryptMetadata(ciphertext: string): Promise<FileMetadata> {
   return JSON.parse(json);
 }
 
-export async function fetchFileIndex(): Promise<FileMetadata[]> {
+export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
   console.log("[FileIndex] Starting fetch from relays:", RELAYS);
-  const nostr = await getNostr();
-  const pubkey = await nostr.getPublicKey();
   console.log("[FileIndex] User pubkey:", pubkey);
 
   const pool = new SimplePool();
@@ -67,7 +65,7 @@ export async function fetchFileIndex(): Promise<FileMetadata[]> {
       }
     );
 
-    // Wait 3 seconds for events to come in, then process
+    // Wait 10 seconds for events to come in, then process
     setTimeout(async () => {
       console.log(`[FileIndex] Timeout reached, processing ${events.length} events`);
       sub.close();
@@ -111,7 +109,7 @@ export async function fetchFileIndex(): Promise<FileMetadata[]> {
 
       console.log(`[FileIndex] Successfully loaded ${files.length} files`);
       resolve(files);
-    }, 3000); // 3 second timeout
+    }, 10000); // 10 second timeout
   });
 }
 
@@ -166,7 +164,9 @@ export async function updateFileMetadata(
   hash: string,
   updates: Partial<Pick<FileMetadata, "name" | "folder">>
 ): Promise<void> {
-  const files = await fetchFileIndex();
+  const nostr = await getNostr();
+  const pubkey = await nostr.getPublicKey();
+  const files = await fetchFileIndex(pubkey);
   const existing = files.find((f) => f.hash === hash);
 
   if (!existing) {

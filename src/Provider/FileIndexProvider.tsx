@@ -38,7 +38,7 @@ export interface FileIndexContextType {
 export const FileIndexContext = createContext<FileIndexContextType | null>(null);
 
 export function FileIndexProvider({ children }: { children: ReactNode }) {
-  const { isSignedIn } = useProfileContext();
+  const { isSignedIn , pubkey } = useProfileContext();
 
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [currentFolder, setCurrentFolder] = useState("/");
@@ -64,19 +64,19 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!isSignedIn) return;
+    if (!isSignedIn || !pubkey) return;
 
     setLoading(true);
     setError(null);
     try {
-      const index = await fetchFileIndex();
+      const index = await fetchFileIndex(pubkey);
       setFiles(index);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load files");
     } finally {
       setLoading(false);
     }
-  }, [isSignedIn]);
+  }, [isSignedIn, pubkey]);
 
   useEffect(() => {
     if (isSignedIn) {

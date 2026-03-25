@@ -1,4 +1,4 @@
-import { createContext , type FC, type ReactNode , useEffect, useState } from "react";
+import { createContext , type FC, type ReactNode , useState } from "react";
 import { setItem, LOCAL_STORAGE_KEYS, getItem } from "../utils/localStorage";
 
 interface ProfileProviderProps {
@@ -20,17 +20,11 @@ export interface IProfile {
 export const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
 
 export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
-    const [pubkey, setPubkey] = useState<string | undefined>(undefined);
-    const isSignedIn = !!pubkey;
-
-    useEffect(() => {
+    const [pubkey, setPubkey] = useState<string | undefined>(() => {
         const profile = getItem<IProfile>(LOCAL_STORAGE_KEYS.PROFILE);
-        if(profile){
-            setPubkey(profile.pubkey);
-        } else {
-            console.log("Couldn't find npub");
-        }
-    },[]);
+        return profile?.pubkey ?? undefined;
+      });
+    const isSignedIn = !!pubkey;
     
     const requestPubkey = async () => {
         if (!window.nostr) throw new Error("NIP-07 extension not found");

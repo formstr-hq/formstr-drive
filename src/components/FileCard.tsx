@@ -7,6 +7,7 @@ import { BlossomClient } from "../blossom";
 
 interface FileCardProps {
   file: FileMetadata;
+  viewMode?: "grid" | "list";
 }
 
 function getFileIcon(type: string): string {
@@ -30,7 +31,7 @@ function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-export function FileCard({ file }: FileCardProps) {
+export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   const { deleteFile, moveFile, folders } = useFileIndex();
   const [downloading, setDownloading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
@@ -82,71 +83,127 @@ export function FileCard({ file }: FileCardProps) {
   };
 
   const icon = getFileIcon(file.type);
+  const isImage = file.type.startsWith("image/");
 
-  return (
-    <div className="file-card">
-      <div className="file-icon" data-type={icon}>
-        {icon.toUpperCase()}
-      </div>
-      <div className="file-info">
-        <span className="file-name" title={file.name}>
-          {file.name}
-        </span>
-        <span className="file-meta">
-          {formatSize(file.size)} · {formatDate(file.uploadedAt)}
-        </span>
-      </div>
-      <div className="file-actions">
-        <button
-          className="action-btn"
-          onClick={handleDownload}
-          disabled={downloading}
-          title="Download"
-        >
-          {downloading ? "..." : "↓"}
-        </button>
-        <button
-          className="action-btn menu-btn"
-          onClick={() => setShowMenu(!showMenu)}
-          title="More"
-        >
-          ⋮
-        </button>
-        {showMenu && (
-          <div className="file-menu">
-            <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
-            <button onClick={handleDelete} className="delete-btn">Delete</button>
-          </div>
-        )}
-      </div>
-      {error && <div className="file-error">{error}</div>}
-
-      {showMoveDialog && (
-        <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
-          <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="move-dialog-header">
-              <h3>Move to Folder</h3>
-              <button onClick={() => setShowMoveDialog(false)}>×</button>
-            </div>
-            <div className="move-dialog-body">
-              <div className="folder-list-move">
-                {folders.map((folder) => (
-                  <button
-                    key={folder}
-                    className={`folder-option ${folder === file.folder ? "current" : ""}`}
-                    onClick={() => handleMove(folder)}
-                    disabled={folder === file.folder}
-                  >
-                    <span className="folder-icon">📁</span>
-                    <span className="folder-path">{folder}</span>
-                    {folder === file.folder && <span className="current-badge">Current</span>}
-                  </button>
-                ))}
-              </div>
-            </div>
+  const moveDialog = showMoveDialog && (
+    <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
+      <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="move-dialog-header">
+          <h3>Move to Folder</h3>
+          <button onClick={() => setShowMoveDialog(false)}>×</button>
+        </div>
+        <div className="move-dialog-body">
+          <div className="folder-list-move">
+            {folders.map((folder) => (
+              <button
+                key={folder}
+                className={`folder-option ${folder === file.folder ? "current" : ""}`}
+                onClick={() => handleMove(folder)}
+                disabled={folder === file.folder}
+              >
+                <span className="folder-icon">📁</span>
+                <span className="folder-path">{folder}</span>
+                {folder === file.folder && <span className="current-badge">Current</span>}
+              </button>
+            ))}
           </div>
         </div>
-      )}
+      </div>
     </div>
+  );
+
+
+  if (viewMode === "grid") {
+    return (
+      <>
+        <div className="file-tile">
+          {/* Preview area */}
+          <div className="file-tile-preview">
+            {isImage ? (
+              <img
+                src={`${file.server}/${file.hash}`}
+                alt={file.name}
+                className="file-tile-img"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                  (e.currentTarget.nextElementSibling as HTMLElement)!.style.display = "flex";
+                }}
+              />
+            ) : null}
+            <div
+              className="file-tile-icon-fallback"
+              style={{ display: isImage ? "none" : "flex" }}
+            >
+              <span className="file-tile-ext">{icon.toUpperCase()}</span>
+            </div>
+
+            {/* Hover overlay */}
+            <div className="file-tile-overlay">
+              <button
+                className="tile-action-btn"
+                onClick={handleDownload}
+                disabled={downloading}
+                title="Download"
+              >
+                {downloading ? "…" : "↓"}
+              </button>
+              <button
+                className="tile-action-btn"
+                onClick={() => setShowMenu(!showMenu)}
+                title="More"
+              >
+                ⋮
+              </button>
+              {showMenu && (
+                <div className="file-menu tile-menu">
+                  <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
+                  <button onClick={handleDelete} className="delete-btn">Delete</button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="file-tile-footer">
+            <span className="file-tile-name" title={file.name}>{file.name}</span>
+            <span className="file-tile-meta">{formatSize(file.size)} · {formatDate(file.uploadedAt)}</span>
+          </div>
+
+          {error && <div className="file-error">{error}</div>}
+        </div>
+        {moveDialog}
+      </>
+    );
+  }
+
+
+  return (
+    <>
+      <div className="file-card">
+        <div className="file-icon" data-type={icon}>
+          {icon.toUpperCase()}
+        </div>
+        <div className="file-info">
+          <span className="file-name" title={file.name}>{file.name}</span>
+          <span className="file-meta">{formatSize(file.size)} · {formatDate(file.uploadedAt)}</span>
+        </div>
+        <div className="file-actions">
+          <button className="action-btn" onClick={handleDownload} disabled={downloading} title="Download">
+            {downloading ? "..." : "↓"}
+          </button>
+          <button className="action-btn menu-btn" onClick={() => setShowMenu(!showMenu)} title="More">
+            ⋮
+          </button>
+          {showMenu && (
+            <div className="file-menu">
+              <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
+              <button onClick={handleDelete} className="delete-btn">Delete</button>
+            </div>
+          )}
+        </div>
+        {error && <div className="file-error">{error}</div>}
+      </div>
+      {moveDialog}
+    </>
   );
 }
