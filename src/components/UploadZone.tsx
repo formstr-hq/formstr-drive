@@ -96,6 +96,12 @@ export function UploadZone() {
 
       <div className="upload-server-selector">
         <span className="server-label">Upload to:</span>
+        {showServerMenu && (
+          <div
+            className="server-menu-backdrop"
+            onClick={() => setShowServerMenu(false)}
+          />
+        )}
         <div className="server-dropdown">
           <button
             className="server-btn"

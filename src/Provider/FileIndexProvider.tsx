@@ -12,10 +12,11 @@ import {
   deleteFileMetadata,
   extractFolders,
 } from "../services/fileIndex";
-import { encryptFileWithKey } from "../crypto";
+import { encryptFileWithKey , encryptFile } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { useProfileContext } from "../hooks/useProfileContext";
+import { previewFile } from "../services/Preview/previewManager";
 
 const CUSTOM_FOLDERS_KEY = "formstr-drive-custom-folders";
 
@@ -97,6 +98,13 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const auth = await createAuthEvent("upload", `Upload ${file.name}`);
         const hash = await client.upload(new TextEncoder().encode(ciphertext), auth);
 
+        let previewHash: string | undefined = undefined;
+        const preview = await previewFile(file);
+        if (preview) {
+          const encrypted = await encryptFile(preview);
+          const previewAuth = await createAuthEvent("upload", "Upload preview image");
+          previewHash = await client.upload(new TextEncoder().encode(encrypted), previewAuth);
+        }
         const metadata: FileMetadata = {
           name: file.name,
           hash,
@@ -105,6 +113,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           folder: currentFolder,
           uploadedAt: Date.now(),
           server,
+          ...(previewHash ? { previewHash } : {}),
           encryptionKey: privateKeyHex,
         };
 

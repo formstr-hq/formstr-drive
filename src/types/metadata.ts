@@ -8,6 +8,7 @@ export interface FileMetadata {
   server: string;
   encryptionKey: string; // Hex-encoded private key used to encrypt this file
   deleted?: boolean;
+  previewHash?: string;
 }
 
 export interface FolderInfo {

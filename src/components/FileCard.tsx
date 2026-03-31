@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { FileMetadata } from "../types/metadata";
 import { useFileIndex } from "../hooks/useFileContext";
-import { decryptFileWithKey } from "../crypto";
+import { decryptFile, decryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 
@@ -31,12 +31,58 @@ function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
+async function getPreview(file: FileMetadata): Promise<string> {
+  if (!file.previewHash) return "";
+  const client = new BlossomClient(file.server);
+  const auth = await createAuthEvent("get", `Get preview ${file.previewHash}`);
+  const uint8arr = await client.download(file.previewHash, auth);
+  const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
+  const decrypted = await decryptFile(ciphertext);
+  const blob = new Blob([decrypted as BlobPart], { type: "image/webp" });
+  const imageUrl = URL.createObjectURL(blob);
+  return imageUrl;
+}
 export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   const { deleteFile, moveFile, folders } = useFileIndex();
   const [downloading, setDownloading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [showGridActions, setShowGridActions] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewloaded, setPreviewloaded] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let urlToRevoke: string | null = null;
+
+    setPreviewloaded(false);
+    setPreview(null);
+
+    getPreview(file)
+      .then((url) => {
+        if (cancelled) return;
+        if (!url) {
+          setPreview(null);
+          return;
+        }
+        urlToRevoke = url;
+        setPreview(url);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreview(null);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setPreviewloaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (urlToRevoke) URL.revokeObjectURL(urlToRevoke);
+    };
+  }, [file]);
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -83,7 +129,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   };
 
   const icon = getFileIcon(file.type);
-  const isImage = file.type.startsWith("image/");
+  const hasPreview = previewloaded && !!preview;
 
   const moveDialog = showMoveDialog && (
     <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
@@ -116,32 +162,43 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   if (viewMode === "grid") {
     return (
       <>
-        <div className="file-tile">
+        {(showMenu || showGridActions) && (
+          <div
+            className="file-menu-backdrop"
+            onClick={() => {
+              setShowMenu(false);
+              setShowGridActions(false);
+            }}
+          />
+        )}
+        <div
+          className={`file-tile ${showGridActions ? "active" : ""}`}
+          onMouseEnter={() => setShowGridActions(true)}
+          onMouseLeave={() => {
+            if (!showMenu) setShowGridActions(false);
+          }}
+          onClick={() => setShowGridActions(true)}
+        >
           {/* Preview area */}
           <div className="file-tile-preview">
-            {isImage ? (
-              <img
-                src={`${file.server}/${file.hash}`}
-                alt={file.name}
-                className="file-tile-img"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                  (e.currentTarget.nextElementSibling as HTMLElement)!.style.display = "flex";
-                }}
-              />
+            {hasPreview ? (
+              <img src={preview} alt={file.name} className="file-tile-img" />
             ) : null}
             <div
               className="file-tile-icon-fallback"
-              style={{ display: isImage ? "none" : "flex" }}
+              style={{ display: hasPreview ? "none" : "flex" }}
             >
               <span className="file-tile-ext">{icon.toUpperCase()}</span>
             </div>
 
             {/* Hover overlay */}
-            <div className="file-tile-overlay">
+            <div className={`file-tile-overlay ${showMenu ? "open" : ""}`}>
               <button
                 className="tile-action-btn"
-                onClick={handleDownload}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDownload();
+                }}
                 disabled={downloading}
                 title="Download"
               >
@@ -149,13 +206,17 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
               </button>
               <button
                 className="tile-action-btn"
-                onClick={() => setShowMenu(!showMenu)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMenu(!showMenu);
+                  setShowGridActions(true);
+                }}
                 title="More"
               >
                 ⋮
               </button>
               {showMenu && (
-                <div className="file-menu tile-menu">
+                <div className="file-menu tile-menu" onClick={(e) => e.stopPropagation()}>
                   <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
                   <button onClick={handleDelete} className="delete-btn">Delete</button>
                 </div>
@@ -179,10 +240,17 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
 
   return (
     <>
+      {showMenu && <div className="file-menu-backdrop" onClick={() => setShowMenu(false)} />}
       <div className="file-card">
-        <div className="file-icon" data-type={icon}>
-          {icon.toUpperCase()}
-        </div>
+        {previewloaded && preview ? (
+          <div className="file-icon" data-type={icon}>
+            <img src={preview} alt="" />
+          </div>
+        ) : (
+          <div className="file-icon" data-type={icon}>
+            {icon.toUpperCase()}
+          </div>
+        )}
         <div className="file-info">
           <span className="file-name" title={file.name}>{file.name}</span>
           <span className="file-meta">{formatSize(file.size)} · {formatDate(file.uploadedAt)}</span>
@@ -195,7 +263,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
             ⋮
           </button>
           {showMenu && (
-            <div className="file-menu">
+            <div className="file-menu" onClick={(e) => e.stopPropagation()}>
               <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
               <button onClick={handleDelete} className="delete-btn">Delete</button>
             </div>
