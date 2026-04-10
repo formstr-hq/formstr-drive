@@ -183,10 +183,10 @@ When deleting a file:
 3. **Generate new keypair** for this file
    - Call `generateSecretKey()` from nostr-tools
    - Derive pubkey from secret key
-4. **Encrypt file content** using nip44EncryptLarge (self-encryption)
+4. **Encrypt file content** using aesGcmEncrypt (self-encryption)
    - Create conversation key (secretKey + pubkey)
    - Convert Uint8Array → base64 string
-   - Call `nip44EncryptLarge(base64, conversationKey)`
+   - Call `aesGcmEncrypt(base64, conversationKey)`
    - Returns encrypted ciphertext string
    - Convert secretKey to hex for storage
 5. **Create Blossom auth token** (kind 24242 event, signed by user's Nostr key)
@@ -225,12 +225,12 @@ When deleting a file:
    - Create Blossom auth token (kind 24242, verb="get", signed by user's Nostr key)
    - GET request to `https://server/{hash}`
    - Receive encrypted ciphertext blob
-5. **Decrypt file content** using nip44DecryptLarge with stored key
+5. **Decrypt file content** using aesGcmDecrypt with stored key
    - Convert blob → string (TextDecoder)
    - Convert encryptionKey hex → bytes
    - Derive pubkey from secret key
    - Create conversation key (secretKey + pubkey)
-   - Call `nip44DecryptLarge(ciphertext, conversationKey)`
+   - Call `aesGcmDecrypt(ciphertext, conversationKey)`
    - Returns base64 plaintext
    - Convert base64 → Uint8Array
 6. **Save file** using browser download API
@@ -243,7 +243,7 @@ The system uses a **per-file keypair** approach for efficient encryption:
 
 1. **File Encryption:**
    - Generate a new random keypair for each file upload
-   - Encrypt file to itself using `nip44EncryptLarge` (custom implementation)
+   - Encrypt file to itself using `aesGcmEncrypt` (custom implementation)
    - Uses WebCrypto APIs (AES-GCM) for fast, large file support
    - No dependency on NIP-07 extension for file encryption
    - Handles files of any size efficiently
@@ -257,7 +257,7 @@ The system uses a **per-file keypair** approach for efficient encryption:
    ```
    Upload:
    - Generate new keypair (secretKey, pubkey)
-   - File bytes → base64 → nip44EncryptLarge(self) → ciphertext
+   - File bytes → base64 → aesGcmEncrypt(self) → ciphertext
    - Upload ciphertext to Blossom
    - Store secretKey (hex) in encrypted metadata on Nostr
 
@@ -265,7 +265,7 @@ The system uses a **per-file keypair** approach for efficient encryption:
    - Fetch encrypted metadata from Nostr
    - Decrypt metadata to get encryptionKey
    - Download ciphertext from Blossom
-   - Decrypt using nip44DecryptLarge with stored key
+   - Decrypt using aesGcmDecrypt with stored key
    ```
 
 **Why this design:**
@@ -283,7 +283,7 @@ The system uses a **per-file keypair** approach for efficient encryption:
 
 **Implementation Details:**
 
-`nip44EncryptLarge` and `nip44DecryptLarge` (in `src/crypto.ts`):
+`aesGcmEncrypt` and `aesGcmDecrypt` (in `src/crypto.ts`):
 - Based on NIP-44 v2 spec
 - Uses HKDF for key derivation
 - AES-GCM instead of ChaCha20 (WebCrypto limitation)

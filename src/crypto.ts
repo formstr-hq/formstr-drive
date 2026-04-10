@@ -44,7 +44,7 @@ export function base64ToUint8Array(b64: string): Uint8Array {
  * NIP-44 v2 encryption for large payloads
  * Based on NIP-44 spec, but without the nostr-tools size limitation
  */
-export async function nip44EncryptLarge(plaintext: string, conversationKey: Uint8Array): Promise<string> {
+export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Array): Promise<string> {
   const encoder = new TextEncoder();
   const plaintextBytes = encoder.encode(plaintext);
 
@@ -116,7 +116,7 @@ export async function nip44EncryptLarge(plaintext: string, conversationKey: Uint
 /**
  * NIP-44 v2 decryption for large payloads
  */
-export async function nip44DecryptLarge(ciphertext: string, conversationKey: Uint8Array): Promise<string> {
+export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Array): Promise<string> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -180,7 +180,7 @@ export async function nip44DecryptLarge(ciphertext: string, conversationKey: Uin
 
     return decoder.decode(plaintext);
   } catch (error) {
-    console.error("nip44DecryptLarge error:", error);
+    console.error("aesGcmDecrypt error:", error);
     throw error;
   }
 }
@@ -201,7 +201,7 @@ export async function encryptFileWithKey(fileBytes: Uint8Array): Promise<{ ciphe
   const plaintextBase64 = uint8ArrayToBase64(fileBytes);
 
   // Encrypt using our large payload implementation
-  const ciphertext = await nip44EncryptLarge(plaintextBase64, conversationKey);
+  const ciphertext = await aesGcmEncrypt(plaintextBase64, conversationKey);
 
   // Return ciphertext and the private key (needed for decryption)
   return {
@@ -222,7 +222,7 @@ export async function decryptFileWithKey(ciphertext: string, privateKeyHex: stri
   const conversationKey = nip44.v2.utils.getConversationKey(secretKey, pubkey);
 
   // Decrypt using our large payload implementation
-  const plaintextBase64 = await nip44DecryptLarge(ciphertext, conversationKey);
+  const plaintextBase64 = await aesGcmDecrypt(ciphertext, conversationKey);
 
   if (!plaintextBase64) {
     throw new Error("Decryption failed");
