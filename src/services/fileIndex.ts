@@ -1,8 +1,11 @@
 import { SimplePool, type Filter } from "nostr-tools";
-import type { FileMetadata, NostrEvent } from "../types/metadata";
+import type { FileMetadata, NostrEvent, PublicSharePayload } from "../types/metadata";
+import { decryptSharePayload, encryptSharePayload } from "../utils/shareTokens";
 
 const METADATA_KIND = 34578;
+const PUBLIC_SHARE_KIND = 34579;
 const CLIENT_TAG = "formstr-drive";
+const FETCH_TIMEOUT_MS = 10000;
 
 const RELAYS = [
   "wss://relay.damus.io",
@@ -13,6 +16,31 @@ const RELAYS = [
 async function getNostr() {
   if (!window.nostr) throw new Error("Nostr signer not found");
   return window.nostr;
+}
+
+function collectEvents(filter: Filter): Promise<any[]> {
+  const pool = new SimplePool();
+
+  return new Promise((resolve) => {
+    const events: any[] = [];
+    const seenIds = new Set<string>();
+
+    // @ts-ignore subscribeMany accepts a single filter at runtime in this codebase
+    const sub = pool.subscribeMany(RELAYS, filter, {
+      onevent(event) {
+        if (!seenIds.has(event.id)) {
+          seenIds.add(event.id);
+          events.push(event);
+        }
+      },
+    });
+
+    setTimeout(() => {
+      sub.close();
+      pool.close(RELAYS);
+      resolve(events);
+    }, FETCH_TIMEOUT_MS);
+  });
 }
 
 async function encryptMetadata(metadata: FileMetadata): Promise<string> {
@@ -33,43 +61,16 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
   console.log("[FileIndex] Starting fetch from relays:", RELAYS);
   console.log("[FileIndex] User pubkey:", pubkey);
 
-  const pool = new SimplePool();
-
-  return new Promise((resolve) => {
-    const filter: Filter = {
-      kinds: [METADATA_KIND],
-      authors: [pubkey],
-    };
+  const filter: Filter = {
+    kinds: [METADATA_KIND],
+    authors: [pubkey],
+  };
     console.log("[FileIndex] Query filter:", JSON.stringify(filter));
     console.log("[FileIndex] Filter as array:", JSON.stringify([filter]));
 
-    const events: any[] = [];
-    const seenIds = new Set<string>();
-
-    // Subscribe to relays
-    // @ts-ignore - try passing filter directly, not as array
-    const sub = pool.subscribeMany(RELAYS, filter, {
-        onevent(event) {
-          if (!seenIds.has(event.id)) {
-            console.log("[FileIndex] Received event:", event.id);
-            seenIds.add(event.id);
-            events.push(event);
-          }
-        },
-        oneose() {
-          console.log("[FileIndex] EOSE received from relay");
-        },
-        onclose(reasons) {
-          console.log("[FileIndex] Subscription closed:", reasons);
-        },
-      }
-    );
-
-    // Wait 10 seconds for events to come in, then process
-    setTimeout(async () => {
+  return new Promise((resolve) => {
+    collectEvents(filter).then(async (events) => {
       console.log(`[FileIndex] Timeout reached, processing ${events.length} events`);
-      sub.close();
-      pool.close(RELAYS);
 
       const files: FileMetadata[] = [];
       const seenHashes = new Set<string>();
@@ -109,8 +110,66 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
 
       console.log(`[FileIndex] Successfully loaded ${files.length} files`);
       resolve(files);
-    }, 10000); // 10 second timeout
+    });
   });
+}
+
+export async function publishPublicShareEvent(payload: PublicSharePayload, secret: string): Promise<void> {
+  const nostr = await getNostr();
+  const pubkey = await nostr.getPublicKey();
+  const pool = new SimplePool();
+
+  try {
+    const encrypted = await encryptSharePayload(payload, secret);
+    const event: NostrEvent = {
+      kind: PUBLIC_SHARE_KIND,
+      pubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["d", payload.shareId],
+        ["client", CLIENT_TAG],
+        ["share", "public"],
+      ],
+      content: JSON.stringify(encrypted),
+    };
+
+    const signedEvent = await nostr.signEvent(event as object);
+    const publishPromises = pool.publish(RELAYS, signedEvent as any);
+    await Promise.any(publishPromises);
+  } finally {
+    pool.close(RELAYS);
+  }
+}
+
+export async function resolvePublicShareEvent(
+  shareId: string,
+  secret: string
+): Promise<PublicSharePayload | null> {
+  const filter: Filter = {
+    kinds: [PUBLIC_SHARE_KIND],
+    "#d": [shareId],
+  };
+
+  const events = await collectEvents(filter);
+  if (events.length === 0) {
+    return null;
+  }
+
+  events.sort((a, b) => b.created_at - a.created_at);
+
+  for (const event of events) {
+    try {
+      const parsed = JSON.parse(event.content) as { ciphertext: string; iv: string };
+      const payload = await decryptSharePayload(parsed.ciphertext, parsed.iv, secret);
+      if (payload.shareId === shareId) {
+        return payload;
+      }
+    } catch {
+      // Ignore incompatible events and continue scanning older candidates.
+    }
+  }
+
+  return null;
 }
 
 export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {

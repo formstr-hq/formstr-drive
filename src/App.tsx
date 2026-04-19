@@ -7,6 +7,7 @@ import { Header } from "./components/Header";
 import { FolderSidebar } from "./components/FolderSidebar";
 import { FileList } from "./components/FileList";
 import { SignIn } from "./components/SignIn/SignIn";
+import { ShareAccessPage } from "./components/ShareAccessPage";
 import "./App.css";
 
 function DriveLayout() {
@@ -34,6 +35,13 @@ function DriveLayout() {
 }
 
 function App() {
+  const path = window.location.pathname;
+  const shareMatch = path.match(/^\/share\/([^/]+)$/);
+
+  if (shareMatch) {
+    return <ShareAccessPage shareId={decodeURIComponent(shareMatch[1])} />;
+  }
+
   return (
     <ProfileProvider>
       <BlossomServerProvider>

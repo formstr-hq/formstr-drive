@@ -4,6 +4,7 @@ import { useFileIndex } from "../hooks/useFileContext";
 import { decryptFile, decryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
+import { ShareDialog } from "./ShareDialog";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -48,6 +49,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [showGridActions, setShowGridActions] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewloaded, setPreviewloaded] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -119,6 +121,11 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
     setShowMoveDialog(true);
   };
 
+  const handleShareClick = () => {
+    setShowMenu(false);
+    setShowShareDialog(true);
+  };
+
   const handleMove = async (newFolder: string) => {
     try {
       await moveFile(file.hash, newFolder);
@@ -130,6 +137,9 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
 
   const icon = getFileIcon(file.type);
   const hasPreview = previewloaded && !!preview;
+  const shareDialog = showShareDialog && (
+    <ShareDialog file={file} onClose={() => setShowShareDialog(false)} />
+  );
 
   const moveDialog = showMoveDialog && (
     <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
@@ -162,8 +172,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
   if (viewMode === "grid") {
     return (
       <>
-        {/* Backdrop closes both menu and grid-actions */}
-        {(showMenu || showGridActions) && (
+        {showMenu && (
           <div
             className="file-menu-backdrop"
             onClick={() => {
@@ -180,8 +189,8 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
           }}
           onClick={() => setShowGridActions(true)}
         >
-          {/* Preview area — overflow:hidden lives here, NO menu inside */}
-          <div className="file-tile-preview">
+          {/* Preview area */}
+          <div className={`file-tile-preview ${showMenu ? "menu-open" : ""}`}>
             {hasPreview ? (
               <img src={preview} alt={file.name} className="file-tile-img" />
             ) : null}
@@ -192,7 +201,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
               <span className="file-tile-ext">{icon.toUpperCase()}</span>
             </div>
 
-            {/* Hover overlay — buttons only, menu is OUTSIDE this element */}
+            {/* Hover overlay */}
             <div className={`file-tile-overlay ${showMenu ? "open" : ""}`}>
               <button
                 className="tile-action-btn"
@@ -216,23 +225,16 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
               >
                 ⋮
               </button>
+
+              {showMenu && (
+                <div className="file-menu tile-menu" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
+                  <button onClick={handleShareClick} className="share-btn">Share</button>
+                  <button onClick={handleDelete} className="delete-btn">Delete</button>
+                </div>
+              )}
             </div>
           </div>
-
-          {showMenu && (
-            <div
-              className="file-menu tile-menu"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button onClick={handleMoveClick} className="move-btn">
-                Move to Folder
-              </button>
-              <button onClick={handleDelete} className="delete-btn">
-                Delete
-              </button>
-            </div>
-          )}
-
           {/* Footer */}
           <div className="file-tile-footer">
             <span className="file-tile-name" title={file.name}>{file.name}</span>
@@ -242,6 +244,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
           {error && <div className="file-error">{error}</div>}
         </div>
         {moveDialog}
+        {shareDialog}
       </>
     );
   }
@@ -274,6 +277,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
           {showMenu && (
             <div className="file-menu" onClick={(e) => e.stopPropagation()}>
               <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
+              <button onClick={handleShareClick} className="share-btn">Share</button>
               <button onClick={handleDelete} className="delete-btn">Delete</button>
             </div>
           )}
@@ -281,6 +285,7 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
         {error && <div className="file-error">{error}</div>}
       </div>
       {moveDialog}
+      {shareDialog}
     </>
   );
 }

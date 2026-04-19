@@ -5,18 +5,24 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { FileMetadata } from "../types/metadata";
+import type { FileMetadata, ShareLink, ShareRole } from "../types/metadata";
 import {
   fetchFileIndex,
   saveFileMetadata,
   deleteFileMetadata,
   extractFolders,
+  publishPublicShareEvent,
 } from "../services/fileIndex";
 import { encryptFileWithKey , encryptFile } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { useProfileContext } from "../hooks/useProfileContext";
 import { previewFile } from "../services/Preview/previewManager";
+import {
+  buildShareLink,
+  createPasswordVerifier,
+  createShareToken,
+} from "../utils/shareTokens";
 
 const CUSTOM_FOLDERS_KEY = "formstr-drive-custom-folders";
 
@@ -33,6 +39,14 @@ export interface FileIndexContextType {
   deleteFile: (hash: string) => Promise<void>;
   moveFile: (hash: string, newFolder: string) => Promise<void>;
   renameFile: (hash: string, newName: string) => Promise<void>;
+  createShareLink: (input: {
+    hash: string;
+    role: ShareRole;
+    canReshare: boolean;
+    expiresAt?: number;
+    password?: string;
+  }) => Promise<{ link: string; share: ShareLink }>;
+  revokeShareLink: (hash: string, shareId: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -165,6 +179,128 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     [files]
   );
 
+  const createShareLink = useCallback(
+    async (input: {
+      hash: string;
+      role: ShareRole;
+      canReshare: boolean;
+      expiresAt?: number;
+      password?: string;
+    }) => {
+      const file = files.find((f) => f.hash === input.hash);
+      if (!file) {
+        throw new Error("File not found");
+      }
+
+      const token = createShareToken();
+      const now = Date.now();
+
+      const passwordConfig = input.password
+        ? await createPasswordVerifier(input.password)
+        : undefined;
+
+      const share: ShareLink = {
+        id: token.shareId,
+        createdAt: now,
+        capabilitySecret: token.secret,
+        policy: {
+          role: input.role,
+          canReshare: input.canReshare,
+          requiresPassword: !!input.password,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+          ...(passwordConfig
+            ? {
+                passwordSalt: passwordConfig.salt,
+                passwordVerifier: passwordConfig.verifier,
+              }
+            : {}),
+        },
+      };
+
+      const updated: FileMetadata = {
+        ...file,
+        shareLinks: [share, ...(file.shareLinks ?? [])],
+      };
+
+      await Promise.all([
+        saveFileMetadata(updated),
+        publishPublicShareEvent(
+          {
+            shareId: token.shareId,
+            fileHash: file.hash,
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            server: file.server,
+            encryptionKey: file.encryptionKey,
+            createdAt: now,
+            policy: share.policy,
+          },
+          token.secret
+        ),
+      ]);
+      setFiles((prev) => prev.map((f) => (f.hash === input.hash ? updated : f)));
+
+      return {
+        link: buildShareLink(window.location.origin, {
+          shareId: token.shareId,
+          secret: token.secret,
+        }),
+        share,
+      };
+    },
+    [files]
+  );
+
+  const revokeShareLink = useCallback(
+    async (hash: string, shareId: string) => {
+      const file = files.find((f) => f.hash === hash);
+      if (!file) {
+        throw new Error("File not found");
+      }
+
+      const shareLinks = file.shareLinks ?? [];
+      const existingShare = shareLinks.find((share) => share.id === shareId);
+      if (!existingShare) {
+        throw new Error("Share not found");
+      }
+
+      if (!existingShare.capabilitySecret) {
+        throw new Error("Cannot revoke legacy share without stored capability key");
+      }
+
+      const revokedAt = Date.now();
+
+      const updated: FileMetadata = {
+        ...file,
+        shareLinks: shareLinks.map((share) =>
+          share.id === shareId ? { ...share, revokedAt } : share
+        ),
+      };
+
+      await Promise.all([
+        saveFileMetadata(updated),
+        publishPublicShareEvent(
+          {
+            shareId: existingShare.id,
+            fileHash: file.hash,
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            server: file.server,
+            encryptionKey: file.encryptionKey,
+            createdAt: existingShare.createdAt,
+            revokedAt,
+            policy: existingShare.policy,
+          },
+          existingShare.capabilitySecret
+        ),
+      ]);
+      setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
+    },
+    [files]
+  );
+
   return (
     <FileIndexContext.Provider
       value={{
@@ -180,6 +316,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         deleteFile,
         moveFile,
         renameFile,
+        createShareLink,
+        revokeShareLink,
         refresh,
       }}
     >

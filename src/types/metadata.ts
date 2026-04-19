@@ -1,3 +1,35 @@
+export type ShareRole = "viewer" | "commenter" | "editor";
+
+export interface SharePolicy {
+  role: ShareRole;
+  canReshare: boolean;
+  expiresAt?: number;
+  requiresPassword: boolean;
+  passwordSalt?: string;
+  passwordVerifier?: string;
+}
+
+export interface ShareLink {
+  id: string;
+  createdAt: number;
+  revokedAt?: number;
+  capabilitySecret?: string;
+  policy: SharePolicy;
+}
+
+export interface PublicSharePayload {
+  shareId: string;
+  fileHash: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  server: string;
+  encryptionKey: string;
+  createdAt: number;
+  revokedAt?: number;
+  policy: SharePolicy;
+}
+
 export interface FileMetadata {
   name: string;
   hash: string;
@@ -9,6 +41,7 @@ export interface FileMetadata {
   encryptionKey: string; // Hex-encoded private key used to encrypt this file
   deleted?: boolean;
   previewHash?: string;
+  shareLinks?: ShareLink[];
 }
 
 export interface FolderInfo {
