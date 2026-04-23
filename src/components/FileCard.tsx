@@ -273,13 +273,6 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
               >
                 ⋮
               </button>
-              {showMenu && (
-                <div className="file-menu tile-menu" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
-                  <button onClick={handleRenameOpen} className="rename-btn">Rename</button>
-                  <button onClick={handleDelete} className="delete-btn">Delete</button>
-                </div>
-              )}
             </div>
           </div>
 
@@ -290,6 +283,9 @@ export function FileCard({ file, viewMode = "list" }: FileCardProps) {
             >
               <button onClick={handleMoveClick} className="move-btn">
                 Move to Folder
+              </button>
+              <button onClick={handleRenameOpen} className="rename-btn">
+                Rename
               </button>
               <button onClick={handleDelete} className="delete-btn">
                 Delete
