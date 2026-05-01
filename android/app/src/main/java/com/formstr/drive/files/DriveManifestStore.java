@@ -89,6 +89,11 @@ public final class DriveManifestStore {
         }
     }
 
+    public static boolean hasRemoteManifest(Context context) {
+        File manifestFile = getManifestFile(context);
+        return manifestFile.exists() && manifestFile.isFile();
+    }
+
     @Nullable
     public static DriveManifest loadEffectiveManifest(Context context) {
         DriveManifest remoteManifest = loadRemoteManifest(context);

@@ -58,7 +58,8 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
     public Cursor queryRoots(String[] projection) {
         MatrixCursor cursor = new MatrixCursor(projection != null ? projection : DEFAULT_ROOT_PROJECTION);
         DriveManifestStore.DriveManifest manifest = loadManifest();
-        boolean canCreate = getContext() != null && DriveManifestStore.loadRemoteManifest(getContext()) != null;
+        Context context = getContext();
+        boolean canCreate = context != null && DriveManifestStore.hasRemoteManifest(context);
 
         MatrixCursor.RowBuilder row = cursor.newRow();
         row.add(DocumentsContract.Root.COLUMN_ROOT_ID, DriveManifestStore.ROOT_ID);
@@ -84,10 +85,9 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
     @Override
     public Cursor queryDocument(String documentId, String[] projection) throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(projection != null ? projection : DEFAULT_DOCUMENT_PROJECTION);
-        DriveManifestStore.DriveManifest manifest = loadManifest();
 
         if (DriveManifestStore.ROOT_DOCUMENT_ID.equals(documentId)) {
-            includeRootDocument(cursor, DriveManifestStore.loadRemoteManifest(ensureContext()) != null);
+            includeRootDocument(cursor, DriveManifestStore.hasRemoteManifest(ensureContext()));
             return cursor;
         }
 
@@ -319,7 +319,7 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
             DriveManifestStore.DriveManifest manifest
     ) throws FileNotFoundException {
         if (DriveManifestStore.ROOT_DOCUMENT_ID.equals(documentId)) {
-            includeRootDocument(cursor, DriveManifestStore.loadRemoteManifest(ensureContext()) != null);
+            includeRootDocument(cursor, DriveManifestStore.hasRemoteManifest(ensureContext()));
             return;
         }
 

@@ -287,7 +287,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
               ? pendingError.message
               : "Failed to import file saved from Android Files",
           );
-          break;
+          continue;
         }
       }
     } finally {
