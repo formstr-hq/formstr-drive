@@ -32,7 +32,4 @@ pnpm android:open
 
 ## Current Limitations
 
-- Android signer integration is not added yet
-- Native file upload and download flow is not added yet
-- Android Files / `DocumentsProvider` integration is not added yet
 - Final launcher icon and splash branding is not added yet
