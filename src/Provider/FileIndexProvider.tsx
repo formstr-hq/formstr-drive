@@ -28,6 +28,11 @@ import {
 } from "../native/driveManifest";
 import { useBlossomServer } from "../hooks/useBlossomServer";
 
+export interface UploadProgress {
+  fileName: string;
+  stage: string;
+}
+
 export interface FileIndexContextType {
   files: FileMetadata[];
   folders: string[];
@@ -37,9 +42,12 @@ export interface FileIndexContextType {
   setCurrentFolder: (folder: string) => void;
   loading: boolean;
   error: string | null;
+  uploadProgress: UploadProgress | null;
   uploadFile: (file: File, server: string) => Promise<void>;
   deleteFile: (hash: string) => Promise<void>;
+  deleteFiles: (hashes: string[]) => Promise<void>;
   moveFile: (hash: string, newFolder: string) => Promise<void>;
+  moveFiles: (hashes: string[], newFolder: string) => Promise<void>;
   renameFile: (hash: string, newName: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -54,6 +62,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [currentFolder, setCurrentFolder] = useState("/");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [hasHydratedIndex, setHasHydratedIndex] = useState(false);
@@ -155,9 +164,13 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     async (file: File, server: string, targetFolder: string) => {
       setError(null);
       try {
+        setUploadProgress({ fileName: file.name, stage: "Reading file..." });
         const bytes = new Uint8Array(await file.arrayBuffer());
+
+        setUploadProgress({ fileName: file.name, stage: "Encrypting..." });
         const { ciphertext, privateKeyHex } = await encryptFileWithKey(bytes);
 
+        setUploadProgress({ fileName: file.name, stage: "Uploading..." });
         const client = new BlossomClient(server);
         const encryptedBytes = new TextEncoder().encode(ciphertext);
         const auth = await createAuthEvent("upload", `Upload ${file.name}`, encryptedBytes);
@@ -166,6 +179,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         let previewHash: string | undefined;
         const preview = await previewFile(file);
         if (preview) {
+          setUploadProgress({ fileName: file.name, stage: "Uploading preview..." });
           const encrypted = await encryptFile(preview);
           const encryptedPreviewBytes = new TextEncoder().encode(encrypted);
           const previewAuth = await createAuthEvent(
@@ -176,6 +190,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           previewHash = await client.upload(encryptedPreviewBytes, previewAuth);
         }
 
+        setUploadProgress({ fileName: file.name, stage: "Saving metadata..." });
         const metadata: FileMetadata = {
           name: file.name,
           hash,
@@ -195,6 +210,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const errorMsg = e instanceof Error ? e.message : "Upload failed";
         setError(errorMsg);
         throw e;
+      } finally {
+        setUploadProgress(null);
       }
     },
     [],
@@ -218,6 +235,20 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     [files]
   );
 
+  const deleteFiles = useCallback(
+    async (hashes: string[]) => {
+      const hashSet = new Set(hashes);
+      const targetFiles = files.filter((file) => hashSet.has(file.hash));
+
+      for (const file of targetFiles) {
+        await deleteFileMetadata(file.hash, file);
+      }
+
+      setFiles((prev) => prev.filter((file) => !hashSet.has(file.hash)));
+    },
+    [files]
+  );
+
   const moveFile = useCallback(
     async (hash: string, newFolder: string) => {
       const file = files.find((f) => f.hash === hash);
@@ -226,6 +257,25 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       const updated: FileMetadata = { ...file, folder: newFolder };
       await saveFileMetadata(updated);
       setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
+    },
+    [files]
+  );
+
+  const moveFiles = useCallback(
+    async (hashes: string[], newFolder: string) => {
+      const hashSet = new Set(hashes);
+      const targetFiles = files.filter((file) => hashSet.has(file.hash));
+
+      for (const file of targetFiles) {
+        const updated: FileMetadata = { ...file, folder: newFolder };
+        await saveFileMetadata(updated);
+      }
+
+      setFiles((prev) =>
+        prev.map((file) =>
+          hashSet.has(file.hash) ? { ...file, folder: newFolder } : file
+        )
+      );
     },
     [files]
   );
@@ -354,9 +404,12 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         setCurrentFolder,
         loading,
         error,
+        uploadProgress,
         uploadFile,
         deleteFile,
+        deleteFiles,
         moveFile,
+        moveFiles,
         renameFile,
         refresh,
       }}
