@@ -685,12 +685,18 @@
   backdrop-filter: blur(10px);
 }
 
+.sign-in-card,
+.sign-in-card button,
+.sign-in-card input,
+.sign-in-card textarea {
+  font-family: inherit;
+}
+
 .sign-in-card h1 {
   font-size: clamp(34px, 4vw, 48px);
   line-height: 1.08;
   font-weight: 500;
   margin: 0 0 10px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   letter-spacing: -0.04em;
   color: #111;
 }
@@ -699,7 +705,6 @@
   color: #666;
   margin: 0 0 26px;
   font-size: 16px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   letter-spacing: -0.02em;
 }
 
@@ -714,7 +719,6 @@
   border-radius: 10px;
   cursor: pointer;
   box-shadow: 0 10px 18px rgba(0,0,0,0.12);
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -755,7 +759,6 @@
   color: #111;
   cursor: pointer;
   font-size: 16px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
@@ -785,7 +788,6 @@
   margin: 0 0 18px;
   color: #555;
   font-size: 13px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   cursor: pointer;
 }
 
@@ -811,7 +813,6 @@
   font-size: 14px;
   font-weight: 600;
   color: #111;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -857,7 +858,6 @@
   line-height: 1.35;
   font-weight: 600;
   color: #111;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
@@ -866,7 +866,6 @@
   margin: 6px 0 0;
   font-size: 14px;
   color: #222;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .sign-in-tab-row {
@@ -884,7 +883,6 @@
   padding: 0 2px 12px;
   color: #7d7d7d;
   font-size: 14px;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -918,7 +916,6 @@
   color: #6e4b07;
   font-size: 13px;
   line-height: 1.5;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   border: 1px solid #f0d498;
 }
 
@@ -939,7 +936,6 @@
   background: #fff;
   resize: vertical;
   box-sizing: border-box;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .sign-in-generated-actions {
@@ -974,7 +970,6 @@
   color: #111;
   outline: none;
   box-sizing: border-box;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .sign-in-text-input:focus {
@@ -994,7 +989,6 @@
   color: #111;
   font-size: 13px;
   font-weight: 600;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   cursor: pointer;
 }
 
@@ -1033,7 +1027,6 @@
   text-align: center;
   padding: 16px;
   box-sizing: border-box;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .sign-in-qr-actions {
@@ -1042,7 +1035,6 @@
   gap: 12px;
   font-size: 12px;
   color: #777;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .native-signer-btn {
@@ -1060,7 +1052,6 @@
   font-size: 17px;
   font-weight: 600;
   box-shadow: 0 10px 18px rgba(0,0,0,0.12);
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1105,7 +1096,6 @@
   border-radius: 10px;
   cursor: pointer;
   box-shadow: 0 10px 18px rgba(0,0,0,0.12);
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1123,7 +1113,6 @@
   margin-top: 18px;
   font-size: 13px;
   color: #777;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 .sign-in-error {
@@ -1135,7 +1124,6 @@
   text-align: left;
   font-size: 13px;
   line-height: 1.45;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
 }
 
 /* Mobile: hidden drawer by default */
