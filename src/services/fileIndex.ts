@@ -46,7 +46,6 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
       authors: [pubkey],
     };
     console.log("[FileIndex] Query filter:", JSON.stringify(filter));
-    console.log("[FileIndex] Filter as array:", JSON.stringify([filter]));
 
     const events: any[] = [];
     const seenIds = new Set<string>();
@@ -83,17 +82,14 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
       events.sort((a, b) => b.created_at - a.created_at);
 
       for (const event of events) {
-        console.log("[FileIndex] Processing event:", event.id, "tags:", event.tags);
         const dTag = event.tags.find((t: string[]) => t[0] === "d");
         const hash = dTag?.[1];
 
         if (!hash) {
-          console.warn("[FileIndex] Event missing d tag:", event.id);
           continue;
         }
 
         if (seenHashes.has(hash)) {
-          console.log("[FileIndex] Skipping duplicate hash:", hash);
           continue;
         }
 
@@ -101,14 +97,11 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
 
         try {
           const metadata = await decryptMetadata(event.content);
-          console.log("[FileIndex] Decrypted metadata:", metadata);
           if (!metadata.deleted) {
             files.push(metadata);
-          } else {
-            console.log("[FileIndex] Skipping deleted file:", metadata.name);
           }
-        } catch (e) {
-          console.debug("[FileIndex] Skipping incompatible event:", event.id, e);
+        } catch {
+          // Skip events we cannot decrypt (incompatible schema, foreign key, etc.)
         }
       }
 
@@ -119,7 +112,6 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
 }
 
 export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {
-  console.log("[FileIndex] Saving metadata:", metadata);
   const signer = await getSigner();
   const pubkey = await signer.getPublicKey();
   const pool = new SimplePool();
@@ -140,9 +132,7 @@ export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {
       content: encrypted,
     };
 
-    console.log("[FileIndex] Event to publish:", event);
     const signedEvent = await signer.signEvent(event);
-    console.log("[FileIndex] Signed event:", signedEvent);
 
     const publishPromises = pool.publish(RELAYS, signedEvent as any);
     console.log("[FileIndex] Publishing to relays:", RELAYS);
@@ -150,7 +140,12 @@ export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {
     await Promise.any(publishPromises);
     console.log("[FileIndex] Successfully published to at least one relay");
   } catch (e) {
-    console.error("[FileIndex] Failed to save metadata:", e);
+    // Log only the error message, never the metadata payload (contains
+    // filename + per-file encryption key).
+    console.error(
+      "[FileIndex] Failed to publish metadata event:",
+      e instanceof Error ? e.message : e,
+    );
     throw e;
   } finally {
     pool.close(RELAYS);
