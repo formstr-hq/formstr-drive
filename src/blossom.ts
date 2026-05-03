@@ -143,4 +143,40 @@ export class BlossomClient {
 
     return new Uint8Array(await res.arrayBuffer());
   }
+
+  /**
+   * Delete a blob from the server (Blossom BUD-02).
+   * Returns true if the blob was deleted or was already gone (404).
+   * Throws BlossomError on network or server errors so callers can retry.
+   */
+  async delete(sha256: string, authHeader: string): Promise<boolean> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/${sha256}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: authHeader,
+        },
+      });
+    } catch (e) {
+      if (e instanceof TypeError) {
+        throw new BlossomError(
+          `Network error: Unable to reach ${this.baseUrl}. This may be a CORS issue.`,
+          { isCorsError: true },
+        );
+      }
+      throw e;
+    }
+
+    // Treat "not found" as success — the blob is already gone.
+    if (res.status === 404) {
+      return true;
+    }
+
+    if (!res.ok) {
+      throw new BlossomError(res.headers.get("X-Reason") || res.statusText);
+    }
+
+    return true;
+  }
 }

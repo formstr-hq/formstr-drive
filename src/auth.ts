@@ -28,7 +28,7 @@ function toBase64(value: unknown): string {
 }
 
 export async function createAuthEvent(
-  verb: "upload" | "get",
+  verb: "upload" | "get" | "delete",
   content: string,
   fileOrHashOrHashes?: Uint8Array | Blob | string | string[],
   expirationSeconds = 60,

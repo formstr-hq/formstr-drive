@@ -6,7 +6,9 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import type { FileMetadata } from "../types/metadata";
+import { chunkHashes, type FileMetadata } from "../types/metadata";
+import { BlossomClient } from "../blossom";
+import { createAuthEvent } from "../auth";
 import {
   fetchFileIndex,
   saveFileMetadata,
@@ -193,29 +195,91 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     [currentFolder, uploadPreparedFile],
   );
 
+  const deleteRemoteBlobs = useCallback(async (file: FileMetadata) => {
+    // Chunked files store one blob per chunk; legacy files store a single
+    // blob under file.hash.
+    const blobHashes = chunkHashes(file.chunks);
+    if (blobHashes.length === 0) {
+      blobHashes.push(file.hash);
+    }
+
+    // One auth event covering every blob (chunks + preview), so the user
+    // signs only once per file.
+    const allHashes = file.previewHash
+      ? [...blobHashes, file.previewHash]
+      : blobHashes;
+    // Generous expiration: large chunked files need one DELETE per chunk and
+    // the whole sequence must finish before the auth event expires.
+    const auth = await createAuthEvent(
+      "delete",
+      `Delete ${file.name}`,
+      allHashes,
+      600,
+    );
+
+    const clients = new Map<string, BlossomClient>();
+    const clientFor = (server: string) => {
+      let client = clients.get(server);
+      if (!client) {
+        client = new BlossomClient(server);
+        clients.set(server, client);
+      }
+      return client;
+    };
+
+    for (let i = 0; i < blobHashes.length; i++) {
+      // Legacy metadata may carry chunks as bare hash strings; only the
+      // object form can override the file's primary server.
+      const chunk = file.chunks?.[i];
+      const server =
+        (typeof chunk === "object" ? chunk.server : undefined) ?? file.server;
+      await clientFor(server).delete(blobHashes[i], auth);
+    }
+
+    if (file.previewHash) {
+      try {
+        await clientFor(file.server).delete(file.previewHash, auth);
+      } catch {
+        // Preview deletion failures are non-fatal: the primary blobs are gone
+        // and the preview is unreferenced once the index event is updated.
+      }
+    }
+  }, []);
+
   const deleteFile = useCallback(
     async (hash: string) => {
       const file = files.find((f) => f.hash === hash);
       if (!file) return;
 
+      await deleteRemoteBlobs(file);
       await deleteFileMetadata(hash, file);
       setFiles((prev) => prev.filter((f) => f.hash !== hash));
     },
-    [files]
+    [files, deleteRemoteBlobs]
   );
 
   const deleteFiles = useCallback(
     async (hashes: string[]) => {
       const hashSet = new Set(hashes);
       const targetFiles = files.filter((file) => hashSet.has(file.hash));
+      const deletedHashes = new Set<string>();
 
       for (const file of targetFiles) {
-        await deleteFileMetadata(file.hash, file);
+        try {
+          await deleteRemoteBlobs(file);
+          await deleteFileMetadata(file.hash, file);
+          deletedHashes.add(file.hash);
+        } catch (e) {
+          // Stop on first failure so the user can see and retry; files
+          // already deleted in this batch stay deleted.
+          setFiles((prev) => prev.filter((f) => !deletedHashes.has(f.hash)));
+          throw e;
+        }
       }
 
       setFiles((prev) => prev.filter((file) => !hashSet.has(file.hash)));
     },
-    [files]
+    [files, deleteRemoteBlobs]
   );
 
   const moveFile = useCallback(
