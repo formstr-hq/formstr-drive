@@ -20,7 +20,7 @@ function toBase64Utf8(value: unknown): string {
 }
 
 export async function createAuthEvent(
-  verb: "upload" | "get",
+  verb: "upload" | "get" | "delete",
   content: string,
   fileOrHash?: Uint8Array | Blob | string,
   expirationSeconds = 60,

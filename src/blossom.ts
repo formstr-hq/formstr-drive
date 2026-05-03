@@ -86,4 +86,34 @@ export class BlossomClient {
 
     return new Uint8Array(await res.arrayBuffer());
   }
+
+  async delete(sha256: string, authHeader: string): Promise<boolean> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/${sha256}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: authHeader,
+        },
+      });
+    } catch (e) {
+      if (e instanceof TypeError) {
+        throw new BlossomError(
+          `Network error: Unable to reach ${this.baseUrl}. This may be a CORS issue.`,
+          { isCorsError: true },
+        );
+      }
+      throw e;
+    }
+
+    if (res.status === 404) {
+      return true;
+    }
+
+    if (!res.ok) {
+      throw new BlossomError(res.headers.get("X-Reason") || res.statusText);
+    }
+
+    return true;
+  }
 }
