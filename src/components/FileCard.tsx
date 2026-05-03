@@ -39,7 +39,11 @@ async function getPreview(file: FileMetadata): Promise<string> {
   const auth = await createAuthEvent("get", `Get preview ${file.previewHash}`, file.previewHash);
   const uint8arr = await client.download(file.previewHash, auth);
   const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
-  const decrypted = await decryptFile(ciphertext);
+  // New uploads store a per-preview key; fall back to signer-based NIP-44
+  // decryption for legacy files uploaded before that field existed.
+  const decrypted = file.previewEncryptionKey
+    ? await decryptFileWithKey(ciphertext, file.previewEncryptionKey)
+    : await decryptFile(ciphertext);
   const blob = new Blob([decrypted as BlobPart], { type: "image/webp" });
   const imageUrl = URL.createObjectURL(blob);
   return imageUrl;

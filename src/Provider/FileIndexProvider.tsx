@@ -12,7 +12,7 @@ import {
   deleteFileMetadata,
   extractFolders,
 } from "../services/fileIndex";
-import { encryptFileWithKey , encryptFile } from "../crypto";
+import { encryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { useProfileContext } from "../hooks/useProfileContext";
@@ -126,13 +126,16 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const hash = await client.upload(encryptedBytes, auth);
 
         let previewHash: string | undefined = undefined;
+        let previewEncryptionKey: string | undefined = undefined;
         const preview = await previewFile(file);
         if (preview) {
           setUploadProgress({ fileName: file.name, stage: "Uploading preview..." });
-          const encrypted = await encryptFile(preview);
-          const encryptedPreviewBytes = new TextEncoder().encode(encrypted);
+          const { ciphertext: previewCiphertext, privateKeyHex: previewKeyHex } =
+            await encryptFileWithKey(preview);
+          const encryptedPreviewBytes = new TextEncoder().encode(previewCiphertext);
           const previewAuth = await createAuthEvent("upload", "Upload preview image", encryptedPreviewBytes);
           previewHash = await client.upload(encryptedPreviewBytes, previewAuth);
+          previewEncryptionKey = previewKeyHex;
         }
 
         setUploadProgress({ fileName: file.name, stage: "Saving metadata..." });
@@ -145,6 +148,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           uploadedAt: Date.now(),
           server,
           ...(previewHash ? { previewHash } : {}),
+          ...(previewEncryptionKey ? { previewEncryptionKey } : {}),
           encryptionKey: privateKeyHex,
         };
 
