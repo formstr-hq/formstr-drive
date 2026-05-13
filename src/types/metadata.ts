@@ -9,6 +9,12 @@ export interface FileMetadata {
   encryptionKey: string; // Hex-encoded private key used to encrypt this file
   deleted?: boolean;
   previewHash?: string;
+  /**
+   * Hex-encoded private key used to encrypt the preview blob. Optional for
+   * backwards compatibility: legacy uploads encrypted the preview with the
+   * signer's NIP-44 key and have no per-preview key stored here.
+   */
+  previewEncryptionKey?: string;
 }
 
 export interface FolderInfo {
