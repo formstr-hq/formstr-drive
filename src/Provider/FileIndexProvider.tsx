@@ -112,6 +112,39 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     async (file: File, server: string) => {
       setError(null);
 
+      const client = new BlossomClient(server);
+      let uploadedHash: string | undefined;
+      let uploadedPreviewHash: string | undefined;
+
+      const cleanupOrphanedBlobs = async () => {
+        // Best-effort compensating delete so failed uploads do not leave
+        // orphaned encrypted blobs consuming user storage on the server.
+        if (uploadedHash) {
+          try {
+            const auth = await createAuthEvent(
+              "delete",
+              `Delete ${uploadedHash}`,
+              uploadedHash,
+            );
+            await client.delete(uploadedHash, auth);
+          } catch {
+            // Swallow: original error is more useful to surface to the user.
+          }
+        }
+        if (uploadedPreviewHash) {
+          try {
+            const auth = await createAuthEvent(
+              "delete",
+              `Delete preview ${uploadedPreviewHash}`,
+              uploadedPreviewHash,
+            );
+            await client.delete(uploadedPreviewHash, auth);
+          } catch {
+            // Swallow: see above.
+          }
+        }
+      };
+
       try {
         setUploadProgress({ fileName: file.name, stage: "Reading file..." });
         const bytes = new Uint8Array(await file.arrayBuffer());
@@ -120,37 +153,36 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const { ciphertext, privateKeyHex } = await encryptFileWithKey(bytes);
 
         setUploadProgress({ fileName: file.name, stage: "Uploading..." });
-        const client = new BlossomClient(server);
         const encryptedBytes = new TextEncoder().encode(ciphertext);
         const auth = await createAuthEvent("upload", `Upload ${file.name}`, encryptedBytes);
-        const hash = await client.upload(encryptedBytes, auth);
+        uploadedHash = await client.upload(encryptedBytes, auth);
 
-        let previewHash: string | undefined = undefined;
         const preview = await previewFile(file);
         if (preview) {
           setUploadProgress({ fileName: file.name, stage: "Uploading preview..." });
           const encrypted = await encryptFile(preview);
           const encryptedPreviewBytes = new TextEncoder().encode(encrypted);
           const previewAuth = await createAuthEvent("upload", "Upload preview image", encryptedPreviewBytes);
-          previewHash = await client.upload(encryptedPreviewBytes, previewAuth);
+          uploadedPreviewHash = await client.upload(encryptedPreviewBytes, previewAuth);
         }
 
         setUploadProgress({ fileName: file.name, stage: "Saving metadata..." });
         const metadata: FileMetadata = {
           name: file.name,
-          hash,
+          hash: uploadedHash,
           size: file.size,
           type: file.type || "application/octet-stream",
           folder: currentFolder,
           uploadedAt: Date.now(),
           server,
-          ...(previewHash ? { previewHash } : {}),
+          ...(uploadedPreviewHash ? { previewHash: uploadedPreviewHash } : {}),
           encryptionKey: privateKeyHex,
         };
 
         await saveFileMetadata(metadata);
         setFiles((prev) => [metadata, ...prev]);
       } catch (e) {
+        await cleanupOrphanedBlobs();
         const errorMsg = e instanceof Error ? e.message : "Upload failed";
         setError(errorMsg);
         throw e;
