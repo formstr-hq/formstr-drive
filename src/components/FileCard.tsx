@@ -4,6 +4,7 @@ import { useFileIndex } from "../hooks/useFileContext";
 import { decryptFile, decryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
+import { saveFileToDownloads } from "../native/driveManifest";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -124,12 +125,7 @@ export function FileCard({
       const ciphertext = new TextDecoder().decode(blob);
       const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
 
-      const url = URL.createObjectURL(new Blob([decrypted as BlobPart], { type: file.type }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = file.name;
-      a.click();
-      URL.revokeObjectURL(url);
+      await saveFileToDownloads(decrypted as Uint8Array, file.name, file.type || "application/octet-stream");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
     } finally {
