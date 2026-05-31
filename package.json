@@ -21,6 +21,8 @@
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@khadarvsk/capacitor-secure-storage": "^0.0.1",
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "antd": "^6.3.3",
     "heic2any": "^0.0.4",
     "nostr-signer-capacitor-plugin": "^0.0.5",

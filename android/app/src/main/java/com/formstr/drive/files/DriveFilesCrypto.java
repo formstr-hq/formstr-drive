@@ -4,6 +4,9 @@ import android.util.Base64;
 
 import org.bouncycastle.asn1.sec.SECNamedCurves;
 import org.bouncycastle.asn1.x9.X9ECParameters;
+import org.bouncycastle.crypto.engines.ChaCha7539Engine;
+import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.ParametersWithIV;
 import org.bouncycastle.math.ec.ECPoint;
 
 import java.math.BigInteger;
@@ -11,15 +14,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
 
-import javax.crypto.Cipher;
 import javax.crypto.Mac;
-import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public final class DriveFilesCrypto {
     private static final byte PAYLOAD_VERSION = 2;
     private static final int PAYLOAD_NONCE_LENGTH = 32;
-    private static final int MESSAGE_KEY_LENGTH = 44;
+    private static final int MESSAGE_KEY_TOTAL = 76; // 32 enc_key + 12 enc_nonce + 32 auth_key
     private static final byte[] NIP44_INFO = "nip44-v2".getBytes(StandardCharsets.UTF_8);
 
     private DriveFilesCrypto() {}
@@ -46,6 +47,7 @@ public final class DriveFilesCrypto {
         ECPoint sharedPoint = publicPoint.multiply(privateKey).normalize();
         byte[] sharedX = toFixedLength(sharedPoint.getAffineXCoord().getEncoded(), 32);
 
+        // NIP-44: hkdf_extract(sha256, sharedX, salt="nip44-v2") = HMAC-SHA256(key="nip44-v2", data=sharedX)
         return hmacSha256(NIP44_INFO, sharedX);
     }
 
@@ -58,7 +60,8 @@ public final class DriveFilesCrypto {
             throw new GeneralSecurityException("Invalid encrypted payload", error);
         }
 
-        if (decodedPayload.length <= PAYLOAD_NONCE_LENGTH + 1) {
+        // Minimum: version(1) + nonce(32) + 1 byte ciphertext + mac(32)
+        if (decodedPayload.length < 1 + PAYLOAD_NONCE_LENGTH + 1 + 32) {
             throw new GeneralSecurityException("Encrypted payload is too short");
         }
 
@@ -67,26 +70,36 @@ public final class DriveFilesCrypto {
         }
 
         byte[] nonce = Arrays.copyOfRange(decodedPayload, 1, 1 + PAYLOAD_NONCE_LENGTH);
-        byte[] ciphertext = Arrays.copyOfRange(decodedPayload, 1 + PAYLOAD_NONCE_LENGTH, decodedPayload.length);
+        byte[] ciphertext = Arrays.copyOfRange(decodedPayload, 1 + PAYLOAD_NONCE_LENGTH, decodedPayload.length - 32);
+        byte[] mac = Arrays.copyOfRange(decodedPayload, decodedPayload.length - 32, decodedPayload.length);
 
-        byte[] expandedKeys = hkdfSha256(conversationKey, nonce, NIP44_INFO, MESSAGE_KEY_LENGTH);
-        byte[] aesKey = Arrays.copyOfRange(expandedKeys, 0, 32);
-        byte[] aesNonce = Arrays.copyOfRange(expandedKeys, 32, 44);
+        // NIP-44 getMessageKeys: hkdf_expand(prk=conversationKey, info=nonce, length=76)
+        byte[] expandedKeys = hkdfExpand(conversationKey, nonce, MESSAGE_KEY_TOTAL);
+        byte[] encKey = Arrays.copyOfRange(expandedKeys, 0, 32);
+        byte[] encNonce = Arrays.copyOfRange(expandedKeys, 32, 44);
+        byte[] authKey = Arrays.copyOfRange(expandedKeys, 44, 76);
 
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(
-                Cipher.DECRYPT_MODE,
-                new SecretKeySpec(aesKey, "AES"),
-                new GCMParameterSpec(128, aesNonce)
-        );
+        // Verify MAC: HMAC-SHA256(key=authKey, data=concat(nonce, ciphertext))
+        Mac hmacMac = Mac.getInstance("HmacSHA256");
+        hmacMac.init(new SecretKeySpec(authKey, "HmacSHA256"));
+        hmacMac.update(nonce);
+        byte[] expectedMac = hmacMac.doFinal(ciphertext);
+        if (!constantTimeEquals(expectedMac, mac)) {
+            throw new GeneralSecurityException("MAC verification failed");
+        }
 
-        byte[] plaintext = cipher.doFinal(ciphertext);
+        // Decrypt with ChaCha20 (IETF variant, 12-byte nonce)
+        ChaCha7539Engine engine = new ChaCha7539Engine();
+        engine.init(false, new ParametersWithIV(new KeyParameter(encKey), encNonce));
+        byte[] plaintext = new byte[ciphertext.length];
+        engine.processBytes(ciphertext, 0, ciphertext.length, plaintext, 0);
+
         return new String(plaintext, StandardCharsets.UTF_8);
     }
 
-    private static byte[] hkdfSha256(byte[] ikm, byte[] salt, byte[] info, int length)
+    // HKDF-Expand only (RFC 5869 section 2.3), no extract step
+    private static byte[] hkdfExpand(byte[] prk, byte[] info, int length)
             throws GeneralSecurityException {
-        byte[] pseudorandomKey = hmacSha256(salt, ikm);
         byte[] output = new byte[length];
         byte[] previousBlock = new byte[0];
         int offset = 0;
@@ -94,18 +107,16 @@ public final class DriveFilesCrypto {
 
         while (offset < length) {
             Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(pseudorandomKey, "HmacSHA256"));
+            mac.init(new SecretKeySpec(prk, "HmacSHA256"));
             mac.update(previousBlock);
             mac.update(info);
             mac.update((byte) blockIndex);
-
             previousBlock = mac.doFinal();
             int copyLength = Math.min(previousBlock.length, length - offset);
             System.arraycopy(previousBlock, 0, output, offset, copyLength);
             offset += copyLength;
-            blockIndex += 1;
+            blockIndex++;
         }
-
         return output;
     }
 
@@ -113,6 +124,13 @@ public final class DriveFilesCrypto {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(key, "HmacSHA256"));
         return mac.doFinal(data);
+    }
+
+    private static boolean constantTimeEquals(byte[] a, byte[] b) {
+        if (a.length != b.length) return false;
+        int diff = 0;
+        for (int i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+        return diff == 0;
     }
 
     private static byte[] hexToBytes(String hex) {
