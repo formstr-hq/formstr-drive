@@ -1,11 +1,10 @@
 import { nip44, generateSecretKey, getPublicKey } from "nostr-tools";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
 import { signerManager } from "./signer/manager";
-import { chacha20 } from "@noble/ciphers/chacha.js";
-import { hmac } from "@noble/hashes/hmac.js";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { expand as hkdfExpand } from "@noble/hashes/hkdf.js";
 
+/**
+ * Convert Uint8Array to Base64 string
+ */
 export function uint8ArrayToBase64(bytes: Uint8Array): string {
   let binary = "";
   const chunkSize = 0x8000; // 32KB chunks
@@ -16,6 +15,9 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * Convert Base64 string to Uint8Array
+ */
 export function base64ToUint8Array(b64: string): Uint8Array {
   const binary = atob(b64);
   const len = binary.length;
@@ -26,73 +28,149 @@ export function base64ToUint8Array(b64: string): Uint8Array {
   return bytes;
 }
 
-function getMessageKeys(conversationKey: Uint8Array, nonce: Uint8Array) {
-  // NIP-44 getMessageKeys: hkdf_expand(prk=conversationKey, info=nonce, length=76)
-  const keys = hkdfExpand(sha256, conversationKey, nonce, 76);
-  return {
-    encKey: keys.slice(0, 32),
-    encNonce: keys.slice(32, 44),
-    authKey: keys.slice(44, 76),
-  };
-}
-
 /**
- * NIP-44 v2 encryption for large payloads (ChaCha20 + HMAC-SHA256, no size limit)
+ * NIP-44 v2 encryption for large payloads
+ * Based on NIP-44 spec, but without the nostr-tools size limitation
  */
-export function nip44Encrypt(plaintext: string, conversationKey: Uint8Array): string {
-  const plaintextBytes = new TextEncoder().encode(plaintext);
+export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Array): Promise<string> {
+  const encoder = new TextEncoder();
+  const plaintextBytes = encoder.encode(plaintext);
+
+  // Generate random nonce (32 bytes)
   const nonce = crypto.getRandomValues(new Uint8Array(32));
-  const { encKey, encNonce, authKey } = getMessageKeys(conversationKey, nonce);
 
-  const ciphertext = chacha20(encKey, encNonce, plaintextBytes);
+  // Derive encryption key from conversation key and nonce using HKDF
+  const salt = nonce;
+  const info = encoder.encode("nip44-v2");
 
-  // MAC = HMAC-SHA256(key=authKey, data=concat(nonce, ciphertext))
-  const macInput = new Uint8Array(32 + ciphertext.length);
-  macInput.set(nonce);
-  macInput.set(ciphertext, 32);
-  const mac = hmac(sha256, authKey, macInput);
+  // Import conversation key for HKDF
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    conversationKey as BufferSource,
+    "HKDF",
+    false,
+    ["deriveBits"]
+  );
 
-  // Format: version(1) + nonce(32) + ciphertext + mac(32)
-  const payload = new Uint8Array(1 + 32 + ciphertext.length + 32);
-  payload[0] = 2;
+  // Derive 44 bytes: 32 for chacha key, 12 for chacha nonce
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: salt,
+      info: info,
+    },
+    baseKey,
+    44 * 8
+  );
+
+  const derived = new Uint8Array(derivedBits);
+  const chachaKey = derived.slice(0, 32);
+  const chachaNonce = derived.slice(32, 44);
+
+  // Use AES-GCM as a substitute for ChaCha20 (WebCrypto doesn't support ChaCha20)
+  // This is a pragmatic workaround - ideally we'd use ChaCha20-Poly1305
+  const aesKey = await crypto.subtle.importKey(
+    "raw",
+    chachaKey as BufferSource,
+    "AES-GCM",
+    false,
+    ["encrypt"]
+  );
+
+  // Encrypt with AES-GCM
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: chachaNonce as BufferSource,
+    },
+    aesKey,
+    plaintextBytes
+  );
+
+  const ciphertextBytes = new Uint8Array(ciphertext);
+
+  // Format: version (1 byte) + nonce (32 bytes) + ciphertext
+  const version = new Uint8Array([2]); // v2
+  const payload = new Uint8Array(1 + 32 + ciphertextBytes.length);
+  payload.set(version, 0);
   payload.set(nonce, 1);
-  payload.set(ciphertext, 33);
-  payload.set(mac, 33 + ciphertext.length);
+  payload.set(ciphertextBytes, 33);
 
+  // Return as base64
   return uint8ArrayToBase64(payload);
 }
 
 /**
  * NIP-44 v2 decryption for large payloads
  */
-export function nip44Decrypt(ciphertextB64: string, conversationKey: Uint8Array): string {
-  const payload = base64ToUint8Array(ciphertextB64);
+export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Array): Promise<string> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
 
-  if (payload[0] !== 2) {
-    throw new Error(`Unsupported NIP-44 version: ${payload[0]}`);
+  try {
+    // Decode from base64
+    const payload = base64ToUint8Array(ciphertext);
+
+    // Parse: version (1 byte) + nonce (32 bytes) + ciphertext
+    const version = payload[0];
+    if (version !== 2) {
+      throw new Error(`Unsupported NIP-44 version: ${version}`);
+    }
+
+    const nonce = payload.slice(1, 33);
+    const ciphertextBytes = payload.slice(33);
+
+    // Derive encryption key from conversation key and nonce using HKDF
+    const salt = nonce;
+    const info = encoder.encode("nip44-v2");
+
+    const baseKey = await crypto.subtle.importKey(
+      "raw",
+      conversationKey as BufferSource,
+      "HKDF",
+      false,
+      ["deriveBits"]
+    );
+
+    const derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: salt,
+        info: info,
+      },
+      baseKey,
+      44 * 8
+    );
+
+    const derived = new Uint8Array(derivedBits);
+    const chachaKey = derived.slice(0, 32);
+    const chachaNonce = derived.slice(32, 44);
+
+    // Decrypt with AES-GCM
+    const aesKey = await crypto.subtle.importKey(
+      "raw",
+      chachaKey as BufferSource,
+      "AES-GCM",
+      false,
+      ["decrypt"]
+    );
+
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: chachaNonce as BufferSource,
+      },
+      aesKey,
+      ciphertextBytes
+    );
+
+    return decoder.decode(plaintext);
+  } catch (error) {
+    console.error("aesGcmDecrypt error:", error);
+    throw error;
   }
-  if (payload.length < 1 + 32 + 32) {
-    throw new Error("Payload too short");
-  }
-
-  const nonce = payload.slice(1, 33);
-  const ciphertext = payload.slice(33, payload.length - 32);
-  const mac = payload.slice(payload.length - 32);
-
-  const { encKey, encNonce, authKey } = getMessageKeys(conversationKey, nonce);
-
-  // Verify MAC
-  const macInput = new Uint8Array(32 + ciphertext.length);
-  macInput.set(nonce);
-  macInput.set(ciphertext, 32);
-  const expectedMac = hmac(sha256, authKey, macInput);
-
-  let diff = 0;
-  for (let i = 0; i < 32; i++) diff |= mac[i] ^ expectedMac[i];
-  if (diff !== 0) throw new Error("Invalid MAC");
-
-  const plaintext = chacha20(encKey, encNonce, ciphertext);
-  return new TextDecoder().decode(plaintext);
 }
 
 /**
@@ -100,14 +178,23 @@ export function nip44Decrypt(ciphertextB64: string, conversationKey: Uint8Array)
  * Returns both the ciphertext and the private key (hex) needed for decryption
  */
 export async function encryptFileWithKey(fileBytes: Uint8Array): Promise<{ ciphertext: string; privateKeyHex: string }> {
+  // Generate a new random keypair for this file
   const secretKey = generateSecretKey();
   const pubkey = getPublicKey(secretKey);
+
+  // Create conversation key (encrypt to self)
   const conversationKey = nip44.v2.utils.getConversationKey(secretKey, pubkey);
+
+  // Convert file bytes to base64
   const plaintextBase64 = uint8ArrayToBase64(fileBytes);
-  const ciphertext = nip44Encrypt(plaintextBase64, conversationKey);
+
+  // Encrypt using our large payload implementation
+  const ciphertext = await aesGcmEncrypt(plaintextBase64, conversationKey);
+
+  // Return ciphertext and the private key (needed for decryption)
   return {
     ciphertext,
-    privateKeyHex: bytesToHex(secretKey),
+    privateKeyHex: bytesToHex(secretKey)
   };
 }
 
@@ -115,13 +202,21 @@ export async function encryptFileWithKey(fileBytes: Uint8Array): Promise<{ ciphe
  * Decrypt a file using the stored private key
  */
 export async function decryptFileWithKey(ciphertext: string, privateKeyHex: string): Promise<Uint8Array> {
+  // Convert hex private key back to bytes
   const secretKey = hexToBytes(privateKeyHex);
   const pubkey = getPublicKey(secretKey);
+
+  // Recreate conversation key (decrypt from self)
   const conversationKey = nip44.v2.utils.getConversationKey(secretKey, pubkey);
-  const plaintextBase64 = nip44Decrypt(ciphertext, conversationKey);
+
+  // Decrypt using our large payload implementation
+  const plaintextBase64 = await aesGcmDecrypt(ciphertext, conversationKey);
+
   if (!plaintextBase64) {
     throw new Error("Decryption failed");
   }
+
+  // Convert base64 back to bytes
   return base64ToUint8Array(plaintextBase64);
 }
 
