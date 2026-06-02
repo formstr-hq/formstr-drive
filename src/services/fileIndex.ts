@@ -48,11 +48,10 @@ export async function fetchFileIndex(pubkey: string): Promise<FileMetadata[]> {
     console.log("[FileIndex] Query filter:", JSON.stringify(filter));
     console.log("[FileIndex] Filter as array:", JSON.stringify([filter]));
 
-    const events: any[] = [];
+    const events: NostrEvent[] = [];
     const seenIds = new Set<string>();
 
     // Subscribe to relays
-    // @ts-ignore - try passing filter directly, not as array
     const sub = pool.subscribeMany(RELAYS, filter, {
         onevent(event) {
           if (!seenIds.has(event.id)) {
@@ -144,7 +143,7 @@ export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {
     const signedEvent = await signer.signEvent(event);
     console.log("[FileIndex] Signed event:", signedEvent);
 
-    const publishPromises = pool.publish(RELAYS, signedEvent as any);
+    const publishPromises = pool.publish(RELAYS, signedEvent);
     console.log("[FileIndex] Publishing to relays:", RELAYS);
 
     await Promise.any(publishPromises);

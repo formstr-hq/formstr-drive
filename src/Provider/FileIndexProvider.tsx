@@ -207,6 +207,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           server,
           ...(previewHash ? { previewHash } : {}),
           encryptionKey: privateKeyHex,
+          encryptionAlgorithm: "aes-gcm",
         };
 
         await saveFileMetadata(metadata);

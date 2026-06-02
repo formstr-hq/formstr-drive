@@ -7,6 +7,7 @@ export interface FileMetadata {
   uploadedAt: number;
   server: string;
   encryptionKey: string; // Hex-encoded private key used to encrypt this file
+  encryptionAlgorithm: string;
   deleted?: boolean;
   previewHash?: string;
 }

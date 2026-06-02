@@ -11,7 +11,7 @@ export function getItem<T>(key: string, { parseAsJson = true } = {}) : T | null 
     if(parseAsJson){
         try{
             value = JSON.parse(value);
-        } catch(e) {
+        } catch {
             value = null;
             localStorage.removeItem(key);
         }
@@ -20,7 +20,7 @@ export function getItem<T>(key: string, { parseAsJson = true } = {}) : T | null 
     return value as T;
 }
 
-export const setItem = (key: string, value: any, { parseAsJson = true } = {}) => {
+export const setItem = (key: string, value: string, { parseAsJson = true } = {}) => {
     let valueToBeStored = value;
     if(parseAsJson) {
         valueToBeStored = JSON.stringify(value);
