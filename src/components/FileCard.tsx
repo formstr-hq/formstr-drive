@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { FileMetadata } from "../types/metadata";
 import { useFileIndex } from "../hooks/useFileContext";
-import { decryptFile, decryptFileWithKey } from "../crypto";
+import { decryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { saveFileToDownloads } from "../native/driveManifest";
@@ -48,7 +48,7 @@ async function getPreview(file: FileMetadata): Promise<string> {
   const auth = await createAuthEvent("get", `Get preview ${file.previewHash}`, file.previewHash);
   const uint8arr = await client.download(file.previewHash, auth);
   const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
-  const decrypted = await decryptFile(ciphertext);
+  const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
   const blob = new Blob([decrypted as BlobPart], { type: "image/webp" });
   const imageUrl = URL.createObjectURL(blob);
 

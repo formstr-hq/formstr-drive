@@ -186,25 +186,9 @@ export async function aesGcmDecrypt(
 export async function encryptFileWithKey(
   fileBytes: Uint8Array,
 ): Promise<{ ciphertext: string; privateKeyHex: string }> {
-  // Generate a new random keypair for this file
-  const secretKey = generateSecretKey();
-  const pubkey = getPublicKey(secretKey);
-
-  // Create conversation key (encrypt to self)
-  const conversationKey = nip44.v2.utils.getConversationKey(secretKey, pubkey);
-
-  // Convert file bytes to base64
-  const plaintextBase64 = uint8ArrayToBase64(fileBytes);
-
-  // Encrypt using our large payload implementation
-  const ciphertext = await aesGcmEncrypt(plaintextBase64, conversationKey);
-
-  // Return ciphertext and the private key (needed for decryption)
-  const privateKeyHex = bytesToHex(secretKey);
-  return {
-    ciphertext,
-    privateKeyHex,
-  };
+  const privateKeyHex = bytesToHex(generateSecretKey());
+  const ciphertext = await encryptFileWithExistingKey(fileBytes, privateKeyHex);
+  return { ciphertext, privateKeyHex };
 }
 
 /**
@@ -230,6 +214,20 @@ export async function decryptFileWithKey(
 
   // Convert base64 back to bytes
   return base64ToUint8Array(plaintextBase64);
+}
+
+/**
+ * Encrypt a file using an existing private key
+ */
+export async function encryptFileWithExistingKey(
+  fileBytes: Uint8Array,
+  privateKeyHex: string,
+): Promise<string> {
+  const secretKey = hexToBytes(privateKeyHex);
+  const pubkey = getPublicKey(secretKey);
+  const conversationKey = nip44.v2.utils.getConversationKey(secretKey, pubkey);
+  const plaintextBase64 = uint8ArrayToBase64(fileBytes);
+  return aesGcmEncrypt(plaintextBase64, conversationKey);
 }
 
 /**

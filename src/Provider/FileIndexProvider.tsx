@@ -13,7 +13,7 @@ import {
   deleteFileMetadata,
   extractFolders,
 } from "../services/fileIndex";
-import { encryptFileWithKey , encryptFile } from "../crypto";
+import { encryptFileWithKey, encryptFileWithExistingKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { useProfileContext } from "../hooks/useProfileContext";
@@ -186,7 +186,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const preview = await previewFile(file);
         if (preview) {
           setUploadProgress({ fileName: file.name, stage: "Uploading preview..." });
-          const encrypted = await encryptFile(preview);
+          const encrypted = await encryptFileWithExistingKey(preview, privateKeyHex);
           const encryptedPreviewBytes = new TextEncoder().encode(encrypted);
           const previewAuth = await createAuthEvent(
             "upload",
