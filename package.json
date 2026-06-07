@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "androidVersion": "0.0.1",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
     "dev": "vite",
@@ -12,7 +13,8 @@
     "preview": "vite preview",
     "android:copy": "pnpm build && pnpm exec cap copy android",
     "android:sync": "pnpm build && pnpm exec cap sync android",
-    "android:open": "pnpm exec cap open android"
+    "android:open": "pnpm exec cap open android",
+    "android:build-release": "scripts/build-android-release.sh"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.1",

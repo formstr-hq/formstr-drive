@@ -35,3 +35,4 @@ android/local.properties
 android/captures/
 
 *_PLAN.md
+keystore.properties
