@@ -4,7 +4,8 @@ import { useFileIndex } from "../hooks/useFileContext";
 import { decryptFileWithKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
-import { saveFileToDownloads } from "../native/driveManifest";
+import { saveFileToDownloads, openDownloadedFile } from "../native/driveManifest";
+import { isNativePlatform } from "../utils/platform";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -64,6 +65,8 @@ export function FileCard({
 }: FileCardProps) {
   const { deleteFile, moveFile, folders, renameFile } = useFileIndex();
   const [downloading, setDownloading] = useState(false);
+  const [downloadedUri, setDownloadedUri] = useState<string | null>(null);
+  const [showToast, setShowToast] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
@@ -125,7 +128,10 @@ export function FileCard({
       const ciphertext = new TextDecoder().decode(blob);
       const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
 
-      await saveFileToDownloads(decrypted as Uint8Array, file.name, file.type || "application/octet-stream");
+      const result = await saveFileToDownloads(decrypted as Uint8Array, file.name, file.type || "application/octet-stream");
+      setDownloadedUri(result?.uri ?? null);
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 5000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Download failed");
     } finally {
@@ -184,6 +190,22 @@ export function FileCard({
 
   const icon = getFileIcon(file.type);
   const hasPreview = previewloaded && !!preview;
+
+  const downloadToast = showToast && (
+    <div className="download-toast">
+      <span>Downloaded successfully</span>
+      {isNativePlatform && downloadedUri && (
+        <button
+          className="download-toast-view"
+          onClick={() => openDownloadedFile(downloadedUri, file.type || "application/octet-stream")}
+        >
+          View
+        </button>
+      )}
+      <button className="download-toast-close" onClick={() => setShowToast(false)}>×</button>
+    </div>
+  );
+
   const handleSelectionToggle = () => {
     onToggleSelection?.(file.hash);
   };
@@ -327,6 +349,7 @@ export function FileCard({
         </div>
         {moveDialog}
         {renameModal}
+        {downloadToast}
       </>
     );
   }
@@ -369,6 +392,7 @@ export function FileCard({
       </div>
       {moveDialog}
       {renameModal}
+      {downloadToast}
     </>
   );
 }

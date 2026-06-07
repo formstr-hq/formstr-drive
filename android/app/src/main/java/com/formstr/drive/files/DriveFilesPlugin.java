@@ -1,11 +1,14 @@
 package com.formstr.drive.files;
 
 import android.content.ContentValues;
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
+
+import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -197,6 +200,40 @@ public class DriveFilesPlugin extends Plugin {
             }
         } catch (Exception error) {
             call.reject("Failed to save file to Downloads", error);
+        }
+    }
+
+    @PluginMethod
+    public void openFile(PluginCall call) {
+        String uriString = call.getString("uri");
+        String mimeType = call.getString("mimeType");
+
+        if (uriString == null || mimeType == null) {
+            call.reject("uri and mimeType are required");
+            return;
+        }
+
+        try {
+            Uri uri;
+            if (uriString.startsWith("content://")) {
+                uri = Uri.parse(uriString);
+            } else {
+                File file = new File(uriString);
+                uri = FileProvider.getUriForFile(
+                    getContext(),
+                    getContext().getPackageName() + ".fileprovider",
+                    file
+                );
+            }
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, mimeType);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception error) {
+            call.reject("Failed to open file", error);
         }
     }
 

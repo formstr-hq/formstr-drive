@@ -16,6 +16,7 @@ type DriveFilesPlugin = {
   }>;
   removePendingImport(options: { id: string }): Promise<void>;
   saveToDownloads(options: { base64: string; fileName: string; mimeType: string }): Promise<{ uri: string }>;
+  openFile(options: { uri: string; mimeType: string }): Promise<void>;
 };
 
 export const ROOT_DOCUMENT_ID = "root";
@@ -284,11 +285,11 @@ export async function saveFileToDownloads(
   bytes: Uint8Array,
   fileName: string,
   mimeType: string,
-): Promise<void> {
+): Promise<{ uri: string } | null> {
   if (isAndroidPlatform && driveFilesPlugin) {
     const base64 = uint8ArrayToBase64(bytes);
-    await driveFilesPlugin.saveToDownloads({ base64, fileName, mimeType });
-    return;
+    const result = await driveFilesPlugin.saveToDownloads({ base64, fileName, mimeType });
+    return result;
   }
 
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }));
@@ -297,4 +298,11 @@ export async function saveFileToDownloads(
   a.download = fileName;
   a.click();
   URL.revokeObjectURL(url);
+  return null;
+}
+
+export async function openDownloadedFile(uri: string, mimeType: string): Promise<void> {
+  if (isAndroidPlatform && driveFilesPlugin) {
+    await driveFilesPlugin.openFile({ uri, mimeType });
+  }
 }

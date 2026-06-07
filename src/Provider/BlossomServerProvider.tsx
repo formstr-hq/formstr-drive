@@ -1,13 +1,23 @@
-import { createContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import {
+  createContext,
+  useState,
+  useEffect,
+  useCallback,
+  type ReactNode,
+} from "react";
 import { SimplePool } from "nostr-tools";
-import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
+import {
+  getStoredItem,
+  setStoredItem,
+  STORAGE_KEYS,
+} from "../utils/persistence";
 import { APP_RELAYS } from "../utils/common";
 
 const PUBLIC_RELAYS = APP_RELAYS;
 
 const DEFAULT_SERVERS = [
-  "https://blossom.primal.net",
   "https://nostr.download",
+  "https://blossom.primal.net",
   "https://blossom.oxtr.dev",
 ];
 
@@ -25,11 +35,15 @@ export interface BlossomServerContextType {
   error: string | null;
 }
 
-export const BlossomServerContext = createContext<BlossomServerContextType | null>(null);
+export const BlossomServerContext =
+  createContext<BlossomServerContextType | null>(null);
 
 function normalizeServerUrl(url: string) {
   let normalizedUrl = url.trim();
-  if (!normalizedUrl.startsWith("http://") && !normalizedUrl.startsWith("https://")) {
+  if (
+    !normalizedUrl.startsWith("http://") &&
+    !normalizedUrl.startsWith("https://")
+  ) {
     normalizedUrl = "https://" + normalizedUrl;
   }
 
@@ -38,7 +52,7 @@ function normalizeServerUrl(url: string) {
 
 export function BlossomServerProvider({ children }: { children: ReactNode }) {
   const [servers, setServers] = useState<ServerInfo[]>(
-    DEFAULT_SERVERS.map((url) => ({ url, source: "default" }))
+    DEFAULT_SERVERS.map((url) => ({ url, source: "default" })),
   );
   const [selectedServer, setSelectedServer] = useState(DEFAULT_SERVERS[0]);
   const [loading, setLoading] = useState(true);
@@ -79,7 +93,10 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
 
         if (!cancelled) {
           setServers([
-            ...DEFAULT_SERVERS.map((url) => ({ url, source: "default" as const })),
+            ...DEFAULT_SERVERS.map((url) => ({
+              url,
+              source: "default" as const,
+            })),
             ...ensuredCustomServers,
           ]);
           setSelectedServer(storedSelectedServer);
