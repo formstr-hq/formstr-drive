@@ -32,7 +32,10 @@ export function base64ToUint8Array(b64: string): Uint8Array {
  * NIP-44 v2 encryption for large payloads
  * Based on NIP-44 spec, but without the nostr-tools size limitation
  */
-export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Array): Promise<string> {
+export async function aesGcmEncrypt(
+  plaintext: string,
+  conversationKey: Uint8Array,
+): Promise<string> {
   const encoder = new TextEncoder();
   const plaintextBytes = encoder.encode(plaintext);
 
@@ -49,7 +52,7 @@ export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Arr
     conversationKey as BufferSource,
     "HKDF",
     false,
-    ["deriveBits"]
+    ["deriveBits"],
   );
 
   // Derive 44 bytes: 32 for chacha key, 12 for chacha nonce
@@ -61,7 +64,7 @@ export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Arr
       info: info,
     },
     baseKey,
-    44 * 8
+    44 * 8,
   );
 
   const derived = new Uint8Array(derivedBits);
@@ -75,7 +78,7 @@ export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Arr
     chachaKey as BufferSource,
     "AES-GCM",
     false,
-    ["encrypt"]
+    ["encrypt"],
   );
 
   // Encrypt with AES-GCM
@@ -85,7 +88,7 @@ export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Arr
       iv: chachaNonce as BufferSource,
     },
     aesKey,
-    plaintextBytes
+    plaintextBytes,
   );
 
   const ciphertextBytes = new Uint8Array(ciphertext);
@@ -104,7 +107,10 @@ export async function aesGcmEncrypt(plaintext: string, conversationKey: Uint8Arr
 /**
  * NIP-44 v2 decryption for large payloads
  */
-export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Array): Promise<string> {
+export async function aesGcmDecrypt(
+  ciphertext: string,
+  conversationKey: Uint8Array,
+): Promise<string> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -130,7 +136,7 @@ export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Ar
       conversationKey as BufferSource,
       "HKDF",
       false,
-      ["deriveBits"]
+      ["deriveBits"],
     );
 
     const derivedBits = await crypto.subtle.deriveBits(
@@ -141,7 +147,7 @@ export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Ar
         info: info,
       },
       baseKey,
-      44 * 8
+      44 * 8,
     );
 
     const derived = new Uint8Array(derivedBits);
@@ -154,7 +160,7 @@ export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Ar
       chachaKey as BufferSource,
       "AES-GCM",
       false,
-      ["decrypt"]
+      ["decrypt"],
     );
 
     const plaintext = await crypto.subtle.decrypt(
@@ -163,7 +169,7 @@ export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Ar
         iv: chachaNonce as BufferSource,
       },
       aesKey,
-      ciphertextBytes
+      ciphertextBytes,
     );
 
     return decoder.decode(plaintext);
@@ -177,7 +183,9 @@ export async function aesGcmDecrypt(ciphertext: string, conversationKey: Uint8Ar
  * Encrypt a file with a newly generated key (self-encryption)
  * Returns both the ciphertext and the private key (hex) needed for decryption
  */
-export async function encryptFileWithKey(fileBytes: Uint8Array): Promise<{ ciphertext: string; privateKeyHex: string }> {
+export async function encryptFileWithKey(
+  fileBytes: Uint8Array,
+): Promise<{ ciphertext: string; privateKeyHex: string }> {
   // Generate a new random keypair for this file
   const secretKey = generateSecretKey();
   const pubkey = getPublicKey(secretKey);
@@ -192,16 +200,20 @@ export async function encryptFileWithKey(fileBytes: Uint8Array): Promise<{ ciphe
   const ciphertext = await aesGcmEncrypt(plaintextBase64, conversationKey);
 
   // Return ciphertext and the private key (needed for decryption)
+  const privateKeyHex = bytesToHex(secretKey);
   return {
     ciphertext,
-    privateKeyHex: bytesToHex(secretKey)
+    privateKeyHex,
   };
 }
 
 /**
  * Decrypt a file using the stored private key
  */
-export async function decryptFileWithKey(ciphertext: string, privateKeyHex: string): Promise<Uint8Array> {
+export async function decryptFileWithKey(
+  ciphertext: string,
+  privateKeyHex: string,
+): Promise<Uint8Array> {
   // Convert hex private key back to bytes
   const secretKey = hexToBytes(privateKeyHex);
   const pubkey = getPublicKey(secretKey);
@@ -249,7 +261,9 @@ export async function decryptFile(ciphertext: string): Promise<Uint8Array> {
   const plaintextBase64 = await signer.nip44Decrypt(pubkey, ciphertext);
 
   if (!plaintextBase64) {
-    throw new Error("Decryption returned empty result - did you cancel the prompt?");
+    throw new Error(
+      "Decryption returned empty result - did you cancel the prompt?",
+    );
   }
 
   return base64ToUint8Array(plaintextBase64);

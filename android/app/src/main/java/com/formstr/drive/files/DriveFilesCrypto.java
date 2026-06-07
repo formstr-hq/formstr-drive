@@ -22,7 +22,8 @@ public final class DriveFilesCrypto {
     private static final int MESSAGE_KEY_LENGTH = 44;
     private static final byte[] NIP44_INFO = "nip44-v2".getBytes(StandardCharsets.UTF_8);
 
-    private DriveFilesCrypto() {}
+    private DriveFilesCrypto() {
+    }
 
     public static byte[] decryptEncryptedBlob(byte[] encryptedBlob, String privateKeyHex)
             throws GeneralSecurityException {
@@ -77,8 +78,7 @@ public final class DriveFilesCrypto {
         cipher.init(
                 Cipher.DECRYPT_MODE,
                 new SecretKeySpec(aesKey, "AES"),
-                new GCMParameterSpec(128, aesNonce)
-        );
+                new GCMParameterSpec(128, aesNonce));
 
         byte[] plaintext = cipher.doFinal(ciphertext);
         return new String(plaintext, StandardCharsets.UTF_8);
@@ -115,6 +115,14 @@ public final class DriveFilesCrypto {
         return mac.doFinal(data);
     }
 
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
     private static byte[] hexToBytes(String hex) {
         String normalizedHex = hex == null ? "" : hex.trim();
         if (normalizedHex.length() % 2 != 0) {
@@ -125,8 +133,7 @@ public final class DriveFilesCrypto {
         for (int index = 0; index < normalizedHex.length(); index += 2) {
             bytes[index / 2] = (byte) Integer.parseInt(
                     normalizedHex.substring(index, index + 2),
-                    16
-            );
+                    16);
         }
         return bytes;
     }

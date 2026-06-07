@@ -47,12 +47,14 @@ export function SignIn() {
   const [nsec, setNsec] = useState("");
   const [loadingNsec, setLoadingNsec] = useState(false);
   const [remoteTab, setRemoteTab] = useState<RemoteTab>("uri");
-  const [selectedMethod, setSelectedMethod] = useState<SignInMethod | null>(null);
+  const [selectedMethod, setSelectedMethod] = useState<SignInMethod | null>(
+    null,
+  );
   const [generatedNsec, setGeneratedNsec] = useState("");
   const [copiedNewKey, setCopiedNewKey] = useState(false);
   const [loadingCreateKey, setLoadingCreateKey] = useState(false);
   const qrAbortRef = useRef<AbortController | null>(null);
-  const title = nativeShellMode ? "Sign in to Formstr" : "Formstr Drive";
+  const title = nativeShellMode ? "Sign in to Formstr Drive" : "Formstr Drive";
   const subtitle = nativeShellMode
     ? "Choose your preferred login method"
     : "Encrypted file storage on Nostr";
@@ -115,12 +117,16 @@ export function SignIn() {
     }
 
     try {
-      await loginWithNip46(uri.trim(), abortSignal ? { abortSignal } : undefined);
+      await loginWithNip46(
+        uri.trim(),
+        abortSignal ? { abortSignal } : undefined,
+      );
     } catch (loginError) {
       if (
         abortSignal?.aborted ||
         (loginError instanceof Error &&
-          (loginError.name === "AbortError" || loginError.message.toLowerCase().includes("abort")))
+          (loginError.name === "AbortError" ||
+            loginError.message.toLowerCase().includes("abort")))
       ) {
         return;
       }
@@ -151,7 +157,9 @@ export function SignIn() {
       await handleBunkerLogin(uri, "qr", controller.signal);
     } catch (qrError) {
       setError(
-        qrError instanceof Error ? qrError.message : "Failed to generate QR code",
+        qrError instanceof Error
+          ? qrError.message
+          : "Failed to generate QR code",
       );
       setLoadingQr(false);
     } finally {
@@ -222,7 +230,9 @@ export function SignIn() {
       await loginWithNsec(generatedNsec);
     } catch (loginError) {
       setError(
-        loginError instanceof Error ? loginError.message : "Failed to continue with generated key",
+        loginError instanceof Error
+          ? loginError.message
+          : "Failed to continue with generated key",
       );
     } finally {
       setLoadingCreateKey(false);
@@ -337,7 +347,9 @@ export function SignIn() {
                 {selectedMethod === "external" && nativeShellMode && (
                   <div className="native-signer-list sign-in-primary-actions">
                     {loadingNativeSignerApps ? (
-                      <p className="sign-in-hint">Loading Android signer apps...</p>
+                      <p className="sign-in-hint">
+                        Loading Android signer apps...
+                      </p>
                     ) : nativeSignerApps.length > 0 ? (
                       nativeSignerApps.map((app) => (
                         <button
@@ -368,7 +380,8 @@ export function SignIn() {
                       ))
                     ) : (
                       <p className="sign-in-hint">
-                        No Android signer app found. Install Amber or another compatible signer.
+                        No Android signer app found. Install Amber or another
+                        compatible signer.
                       </p>
                     )}
                   </div>
@@ -394,7 +407,11 @@ export function SignIn() {
                       </div>
                     </div>
 
-                    <div className="sign-in-tab-row" role="tablist" aria-label="Remote signer methods">
+                    <div
+                      className="sign-in-tab-row"
+                      role="tablist"
+                      aria-label="Remote signer methods"
+                    >
                       <button
                         type="button"
                         role="tab"
@@ -436,7 +453,9 @@ export function SignIn() {
                         <button
                           type="button"
                           className="sign-in-btn sign-in-btn-block"
-                          onClick={() => void handleBunkerLogin(bunkerUri, "manual")}
+                          onClick={() =>
+                            void handleBunkerLogin(bunkerUri, "manual")
+                          }
                           disabled={loadingBunker || !bunkerUri.trim()}
                         >
                           {loadingBunker ? "Connecting..." : "Connect"}
@@ -448,7 +467,9 @@ export function SignIn() {
                           <QRCodeCanvas value={qrUri} size={176} />
                         ) : (
                           <div className="sign-in-qr-placeholder">
-                            {loadingQr ? "Generating QR..." : "QR will appear here"}
+                            {loadingQr
+                              ? "Generating QR..."
+                              : "QR will appear here"}
                           </div>
                         )}
                         <div className="sign-in-qr-actions">
@@ -483,7 +504,8 @@ export function SignIn() {
                       <h2>Continue with nsec</h2>
                     </div>
                     <p className="sign-in-section-hint">
-                      Your nsec stays on this device and is stored in Android secure storage.
+                      Your nsec stays on this device and is stored in Android
+                      secure storage.
                     </p>
                     <div className="sign-in-input-column">
                       <input
@@ -520,7 +542,8 @@ export function SignIn() {
                       <h2>Create new key</h2>
                     </div>
                     <p className="sign-in-section-hint">
-                      Generate a brand-new Nostr key for this app. Save it before you continue.
+                      Generate a brand-new Nostr key for this app. Save it
+                      before you continue.
                     </p>
 
                     {!generatedNsec ? (
@@ -534,8 +557,8 @@ export function SignIn() {
                     ) : (
                       <div className="sign-in-input-column">
                         <div className="sign-in-warning-box">
-                          Save this <code>nsec</code> now. If you lose it, you may lose access to
-                          your drive.
+                          Save this <code>nsec</code> now. If you lose it, you
+                          may lose access to your drive.
                         </div>
                         <textarea
                           className="sign-in-secret-output"
@@ -565,7 +588,9 @@ export function SignIn() {
                           onClick={() => void handleContinueWithGeneratedKey()}
                           disabled={loadingCreateKey}
                         >
-                          {loadingCreateKey ? "Connecting..." : "I have saved it, continue"}
+                          {loadingCreateKey
+                            ? "Connecting..."
+                            : "I have saved it, continue"}
                         </button>
                       </div>
                     )}

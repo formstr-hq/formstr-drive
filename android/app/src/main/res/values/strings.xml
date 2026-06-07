@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Formstr Drive</string>
+    <string name="app_name">Drive by Form*</string>
     <string name="title_activity_main">Formstr Drive</string>
     <string name="package_name">com.formstr.drive</string>
     <string name="custom_url_scheme">com.formstr.drive</string>

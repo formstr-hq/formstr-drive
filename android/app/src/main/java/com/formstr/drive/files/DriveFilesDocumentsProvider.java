@@ -1,8 +1,11 @@
 package com.formstr.drive.files;
 
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.MatrixCursor;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,6 +15,9 @@ import android.provider.DocumentsProvider;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
+import androidx.core.app.NotificationCompat;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.formstr.drive.R;
 
@@ -28,6 +34,13 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
     private static final String TAG = "DriveFilesProvider";
     private static final String ROOT_SUMMARY_EMPTY = "Open the app to sign in and sync files";
     private static final String ROOT_SUMMARY_READY = "Browse the latest synced Drive snapshot";
+
+    private static final String DOWNLOAD_CHANNEL_ID = "formstr_drive_downloads";
+    private static final AtomicInteger notifIdCounter = new AtomicInteger(0);
+
+    private interface ProgressCallback {
+        void onProgress(int percent);
+    }
 
     private static final String[] DEFAULT_ROOT_PROJECTION = new String[] {
             DocumentsContract.Root.COLUMN_ROOT_ID,
@@ -384,44 +397,79 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
             DriveManifestStore.FileEntry file,
             @Nullable CancellationSignal signal
     ) throws IOException {
-        if (getContext() == null) {
-            throw new IOException("Android context is not available");
-        }
-
-        File exportDirectory = DriveManifestStore.getExportsDirectory(getContext());
+        Context context = ensureContext();
+        File exportDirectory = DriveManifestStore.getExportsDirectory(context);
         File exportFile = new File(exportDirectory, file.hash + ".bin");
 
         if (exportFile.exists() && exportFile.length() > 0) {
             return exportFile;
         }
 
-        byte[] encryptedBlob = downloadEncryptedBlob(file.server, file.hash, signal);
-        byte[] decryptedBytes;
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        ensureNotificationChannel(nm);
+
+        int notifId = notifIdCounter.incrementAndGet();
+        ProgressCallback onProgress = null;
+
+        if (nm.areNotificationsEnabled()) {
+            NotificationCompat.Builder notif = new NotificationCompat.Builder(context, DOWNLOAD_CHANNEL_ID)
+                    .setContentTitle("Formstr Drive")
+                    .setContentText("Downloading " + file.name)
+                    .setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setProgress(100, 0, true)
+                    .setOngoing(true)
+                    .setSilent(true);
+            nm.notify(notifId, notif.build());
+
+            onProgress = (percent) -> {
+                notif.setProgress(100, percent, false);
+                nm.notify(notifId, notif.build());
+            };
+        }
 
         try {
-            decryptedBytes = DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, file.encryptionKey);
-        } catch (Exception error) {
-            throw new IOException("Failed to decrypt Drive file", error);
-        }
+            byte[] encryptedBlob = downloadEncryptedBlob(file.server, file.hash, signal, onProgress);
+            byte[] decryptedBytes;
 
-        File tempFile = new File(exportDirectory, file.hash + ".tmp");
-        try (FileOutputStream outputStream = new FileOutputStream(tempFile, false)) {
-            outputStream.write(decryptedBytes);
-            outputStream.flush();
-        }
+            try {
+                decryptedBytes = DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, file.encryptionKey);
+            } catch (Exception error) {
+                throw new IOException("Failed to decrypt Drive file", error);
+            }
 
-        if (exportFile.exists() && !exportFile.delete()) {
-            throw new IOException("Failed to replace cached export");
-        }
+            File tempFile = new File(exportDirectory, file.hash + ".tmp");
+            try (FileOutputStream outputStream = new FileOutputStream(tempFile, false)) {
+                outputStream.write(decryptedBytes);
+                outputStream.flush();
+            }
 
-        if (!tempFile.renameTo(exportFile)) {
-            throw new IOException("Failed to finalize cached export");
-        }
+            if (exportFile.exists() && !exportFile.delete()) {
+                throw new IOException("Failed to replace cached export");
+            }
 
-        return exportFile;
+            if (!tempFile.renameTo(exportFile)) {
+                throw new IOException("Failed to finalize cached export");
+            }
+
+            return exportFile;
+        } finally {
+            nm.cancel(notifId);
+        }
     }
 
-    private byte[] downloadEncryptedBlob(String server, String hash, @Nullable CancellationSignal signal)
+    private void ensureNotificationChannel(NotificationManager nm) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        if (nm.getNotificationChannel(DOWNLOAD_CHANNEL_ID) != null) return;
+        NotificationChannel channel = new NotificationChannel(
+                DOWNLOAD_CHANNEL_ID, "Form* Drive Downloads", NotificationManager.IMPORTANCE_LOW
+        );
+        channel.setDescription("File download progress");
+        channel.setSound(null, null);
+        nm.createNotificationChannel(channel);
+    }
+
+    private byte[] downloadEncryptedBlob(
+            String server, String hash, @Nullable CancellationSignal signal, @Nullable ProgressCallback onProgress)
             throws IOException {
         String normalizedServer = server.endsWith("/") ? server.substring(0, server.length() - 1) : server;
         URL url = new URL(normalizedServer + "/" + hash);
@@ -445,8 +493,9 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
                 );
             }
 
-            int bufferSize = Math.max(connection.getContentLength(), 8192);
-            byte[] buffer = new byte[Math.min(bufferSize, 65536)];
+            int contentLength = connection.getContentLength();
+            byte[] buffer = new byte[65536];
+            long totalRead = 0;
 
             try (java.io.InputStream inputStream = connection.getInputStream();
                  java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream()) {
@@ -456,6 +505,10 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
                         throw new IOException("File open was cancelled");
                     }
                     outputStream.write(buffer, 0, bytesRead);
+                    totalRead += bytesRead;
+                    if (onProgress != null && contentLength > 0) {
+                        onProgress.onProgress((int) (totalRead * 100 / contentLength));
+                    }
                 }
 
                 return outputStream.toByteArray();
