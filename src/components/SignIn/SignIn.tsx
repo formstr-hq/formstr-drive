@@ -54,7 +54,7 @@ export function SignIn() {
   const [copiedNewKey, setCopiedNewKey] = useState(false);
   const [loadingCreateKey, setLoadingCreateKey] = useState(false);
   const qrAbortRef = useRef<AbortController | null>(null);
-  const title = nativeShellMode ? "Sign in to Formstr Drive" : "Formstr Drive";
+  const title = nativeShellMode ? "Sign in to Drive by Form*" : "Drive by Form*";
   const subtitle = nativeShellMode
     ? "Choose your preferred login method"
     : "Encrypted file storage on Nostr";
