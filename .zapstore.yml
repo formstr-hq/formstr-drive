@@ -1,6 +1,6 @@
 repository: https://github.com/formstr-hq/formstr-drive
-description: Upload your files to your chosen servers securely and privately. Formstr Drive enables brings you a cloud drive which is verifiably end to end encrypted ensuring that only you have the means to view your own files.
-summary: A private, end to end encrypted drive powered by Nostr. Your files, your keys.
+description: Upload your files to your chosen servers securely and privately. Formstr Drive enables brings you a cloud drive which is verifiably end to end encrypted ensuring that only you have the means to view your own files. This is a very experimental client. The standards might change in future releases. Please use this accordingly
+summary: \[Experimental\] A private, end to end encrypted drive powered by Nostr. Your files, your keys. 
 website: https://drive.formstr.app
 images:
   - assets/drive-landing.png
