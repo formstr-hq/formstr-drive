@@ -180,6 +180,150 @@ export async function aesGcmDecrypt(
 }
 
 /**
+ * NIP-44 v2 encryption for chunked binary payloads (no Base64).
+ * Uses a deterministic salt derived from chunk index, and passes chunk index as AAD.
+ */
+export async function aesGcmEncryptBytes(
+  plaintext: Uint8Array,
+  conversationKey: Uint8Array,
+  chunkIndex: number,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  
+  // 1. Derive deterministic salt from chunkIndex
+  const indexBytes = new Uint8Array(4);
+  new DataView(indexBytes.buffer).setUint32(0, chunkIndex, false);
+  
+  const hmacKey = await crypto.subtle.importKey(
+    "raw",
+    conversationKey as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const saltBuf = await crypto.subtle.sign("HMAC", hmacKey, indexBytes);
+  const salt = new Uint8Array(saltBuf); // 32 bytes
+
+  // 2. HKDF derivation
+  const info = encoder.encode("nip44-v2");
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    conversationKey as BufferSource,
+    "HKDF",
+    false,
+    ["deriveBits"],
+  );
+  
+  const derivedBits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: salt, info: info },
+    baseKey,
+    44 * 8,
+  );
+  
+  const derived = new Uint8Array(derivedBits);
+  const chachaKey = derived.slice(0, 32);
+  const chachaNonce = derived.slice(32, 44);
+
+  // 3. Encrypt with AES-GCM, using chunkIndex as AAD
+  const aesKey = await crypto.subtle.importKey(
+    "raw",
+    chachaKey as BufferSource,
+    "AES-GCM",
+    false,
+    ["encrypt"],
+  );
+  
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: chachaNonce as BufferSource,
+      additionalData: indexBytes,
+    },
+    aesKey,
+    plaintext as unknown as BufferSource,
+  );
+  
+  const ciphertextBytes = new Uint8Array(ciphertext);
+  
+  // 4. Format: version (1 byte) + salt (32 bytes) + ciphertext
+  const payload = new Uint8Array(1 + 32 + ciphertextBytes.length);
+  payload[0] = 2; // v2
+  payload.set(salt, 1);
+  payload.set(ciphertextBytes, 33);
+  
+  return payload;
+}
+
+/**
+ * NIP-44 v2 decryption for chunked binary payloads.
+ */
+export async function aesGcmDecryptBytes(
+  payload: Uint8Array,
+  conversationKey: Uint8Array,
+  chunkIndex: number,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  
+  const version = payload[0];
+  if (version !== 2) {
+    throw new Error(`Unsupported NIP-44 version: ${version}`);
+  }
+  
+  const salt = payload.slice(1, 33);
+  const ciphertextBytes = payload.slice(33);
+  
+  // HKDF derivation
+  const info = encoder.encode("nip44-v2");
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    conversationKey as BufferSource,
+    "HKDF",
+    false,
+    ["deriveBits"],
+  );
+  
+  const derivedBits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: salt, info: info },
+    baseKey,
+    44 * 8,
+  );
+  
+  const derived = new Uint8Array(derivedBits);
+  const chachaKey = derived.slice(0, 32);
+  const chachaNonce = derived.slice(32, 44);
+  
+  // Decrypt with AES-GCM
+  const aesKey = await crypto.subtle.importKey(
+    "raw",
+    chachaKey as BufferSource,
+    "AES-GCM",
+    false,
+    ["decrypt"],
+  );
+  
+  const indexBytes = new Uint8Array(4);
+  new DataView(indexBytes.buffer).setUint32(0, chunkIndex, false);
+  
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: chachaNonce as BufferSource,
+      additionalData: indexBytes,
+    },
+    aesKey,
+    ciphertextBytes,
+  );
+  
+  return new Uint8Array(plaintext);
+}
+
+export function deriveConversationKeyFromHex(privateKeyHex: string): Uint8Array {
+  const secretKey = hexToBytes(privateKeyHex);
+  const pubkey = getPublicKey(secretKey);
+  return nip44.v2.utils.getConversationKey(secretKey, pubkey);
+}
+
+/**
  * Encrypt a file with a newly generated key (self-encryption)
  * Returns both the ciphertext and the private key (hex) needed for decryption
  */

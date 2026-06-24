@@ -42,6 +42,7 @@ export interface NativeDriveFileEntry {
   server: string;
   encryptionKey: string;
   previewHash?: string;
+  chunks?: string[];
 }
 
 export interface NativeDriveManifest {
@@ -189,6 +190,7 @@ export function buildNativeDriveManifest(
       server: file.server,
       encryptionKey: file.encryptionKey,
       ...(file.previewHash ? { previewHash: file.previewHash } : {}),
+      ...(file.chunks ? { chunks: file.chunks } : {}),
     };
   });
 

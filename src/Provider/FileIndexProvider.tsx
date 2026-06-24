@@ -15,10 +15,13 @@ import {
   autoMigrateLegacyFiles,
 } from "../services/fileIndex";
 import { MigrationPromptModal } from "../components/MigrationPromptModal";
-import { encryptFileWithKey, encryptFileWithExistingKey } from "../crypto";
+import { encryptFileWithExistingKey } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { useProfileContext } from "../hooks/useProfileContext";
+import { generateSecretKey } from "nostr-tools";
+import { bytesToHex } from "nostr-tools/utils";
+import { uploadFile as chunkedUploadFile } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import {
@@ -33,11 +36,9 @@ import { useBlossomServer } from "../hooks/useBlossomServer";
 export interface UploadProgress {
   fileName: string;
   stage: string;
-}
-
-export interface UploadProgress {
-  fileName: string;
-  stage: string;
+  progress?: number;
+  currentChunk?: number;
+  totalChunks?: number;
 }
 
 export interface FileIndexContextType {
@@ -175,7 +176,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       setError(null);
 
       try {
-        setUploadProgress({ fileName: file.name, stage: "Reading file..." });
+        setUploadProgress({ fileName: file.name, stage: "Reading file...", progress: 0 });
         
         // Start generating preview immediately in the background
         const previewPromise = previewFile(file).catch((e) => {
@@ -183,16 +184,15 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           return null;
         });
 
-        const bytes = new Uint8Array(await file.arrayBuffer());
-
-        setUploadProgress({ fileName: file.name, stage: "Encrypting..." });
-        const { ciphertext, privateKeyHex } = await encryptFileWithKey(bytes);
-
-        setUploadProgress({ fileName: file.name, stage: "Uploading..." });
-        const client = new BlossomClient(server);
-        const encryptedBytes = new TextEncoder().encode(ciphertext);
-        const auth = await createAuthEvent("upload", `Upload ${file.name}`, encryptedBytes);
-        const hash = await client.upload(encryptedBytes, auth);
+        setUploadProgress({ fileName: file.name, stage: "Encrypting & Uploading...", progress: 0 });
+        const privateKeyHex = bytesToHex(generateSecretKey());
+        const { hashes } = await chunkedUploadFile(
+          file, 
+          server, 
+          privateKeyHex,
+          (info) => setUploadProgress({ fileName: file.name, ...info })
+        );
+        const hash = hashes[0];
 
         let previewHash: string | undefined;
         
@@ -200,7 +200,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         const preview = await previewPromise;
         
         if (preview) {
-          setUploadProgress({ fileName: file.name, stage: "Uploading preview..." });
+          setUploadProgress({ fileName: file.name, stage: "Uploading preview...", progress: 95 });
           const encrypted = await encryptFileWithExistingKey(preview, privateKeyHex);
           const encryptedPreviewBytes = new TextEncoder().encode(encrypted);
           const previewAuth = await createAuthEvent(
@@ -208,10 +208,11 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
             "Upload file preview",
             encryptedPreviewBytes,
           );
+          const client = new BlossomClient(server);
           previewHash = await client.upload(encryptedPreviewBytes, previewAuth);
         }
 
-        setUploadProgress({ fileName: file.name, stage: "Saving metadata..." });
+        setUploadProgress({ fileName: file.name, stage: "Saving metadata...", progress: 98 });
         const metadata: FileMetadata = {
           name: file.name,
           hash,
@@ -221,6 +222,11 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           uploadedAt: Date.now(),
           server,
           ...(previewHash ? { previewHash } : {}),
+          // Always record chunk hashes — even for a single chunk — so the download
+          // path knows to use the raw-binary aesGcmDecryptBytes format that
+          // aesGcmEncryptBytes produces. Files without this field (legacy uploads)
+          // fall back to the base64-string decryptFileWithKey path.
+          chunks: hashes,
           encryptionKey: privateKeyHex,
           encryptionAlgorithm: "aes-gcm",
         };

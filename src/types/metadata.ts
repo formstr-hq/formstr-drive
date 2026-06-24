@@ -10,6 +10,7 @@ export interface FileMetadata {
   encryptionAlgorithm: string;
   deleted?: boolean;
   previewHash?: string;
+  chunks?: string[];
 }
 
 export interface FolderInfo {

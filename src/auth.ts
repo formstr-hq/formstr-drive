@@ -6,7 +6,7 @@ async function computeSha256Hex(data: Uint8Array | Blob): Promise<string> {
   return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function toBase64Utf8(value: unknown): string {
+function toBase64(value: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   let binary = "";
   const chunkSize = 0x8000;
@@ -22,7 +22,7 @@ function toBase64Utf8(value: unknown): string {
 export async function createAuthEvent(
   verb: "upload" | "get",
   content: string,
-  fileOrHash?: Uint8Array | Blob | string,
+  fileOrHashOrHashes?: Uint8Array | Blob | string | string[],
   expirationSeconds = 60,
 ) {
   const signer = await signerManager.getSigner();
@@ -34,13 +34,20 @@ export async function createAuthEvent(
     ["expiration", String(now + expirationSeconds)],
   ];
 
-  if (fileOrHash !== undefined) {
-    const sha256hex =
-      typeof fileOrHash === "string"
-        ? fileOrHash
-        : await computeSha256Hex(fileOrHash);
-    tags.push(["x", sha256hex]);
-    tags.push(["payload", sha256hex]);
+  if (fileOrHashOrHashes !== undefined) {
+    if (Array.isArray(fileOrHashOrHashes)) {
+      // Multiple hashes (BUD-11 Tag Scoping)
+      for (const hash of fileOrHashOrHashes) {
+        tags.push(["x", hash]);
+      }
+    } else {
+      // Single payload
+      const sha256hex =
+        typeof fileOrHashOrHashes === "string"
+          ? fileOrHashOrHashes
+          : await computeSha256Hex(fileOrHashOrHashes);
+      tags.push(["x", sha256hex]);
+    }
   }
 
   const event = {
@@ -52,6 +59,6 @@ export async function createAuthEvent(
   };
 
   const signedEvent = await signer.signEvent(event);
-  const b64 = toBase64Utf8(signedEvent);
+  const b64 = toBase64(signedEvent);
   return `Nostr ${b64}`;
 }

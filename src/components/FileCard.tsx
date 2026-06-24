@@ -4,9 +4,10 @@ import { useFileIndex } from "../hooks/useFileContext";
 import { decryptFileWithKey } from "../crypto";
 import { BlossomClient } from "../blossom";
 import { saveFileToDownloads, openDownloadedFile } from "../native/driveManifest";
+import { downloadAndDecryptFile } from "../services/downloadFile";
 import { isNativePlatform } from "../utils/platform";
 import { FilePreviewModal } from "./FilePreviewModal";
-import { detectMimeTypeFromMagicBytes, getFileIcon } from "../utils/fileTypeHelpers";
+import { detectMimeTypeFromMagicBytes, getFileIcon, MAX_PREVIEW_SIZE } from "../utils/fileTypeHelpers";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -134,14 +135,23 @@ export function FileCard({
     }
   }, [showRenameModal]);
 
+  const handlePreviewClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Surface large-file (>5MB) previews as a per-card inline error instead of
+    // opening the modal. Mirrors MAX_PREVIEW_SIZE handling in FilePreviewModal,
+    // but kept here so the modal never opens just to show a one-line notice.
+    if (file.size > MAX_PREVIEW_SIZE) {
+      setError("File is too large to preview (over 5 MB). Please download it.");
+      return;
+    }
+    setShowPreview(true);
+  };
+
   const handleDownload = async () => {
     setDownloading(true);
     setError(null);
     try {
-      const client = new BlossomClient(file.server);
-      const blob = await client.download(file.hash);
-      const ciphertext = new TextDecoder().decode(blob);
-      const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
+      const decrypted = await downloadAndDecryptFile(file);
 
       const result = await saveFileToDownloads(decrypted as Uint8Array, file.name, file.type || "application/octet-stream");
       setDownloadedUri(result?.uri ?? null);
@@ -342,10 +352,7 @@ export function FileCard({
             <div className="file-tile-overlay">
               <button
                 className="tile-action-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowPreview(true);
-                }}
+                onClick={handlePreviewClick}
                 title="Preview"
               >
                 <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" style={{ pointerEvents: "none" }}>
@@ -438,10 +445,7 @@ export function FileCard({
           </button>
           <button 
             className="action-btn" 
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowPreview(true);
-            }} 
+            onClick={handlePreviewClick} 
             title="Preview"
           >
             <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" style={{ pointerEvents: "none" }}>

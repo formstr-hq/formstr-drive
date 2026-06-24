@@ -38,6 +38,42 @@ public final class DriveFilesCrypto {
         }
     }
 
+    public static byte[] decryptChunkBlob(byte[] rawBlob, String privateKeyHex, int chunkIndex)
+            throws GeneralSecurityException {
+        byte[] conversationKey = deriveConversationKey(privateKeyHex);
+
+        if (rawBlob.length <= PAYLOAD_NONCE_LENGTH + 1) {
+            throw new GeneralSecurityException("Encrypted chunk payload is too short");
+        }
+
+        if (rawBlob[0] != PAYLOAD_VERSION) {
+            throw new GeneralSecurityException("Unsupported encrypted payload version");
+        }
+
+        byte[] salt = Arrays.copyOfRange(rawBlob, 1, 1 + PAYLOAD_NONCE_LENGTH);
+        byte[] ciphertext = Arrays.copyOfRange(rawBlob, 1 + PAYLOAD_NONCE_LENGTH, rawBlob.length);
+
+        byte[] expandedKeys = hkdfSha256(conversationKey, salt, NIP44_INFO, MESSAGE_KEY_LENGTH);
+        byte[] aesKey = Arrays.copyOfRange(expandedKeys, 0, 32);
+        byte[] aesNonce = Arrays.copyOfRange(expandedKeys, 32, 44);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(
+                Cipher.DECRYPT_MODE,
+                new SecretKeySpec(aesKey, "AES"),
+                new GCMParameterSpec(128, aesNonce));
+
+        byte[] indexBytes = new byte[4];
+        indexBytes[0] = (byte) ((chunkIndex >> 24) & 0xFF);
+        indexBytes[1] = (byte) ((chunkIndex >> 16) & 0xFF);
+        indexBytes[2] = (byte) ((chunkIndex >> 8) & 0xFF);
+        indexBytes[3] = (byte) (chunkIndex & 0xFF);
+
+        cipher.updateAAD(indexBytes);
+
+        return cipher.doFinal(ciphertext);
+    }
+
     private static byte[] deriveConversationKey(String privateKeyHex) throws GeneralSecurityException {
         byte[] privateKeyBytes = hexToBytes(privateKeyHex);
         BigInteger privateKey = new BigInteger(1, privateKeyBytes);

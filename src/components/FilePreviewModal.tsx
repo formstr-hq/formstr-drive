@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import type { FileMetadata } from "../types/metadata";
-import { BlossomClient } from "../blossom";
-import { decryptFileWithKey } from "../crypto";
 import { resolvePreviewMode, MAX_PREVIEW_SIZE } from "../utils/fileTypeHelpers";
 import { canOpenInNostrDocs, openInNostrDocs } from "../utils/docsIntegrationHelpers";
+import { downloadAndDecryptFile } from "../services/downloadFile";
 
 interface FilePreviewModalProps {
   file: FileMetadata;
@@ -22,7 +21,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   const [pagesHint, setPagesHint] = useState<string | null>(null);
 
   const mode = resolvePreviewMode(file.type);
-  const supportsNostrDocsDeepLink = canOpenInNostrDocs(file.type, file.name);
+  const supportsNostrDocsDeepLink = canOpenInNostrDocs(file);
 
 
 
@@ -48,10 +47,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
       }
 
       try {
-        const client = new BlossomClient(file.server);
-        const encryptedBytes = await client.download(file.hash);
-        const ciphertext = new TextDecoder().decode(encryptedBytes);
-        const decryptedBytes = await decryptFileWithKey(ciphertext, file.encryptionKey);
+        const decryptedBytes = await downloadAndDecryptFile(file);
 
         if (cancelled) return;
 

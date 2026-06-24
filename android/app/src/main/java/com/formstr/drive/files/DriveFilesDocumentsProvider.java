@@ -436,7 +436,7 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
         ensureNotificationChannel(nm);
 
         int notifId = notifIdCounter.incrementAndGet();
-        ProgressCallback onProgress = null;
+        final ProgressCallback finalOnProgress;
 
         if (nm.areNotificationsEnabled()) {
             NotificationCompat.Builder notif = new NotificationCompat.Builder(context, DOWNLOAD_CHANNEL_ID)
@@ -448,25 +448,50 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
                     .setSilent(true);
             nm.notify(notifId, notif.build());
 
-            onProgress = (percent) -> {
+            finalOnProgress = (percent) -> {
                 notif.setProgress(100, percent, false);
                 nm.notify(notifId, notif.build());
             };
+        } else {
+            finalOnProgress = null;
         }
 
         try {
-            byte[] encryptedBlob = downloadEncryptedBlob(file.server, file.hash, signal, onProgress);
-            byte[] decryptedBytes;
-
-            try {
-                decryptedBytes = DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, file.encryptionKey);
-            } catch (Exception error) {
-                throw new IOException("Failed to decrypt Drive file", error);
-            }
-
             File tempFile = new File(exportDirectory, file.hash + ".tmp");
             try (FileOutputStream outputStream = new FileOutputStream(tempFile, false)) {
-                outputStream.write(decryptedBytes);
+                if (file.chunks != null && !file.chunks.isEmpty()) {
+                    int totalChunks = file.chunks.size();
+                    for (int i = 0; i < totalChunks; i++) {
+                        String chunkHash = file.chunks.get(i);
+                        int currentChunk = i;
+                        ProgressCallback chunkProgress = null;
+                        if (finalOnProgress != null) {
+                            chunkProgress = (percent) -> {
+                                int overallPercent = (currentChunk * 100 + percent) / totalChunks;
+                                finalOnProgress.onProgress(overallPercent);
+                            };
+                        }
+                        
+                        byte[] encryptedBlob = downloadEncryptedBlob(file.server, chunkHash, signal, chunkProgress);
+                        byte[] decryptedBytes;
+                        try {
+                            decryptedBytes = DriveFilesCrypto.decryptChunkBlob(encryptedBlob, file.encryptionKey, i);
+                        } catch (Exception error) {
+                            throw new IOException("Failed to decrypt chunk " + i, error);
+                        }
+                        outputStream.write(decryptedBytes);
+                    }
+                } else {
+                    // Legacy single-blob fallback
+                    byte[] encryptedBlob = downloadEncryptedBlob(file.server, file.hash, signal, finalOnProgress);
+                    byte[] decryptedBytes;
+                    try {
+                        decryptedBytes = DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, file.encryptionKey);
+                    } catch (Exception error) {
+                        throw new IOException("Failed to decrypt Drive file", error);
+                    }
+                    outputStream.write(decryptedBytes);
+                }
                 outputStream.flush();
             }
 

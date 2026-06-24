@@ -7,6 +7,7 @@ import { Header } from "./components/Header";
 import { FolderSidebar } from "./components/FolderSidebar";
 import { FileList } from "./components/FileList";
 import { SignIn } from "./components/SignIn/SignIn";
+import { UploadManager } from "./components/UploadManager";
 import "./App.css";
 
 function DriveLayout() {
@@ -37,6 +38,7 @@ function DriveLayout() {
           <FileList />
         </main>
       </div>
+      <UploadManager />
     </div>
   );
 }

@@ -11,7 +11,7 @@ function getHostname(url: string): string {
 }
 
 export function UploadZone() {
-  const { uploadFile, uploadProgress } = useFileIndex();
+  const { uploadFile } = useFileIndex();
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -105,9 +105,7 @@ export function UploadZone() {
         />
         {uploading ? (
           <span className="upload-status">
-            {uploadProgress
-              ? `${uploadProgress.fileName} — ${uploadProgress.stage}`
-              : "Uploading..."}
+            Uploading...
           </span>
         ) : (
           <span className="upload-prompt">

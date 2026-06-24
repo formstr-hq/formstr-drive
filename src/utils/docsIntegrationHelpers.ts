@@ -1,6 +1,10 @@
-export function canOpenInNostrDocs(fileType: string, filename: string): boolean {
-  const normalizedType = fileType.toLowerCase();
-  const lowerName = filename.toLowerCase();
+export function canOpenInNostrDocs(file: { type: string; name: string; chunks?: string[] }): boolean {
+  if (file.chunks && file.chunks.length > 0) {
+    return false; // chunked payloads are not supported by the current Nostr Docs app
+  }
+
+  const normalizedType = file.type.toLowerCase();
+  const lowerName = file.name.toLowerCase();
 
   if (
     normalizedType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||

@@ -2106,3 +2106,58 @@
   color: #fff;
 }
 .error-toast { background: var(--error) !important; color: white !important; border: none !important; }
+
+/* Migration Modal overrides */
+.migration-modal {
+  width: min(480px, 90%);
+  height: auto;
+  min-height: 200px;
+}
+
+.migration-modal .preview-modal-body {
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 24px;
+}
+
+.migration-modal p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #d0d8e2;
+}
+
+.migration-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.migration-actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  border: none;
+}
+
+.migration-actions .preview-doc-btn {
+  background: #0066cc;
+  color: white;
+}
+
+.migration-actions .preview-doc-btn:hover {
+  background: #0052a3;
+}
+
+.migration-actions .cancel-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f6fa;
+}
+
+.migration-actions .cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

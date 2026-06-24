@@ -533,6 +533,7 @@ public final class DriveManifestStore {
         public final String server;
         public final String encryptionKey;
         @Nullable public final String previewHash;
+        @Nullable public final List<String> chunks;
         public final boolean isPendingImport;
         @Nullable public final String pendingImportId;
         @Nullable public final String localPath;
@@ -549,6 +550,7 @@ public final class DriveManifestStore {
                 String server,
                 String encryptionKey,
                 @Nullable String previewHash,
+                @Nullable List<String> chunks,
                 boolean isPendingImport,
                 @Nullable String pendingImportId,
                 @Nullable String localPath
@@ -564,6 +566,7 @@ public final class DriveManifestStore {
             this.server = server;
             this.encryptionKey = encryptionKey;
             this.previewHash = previewHash;
+            this.chunks = chunks;
             this.isPendingImport = isPendingImport;
             this.pendingImportId = pendingImportId;
             this.localPath = localPath;
@@ -584,6 +587,17 @@ public final class DriveManifestStore {
             String server = jsonObject.optString("server");
             String encryptionKey = jsonObject.optString("encryptionKey");
             String previewHash = jsonObject.has("previewHash") ? jsonObject.optString("previewHash") : null;
+            
+            List<String> chunks = null;
+            if (jsonObject.has("chunks")) {
+                JSONArray chunksJson = jsonObject.optJSONArray("chunks");
+                if (chunksJson != null) {
+                    chunks = new ArrayList<>();
+                    for (int i = 0; i < chunksJson.length(); i++) {
+                        chunks.add(chunksJson.optString(i));
+                    }
+                }
+            }
 
             return new FileEntry(
                     id,
@@ -597,6 +611,7 @@ public final class DriveManifestStore {
                     server,
                     encryptionKey,
                     previewHash,
+                    chunks,
                     false,
                     null,
                     null
@@ -615,6 +630,7 @@ public final class DriveManifestStore {
                     entry.createdAt,
                     "",
                     "",
+                    null,
                     null,
                     true,
                     entry.id,

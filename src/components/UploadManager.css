@@ -1,0 +1,151 @@
+.upload-manager {
+  --bg-surface: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --border-color: #e5e7eb;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --accent-primary: #0066cc;
+
+
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 320px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 1000;
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.upload-manager-header {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.upload-manager-body {
+  padding: 12px 16px;
+}
+
+.upload-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.upload-item-icon {
+  color: var(--accent-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-item-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.upload-item-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upload-item-stage {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.upload-progress-wrapper {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.circular-progress {
+  transform: rotate(-90deg);
+}
+
+.progress-bg {
+  fill: none;
+  stroke: var(--border-color);
+}
+
+.progress-bar {
+  fill: none;
+  stroke: var(--accent-primary);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.progress-text {
+  position: absolute;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chunk-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.chunk-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--border-color);
+  transition: all 0.2s;
+}
+
+.chunk-indicator.hashing {
+  background: #a855f7;
+  animation: pulse 1s infinite alternate;
+}
+
+.chunk-indicator.hashing-done {
+  background: #d8b4fe;
+}
+
+.chunk-indicator.uploading {
+  background: var(--accent-primary);
+  animation: pulse 1s infinite alternate;
+}
+
+.chunk-indicator.done {
+  background: #22c55e;
+}
+
+@keyframes pulse {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
