@@ -84,6 +84,17 @@ export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
       )}
 
       <aside className={`folder-sidebar ${isOpen ? "sidebar-open" : ""}`}>
+        <nav className="folder-list" style={{ marginBottom: "20px" }}>
+          <button
+            className={`folder-item ${currentFolder === "shared" ? "active" : ""}`}
+            onClick={() => handleFolderClick("shared")}
+            style={{ paddingLeft: 12 }}
+          >
+            <span className="folder-icon">🤝</span>
+            <span className="folder-name">Shared With Me</span>
+          </button>
+        </nav>
+
         <div className="sidebar-header">
           <span>Folders</span>
           <button

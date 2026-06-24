@@ -6,12 +6,14 @@ import { createAuthEvent } from "../auth";
 import { BlossomClient } from "../blossom";
 import { saveFileToDownloads, openDownloadedFile } from "../native/driveManifest";
 import { isNativePlatform } from "../utils/platform";
+import { ShareDialog } from "./ShareDialog";
 
 interface FileCardProps {
   file: FileMetadata;
   viewMode?: "grid" | "list";
   selected?: boolean;
   onToggleSelection?: (hash: string) => void;
+  isShared?: boolean;
 }
 
 function getFileIcon(type: string): string {
@@ -62,6 +64,7 @@ export function FileCard({
   viewMode = "list",
   selected = false,
   onToggleSelection,
+  isShared = false,
 }: FileCardProps) {
   const { deleteFile, moveFile, folders, renameFile } = useFileIndex();
   const [downloading, setDownloading] = useState(false);
@@ -71,6 +74,7 @@ export function FileCard({
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewloaded, setPreviewloaded] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -210,7 +214,7 @@ export function FileCard({
     onToggleSelection?.(file.hash);
   };
 
-  const selectionControl = (
+  const selectionControl = !isShared ? (
     <label
       className={`file-select ${viewMode === "grid" ? "file-select-tile" : "file-select-list"}`}
       onClick={(e) => e.stopPropagation()}
@@ -223,7 +227,7 @@ export function FileCard({
       />
       <span className="file-select-box" aria-hidden="true" />
     </label>
-  );
+  ) : null;
 
   const renameModal = showRenameModal && (
     <div className="move-dialog-overlay" onClick={() => setShowRenameModal(false)}>
@@ -318,19 +322,22 @@ export function FileCard({
               >
                 {downloading ? "…" : "↓"}
               </button>
-              <button
-                className="tile-action-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowMenu((prev) => !prev);
-                }}
-                title="More"
-              >
-                ⋮
-              </button>
+              {!isShared && (
+                <button
+                  className="tile-action-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowMenu((prev) => !prev);
+                  }}
+                  title="More"
+                >
+                  ⋮
+                </button>
+              )}
 
-              {showMenu && (
+              {showMenu && !isShared && (
                 <div className="file-menu tile-menu" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => { setShowShareDialog(true); setShowMenu(false); }} className="action-btn">Share</button>
                   <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
                   <button onClick={handleRenameOpen} className="rename-btn">Rename</button>
                   <button onClick={handleDelete} className="delete-btn">Delete</button>
@@ -347,6 +354,7 @@ export function FileCard({
 
           {error && <div className="file-error">{error}</div>}
         </div>
+        {showShareDialog && <ShareDialog file={file} onClose={() => setShowShareDialog(false)} />}
         {moveDialog}
         {renameModal}
         {downloadToast}
@@ -377,11 +385,14 @@ export function FileCard({
           <button className="action-btn" onClick={handleDownload} disabled={downloading} title="Download">
             {downloading ? "..." : "↓"}
           </button>
-          <button className="action-btn menu-btn" onClick={() => setShowMenu(!showMenu)} title="More">
-            ⋮
-          </button>
-          {showMenu && (
+          {!isShared && (
+            <button className="action-btn menu-btn" onClick={() => setShowMenu(!showMenu)} title="More">
+              ⋮
+            </button>
+          )}
+          {showMenu && !isShared && (
             <div className="file-menu" onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => { setShowShareDialog(true); setShowMenu(false); }} className="action-btn">Share</button>
               <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
               <button onClick={handleRenameOpen} className="rename-btn">Rename</button>
               <button onClick={handleDelete} className="delete-btn">Delete</button>
@@ -390,6 +401,7 @@ export function FileCard({
         </div>
         {error && <div className="file-error">{error}</div>}
       </div>
+      {showShareDialog && <ShareDialog file={file} onClose={() => setShowShareDialog(false)} />}
       {moveDialog}
       {renameModal}
       {downloadToast}

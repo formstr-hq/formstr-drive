@@ -4,6 +4,7 @@ import { signerManager } from "../signer/manager";
 import { APP_RELAYS } from "../utils/common";
 
 const METADATA_KIND = 34578;
+export const SHARED_METADATA_KIND = 1064;
 const CLIENT_TAG = "formstr-drive";
 
 const RELAYS = APP_RELAYS;
@@ -199,4 +200,95 @@ export function extractFolders(files: FileMetadata[]): string[] {
   }
 
   return Array.from(folders).sort();
+}
+
+export async function shareFileMetadata(recipientPubkey: string, file: FileMetadata): Promise<void> {
+  const signer = await getSigner();
+  const pubkey = await signer.getPublicKey();
+  const pool = new SimplePool();
+
+  if (!signer.nip44Encrypt) {
+    throw new Error("Signer does not support NIP-44 encryption");
+  }
+
+  try {
+    const json = JSON.stringify(file);
+    // Encrypt with the recipient's public key
+    const encrypted = await signer.nip44Encrypt(recipientPubkey, json);
+
+    const event: NostrEvent = {
+      kind: SHARED_METADATA_KIND,
+      pubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["p", recipientPubkey],
+        ["client", CLIENT_TAG],
+        ["encrypted", "nip44"],
+      ],
+      content: encrypted,
+    };
+
+    const signedEvent = await signer.signEvent(event);
+    const publishPromises = pool.publish(RELAYS, signedEvent);
+    await Promise.any(publishPromises);
+  } finally {
+    pool.close(RELAYS);
+  }
+}
+
+export async function fetchSharedWithMe(pubkey: string): Promise<{ file: FileMetadata; sender: string; eventId: string }[]> {
+  const pool = new SimplePool();
+  const signer = await getSigner();
+
+  return new Promise((resolve) => {
+    const filter: Filter = {
+      kinds: [SHARED_METADATA_KIND],
+      "#p": [pubkey],
+    };
+
+    const events: NostrEvent[] = [];
+    const seenIds = new Set<string>();
+
+    const sub = pool.subscribeMany(RELAYS, filter, {
+      onevent(event) {
+        if (!seenIds.has(event.id)) {
+          seenIds.add(event.id);
+          events.push(event);
+        }
+      },
+    });
+
+    setTimeout(async () => {
+      sub.close();
+      pool.close(RELAYS);
+
+      const files: { file: FileMetadata; sender: string; eventId: string }[] = [];
+      const seenHashes = new Set<string>();
+
+      // Sort by created_at descending
+      events.sort((a, b) => b.created_at - a.created_at);
+
+      if (!signer.nip44Decrypt) {
+        resolve([]);
+        return;
+      }
+
+      for (const event of events) {
+        try {
+          // Decrypt with the sender's public key
+          const json = await signer.nip44Decrypt(event.pubkey, event.content);
+          const metadata: FileMetadata = JSON.parse(json);
+          
+          if (!seenHashes.has(metadata.hash)) {
+            seenHashes.add(metadata.hash);
+            files.push({ file: metadata, sender: event.pubkey, eventId: event.id! });
+          }
+        } catch (e) {
+          console.debug("[FileIndex] Failed to decrypt shared file:", e);
+        }
+      }
+
+      resolve(files);
+    }, 5000);
+  });
 }

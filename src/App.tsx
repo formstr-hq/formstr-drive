@@ -6,11 +6,15 @@ import { ProfileProvider } from "./Provider/ProfileProvider";
 import { Header } from "./components/Header";
 import { FolderSidebar } from "./components/FolderSidebar";
 import { FileList } from "./components/FileList";
+import { SharedWithMe } from "./components/SharedWithMe";
+import { PublicShareView } from "./components/PublicShareView";
 import { SignIn } from "./components/SignIn/SignIn";
+import { useFileIndex } from "./hooks/useFileContext";
 import "./App.css";
 
 function DriveLayout() {
   const { isSignedIn, restoring } = useProfileContext();
+  const { currentFolder } = useFileIndex();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   if (restoring) {
@@ -34,7 +38,7 @@ function DriveLayout() {
           onClose={() => setSidebarOpen(false)}
         />
         <main className="drive-main">
-          <FileList />
+          {currentFolder === "shared" ? <SharedWithMe /> : <FileList />}
         </main>
       </div>
     </div>
@@ -42,6 +46,13 @@ function DriveLayout() {
 }
 
 function App() {
+  const hashStr = window.location.hash;
+  const isPublicShare = hashStr.includes("key=") && hashStr.includes("server=") && hashStr.includes("hash=");
+
+  if (isPublicShare) {
+    return <PublicShareView />;
+  }
+
   return (
     <ProfileProvider>
       <BlossomServerProvider>
