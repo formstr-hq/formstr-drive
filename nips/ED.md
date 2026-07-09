@@ -1,20 +1,31 @@
-NIP-ED
+NIP-FS
 ======
 
-Private Encrypted File Drive
+Private Encrypted File System
 -----------------------------
 
 `draft` `optional`
 
 Defines a protocol for a private encrypted file drive using [Blossom](https://github.com/hzrd149/blossom) blob servers for file storage and Nostr relays for an encrypted file index.
 
-Both the drive encryption key and file metadata records use **kind 34578** (addressable). They are distinguished by their `d` tag and the presence of the `["t", "files"]` tag.
+Both the encryption key and file metadata records use **kind 34578** (addressable). They are distinguished by their `d` tag and the presence of the `["t", "files"]` tag.
+
+---
+## Kind 34578 — Metadata Event
+
+This is metadata event. It stores metadata/references about other objects.
+
+| tag | value |
+|-----|-------|
+| `d` | depends on the sub-type of the metadata event |
+| `t` | `"<sub-type>"` — sub-type of the event |
+| `client` | client identifier (e.g. `formstr-drive`) |
 
 ---
 
-## Kind 34578 — Drive Key Event
+## Kind 34578 — User Metadata Event
 
-Stores the drive's encryption keypair, protected by the author's identity key.
+Stores the secret metadata information about the user inside the content field.
 
 **Tags:**
 
@@ -29,7 +40,7 @@ Stores the drive's encryption keypair, protected by the author's identity key.
 [["encryptionKey", "<hex-encoded drive private key>"]]
 ```
 
-The **drive conversation key** used for all file metadata is:
+The **conversation key** used for all file metadata is:
 
 ```
 conversationKey = getConversationKey(driveSecretKey, getPublicKey(driveSecretKey))
@@ -55,7 +66,7 @@ One event per file, encrypted with the drive conversation key.
 ```json
 {
   "name": "<filename>",
-  "hash": "<sha256 hex>",
+  "hash": "<optional sha256 hex of the file>",
   "size": <bytes>,
   "type": "<MIME type>",
   "folder": "<virtual path, e.g. /docs/work>",
@@ -63,7 +74,8 @@ One event per file, encrypted with the drive conversation key.
   "server": "<blossom server base URL>",
   "encryptionKey": "<hex-encoded per-file private key>",
   "deleted": <boolean, optional>,
-  "previewHash": "<sha256 hex, optional>"
+  "previewHash": "<sha256 hex, optional>",
+  "chunks": List<{"hash": "<hash of the encrypted chunk>", "server": "<optional blossom server base URL, if the chunk was sent to another server>"}>
 }
 ```
 
@@ -71,12 +83,12 @@ One event per file, encrypted with the drive conversation key.
 
 ## File Encryption
 
-Each file is encrypted with a per-file ephemeral keypair using AES-GCM with NIP-44 v2 HKDF key derivation:
+Each **chunk** of a file is encrypted with a per-file ephemeral keypair using AES-GCM with NIP-44 v2 HKDF key derivation:
 
 1. Generate a random keypair `(sk, pk)` for the file
 2. `conversationKey = getConversationKey(sk, pk)`
 3. Generate random `nonce` (32 bytes)
-4. `HKDF-SHA256(conversationKey, salt=nonce, info="nip44-v2")` → 44 bytes
+4. `HKDF-SHA256(conversationKey, salt=nonce, info="nip44-v2")` → 44 bytes.
 5. AES-GCM encrypt `base64(fileBytes)`: `key = derived[0:32]`, `iv = derived[32:44]`
 6. Blob format (base64): `0x02 || nonce (32 bytes) || ciphertext`
 7. Store `hex(sk)` as `encryptionKey` in the file metadata content
@@ -85,13 +97,14 @@ Each file is encrypted with a per-file ephemeral keypair using AES-GCM with NIP-
 
 ## Directives
 
-- The Drive Key event `d` tag MUST be `"0:<author-pubkey>"`.
+- The Drive Key MUST be stored in the user metadata event with d `"0:<author-pubkey>"`.
 - Clients MUST decrypt the Drive Key event using the identity signer (`nip44Decrypt(authorPubkey, content)`).
 - File Metadata events MUST be encrypted with `nip44.v2.encrypt` using the drive conversation key directly (not via the identity signer).
-- The `d` tag of a File Metadata event MUST equal the SHA-256 hash of the **encrypted** blob as returned by the Blossom server.
+- Clients MAY generate and publish a new metadata event warning the user that previous events may be lost.
+- The `d` tag of a File Metadata event MUST equal the SHA-256 hash of the **encrypted** chunks as returned by the Blossom server.
 - File Metadata events MUST carry `["t", "files"]` to distinguish them from other metadata events.
-- To rename, move, or soft-delete a file: publish a new File Metadata event with the same `d` tag.
-- Soft delete: set `"deleted": true` in the plaintext content.
+- To rename or move a file to another folder: publish a new File Metadata event with the same `d` tag.
+- Delete: Delete all the chunks from the blossom server and the file metadata event
 - Clients MUST skip events whose content they cannot decrypt.
 - Virtual folders are derived from the `folder` field; clients MUST NOT publish separate folder events.
 - When multiple events share the same `d` tag, clients MUST use the one with the highest `created_at`.
@@ -100,7 +113,7 @@ Each file is encrypted with a per-file ephemeral keypair using AES-GCM with NIP-
 
 ## Examples
 
-Drive Key event:
+User metadata event:
 
 ```jsonc
 {
@@ -145,6 +158,7 @@ Decrypted File Metadata content:
   "folder": "/work/docs",
   "uploadedAt": 1700000001000,
   "server": "https://blossom.primal.net",
-  "encryptionKey": "cafebabe5678..."
+  "encryptionKey": "cafebabe5678...",
+  "chunks":[{"hash":"289y3899f23"}, {"hash": "2983ur92u9"}]
 }
 ```
