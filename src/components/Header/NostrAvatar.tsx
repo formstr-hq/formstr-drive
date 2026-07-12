@@ -1,8 +1,7 @@
 import { type FC , useState , useEffect, memo } from "react";
 import { Avatar } from "antd";
 import { UserOutlined } from "@ant-design/icons";
-import { SimplePool } from "nostr-tools";
-import { defaultRelays } from "../../utils/common"
+import { dataLayer, type Event } from "@formstr/local-relay";
 
 interface NostrAvatarProps {
     pubkey? : string;
@@ -19,36 +18,31 @@ export const NostrAvatar : FC<NostrAvatarProps> = memo(({ pubkey }) => {
     useEffect(() => {
         if(!pubkey) return;
 
-        let cancelled = false;
-        const pool = new SimplePool();
-
-        async function getProfile() {
-            try {
-                const filter = {
-                    kinds: [0],
-                    authors: [pubkey!],
-                };
-                const event = await pool.get(defaultRelays, filter);
-                if (cancelled) return;
-                if (event) {
-                    const parsed = JSON.parse(event.content);
-                    setProfile(parsed);
-                }
-            } catch {
-                // Ignore errors from unreachable relays or malformed profile content
-            }
-        }
-
-        getProfile();
+        // Standing kind-0 interest: the cached profile renders instantly on
+        // repeat loads and live updates replace it if a newer one arrives.
+        let newest = 0;
+        const handle = dataLayer.observe(
+            [{ kinds: [0], authors: [pubkey], limit: 1 }],
+            {
+                onEvent: (event: Event) => {
+                    if (event.created_at <= newest) return;
+                    newest = event.created_at;
+                    try {
+                        setProfile(JSON.parse(event.content));
+                    } catch {
+                        // Ignore malformed profile content
+                    }
+                },
+            },
+        );
 
         return () => {
-            cancelled = true;
-            pool.close(defaultRelays);
+            handle.unobserve();
         };
     },[pubkey]);
-    
+
     return (
-        <Avatar 
+        <Avatar
             src={profile?.picture || <UserOutlined style={{ color : "black" }} />}
             alt={profile?.name}
         />

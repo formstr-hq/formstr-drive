@@ -1,8 +1,7 @@
-import { nip44, generateSecretKey, getPublicKey, type Filter } from "nostr-tools";
+import { nip44, generateSecretKey, getPublicKey, type Event } from "nostr-tools";
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
-import { SimplePool } from "nostr-tools";
+import { dataLayer } from "@formstr/local-relay";
 import { signerManager } from "../signer/manager";
-import { APP_RELAYS } from "../utils/common";
 import {
   getStoredItem,
   setStoredItem,
@@ -12,7 +11,6 @@ import {
 import type { NostrEvent } from "../types/metadata";
 
 const METADATA_KIND = 34578;
-const RELAYS = APP_RELAYS;
 const HEX_64 = /^[0-9a-fA-F]{64}$/;
 const CACHE_IO_TIMEOUT_MS = 3000;
 
@@ -155,68 +153,73 @@ async function decryptDriveKeyPayload(
 }
 
 /**
- * Collect every Drive Key event for the user across all relays.
+ * Collect every Drive Key event for the user via the local relay.
  *
- * Resolves with the events (newest-first) once relays reach EOSE — an empty
- * array means the relays were reachable and the user genuinely has no key.
- * Rejects only when we could not reach the relays at all, so callers can tell
- * "no key exists" apart from "offline" and never overwrite an existing key.
+ * A warm local cache resolves instantly at EOSE (cache replay done). On an
+ * empty cache we hold the interest open for a network window; when it closes
+ * with nothing found we consult `relayHealth()` to tell "relays reachable, no
+ * key exists" apart from "offline" — the local relay's EOSE only covers the
+ * cache, not the upstream sync — so we never prompt an existing user to
+ * overwrite their key just because they're offline.
  */
 async function fetchDriveKeyEvents(pubkey: string): Promise<NostrEvent[]> {
-  const pool = new SimplePool();
-
   return new Promise((resolve, reject) => {
     let settled = false;
-    let gotEose = false;
     const found = new Map<string, NostrEvent>();
 
-    const filter: Filter = {
-      kinds: [METADATA_KIND],
-      authors: [pubkey],
-      "#d": [getDriveKeyDTag(pubkey)],
-    };
-
-    const finish = () => {
-      sub.close();
-      pool.close(RELAYS);
-    };
-
-    const sub = pool.subscribeMany(RELAYS, filter, {
-      onevent(event) {
-        if (!found.has(event.id)) {
+    const handle = dataLayer.observe(
+      [
+        {
+          kinds: [METADATA_KIND],
+          authors: [pubkey],
+          "#d": [getDriveKeyDTag(pubkey)],
+        },
+      ],
+      {
+        onEvent: (event: Event) => {
           found.set(event.id, event as unknown as NostrEvent);
-        }
+        },
+        onEose: () => {
+          // Cache hit: resolve immediately — this is the instant-startup path.
+          // Empty cache: keep the interest open for the network window below.
+          if (!settled && found.size > 0) {
+            settled = true;
+            handle.unobserve();
+            resolve(sortNewestFirst([...found.values()]));
+          }
+        },
       },
-      oneose() {
-        gotEose = true;
-        if (!settled) {
-          settled = true;
-          finish();
-          resolve(sortNewestFirst([...found.values()]));
-        }
-      },
-    });
+    );
 
     // Safety timeout — flaky mobile relays get a generous window.
     setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      finish();
+      void (async () => {
+        if (settled) return;
+        settled = true;
+        handle.unobserve();
 
-      if (found.size > 0) {
-        resolve(sortNewestFirst([...found.values()]));
-      } else if (gotEose) {
-        // Reachable, but nothing published: a genuine first-time user.
-        resolve([]);
-      } else {
-        // Never heard back from any relay — treat as offline, NOT as "no key",
-        // so we never prompt an existing user to overwrite their key.
+        if (found.size > 0) {
+          resolve(sortNewestFirst([...found.values()]));
+          return;
+        }
+
+        try {
+          const health = await dataLayer.relayHealth();
+          if (health.some((r) => r.connected)) {
+            // Reachable, but nothing published: a genuine first-time user.
+            resolve([]);
+            return;
+          }
+        } catch {
+          // Health probe failed — treat as offline below.
+        }
+
         reject(
           new Error(
             "Network timeout: could not reach relays to fetch your Drive Key. Please check your connection.",
           ),
         );
-      }
+      })();
     }, 8000);
   });
 }
@@ -452,15 +455,15 @@ async function initializeDriveKey(
   };
 
   const signedEvent = await signer.signEvent(event);
-  const pool = new SimplePool();
-
-  try {
-    const publishPromises = pool.publish(RELAYS, signedEvent);
-    await Promise.any(publishPromises);
-    console.log("[DriveKey] Published Drive Key event");
-  } finally {
-    pool.close(RELAYS);
+  const result = await dataLayer.publishEvent(signedEvent);
+  if (!result.ok) {
+    throw new Error(
+      "Failed to publish your new Drive Key to any relay. Please check your connection and try again.",
+    );
   }
+  console.log(
+    `[DriveKey] Published Drive Key event (${result.accepted}/${result.total} relays)`,
+  );
 
   return {
     entry: {

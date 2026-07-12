@@ -1,7 +1,7 @@
-import { SimplePool, nip44, type Filter, type Event } from "nostr-tools";
+import { nip44, type Event } from "nostr-tools";
+import { dataLayer, type PublishResult } from "@formstr/local-relay";
 import type { FileMetadata, NostrEvent } from "../types/metadata";
 import { signerManager } from "../signer/manager";
-import { APP_RELAYS } from "../utils/common";
 import {
   getDriveConversationKey,
   getDriveConversationKeys,
@@ -9,8 +9,6 @@ import {
 
 const METADATA_KIND = 34578;
 const CLIENT_TAG = "formstr-drive";
-
-const RELAYS = APP_RELAYS;
 
 async function getSigner() {
   return signerManager.getSigner();
@@ -61,20 +59,36 @@ async function decryptMetadataLegacy(ciphertext: string): Promise<FileMetadata> 
   return JSON.parse(json);
 }
 
-export async function fetchFileIndex(
-  pubkey: string,
-  onLegacyFilesFound?: (files: FileMetadata[]) => void
-): Promise<FileMetadata[]> {
-  console.log("[FileIndex] Starting fetch from relays:", RELAYS);
-  console.log("[FileIndex] User pubkey:", pubkey);
+export interface FileIndexStreamHandlers {
+  /** Full current file list — called every time a decrypted event changes it. */
+  onFiles: (files: FileMetadata[]) => void;
+  /**
+   * Local-cache replay is done (EOSE). On a warm cache this fires almost
+   * instantly with every previously-seen file already delivered; freshly
+   * synced and live events keep arriving via `onFiles` afterwards.
+   */
+  onReady?: () => void;
+  /** Cumulative list of files still encrypted to the Main Identity Key. */
+  onLegacyFilesFound?: (files: FileMetadata[]) => void;
+}
 
-  // Fetch the full Drive Key keyring IN PARALLEL with the file subscription
-  // below — file events can stream in from relays while the keyring resolves,
-  // and the keys are only actually needed at the processing step (10s later).
-  // This keeps a slow key fetch from blocking file loading on first login.
-  // Every key the user has ever published may unlock files encrypted under it,
-  // so we keep them ALL and try each when decrypting. If this fails (e.g. signer
-  // unavailable), we fall back to legacy decryption for every event.
+/**
+ * Declare a standing interest in the user's kind-34578 file index. Events are
+ * decrypted as they stream (cache replay first, then network sync + live tail)
+ * and the deduped, tombstone-filtered file list is pushed through `onFiles`.
+ * Replaces the old fetch-everything-then-wait-10-seconds SimplePool flow.
+ *
+ * Returns an unobserve function.
+ */
+export function observeFileIndex(
+  pubkey: string,
+  handlers: FileIndexStreamHandlers,
+): () => void {
+  // Resolve the Drive Key keyring in parallel with the event stream — keys are
+  // only needed once the first event is processed. Every key the user has ever
+  // published may unlock files encrypted under it, so we keep them ALL and try
+  // each when decrypting. If this fails (e.g. signer unavailable), we fall
+  // back to legacy decryption for every event.
   const driveKeysPromise: Promise<Uint8Array[]> = getDriveConversationKeys().catch(
     (e) => {
       console.warn(
@@ -85,123 +99,126 @@ export async function fetchFileIndex(
     },
   );
 
-  const pool = new SimplePool();
+  // Per-hash newest event wins. `metadata: null` records "newest version could
+  // not be decrypted (or is a tombstone we keep to block older resurrections)".
+  const entries = new Map<
+    string,
+    { created_at: number; metadata: FileMetadata | null }
+  >();
+  const legacyFilesToMigrate: FileMetadata[] = [];
+  let legacyDirty = false;
+  let eosed = false;
+  let stopped = false;
 
-  return new Promise((resolve) => {
-    const filter: Filter = {
-      kinds: [METADATA_KIND],
-      authors: [pubkey],
-    };
-    console.log("[FileIndex] Query filter:", JSON.stringify(filter));
-    console.log("[FileIndex] Filter as array:", JSON.stringify([filter]));
+  const emitFiles = () => {
+    const files = Array.from(entries.values())
+      .filter(
+        (e): e is { created_at: number; metadata: FileMetadata } =>
+          e.metadata !== null && !e.metadata.deleted,
+      )
+      .sort((a, b) => b.created_at - a.created_at)
+      .map((e) => e.metadata);
+    handlers.onFiles(files);
+  };
 
-    const events: NostrEvent[] = [];
-    const seenIds = new Set<string>();
+  const emitLegacy = () => {
+    if (legacyDirty && legacyFilesToMigrate.length > 0) {
+      legacyDirty = false;
+      handlers.onLegacyFilesFound?.([...legacyFilesToMigrate]);
+    }
+  };
 
-    // Subscribe to relays
-    const sub = pool.subscribeMany(RELAYS, filter, {
-        onevent(event) {
-          if (!seenIds.has(event.id)) {
-            console.log("[FileIndex] Received event:", event.id);
-            seenIds.add(event.id);
-            events.push(event);
-          }
-        },
-        oneose() {
-          console.log("[FileIndex] EOSE received from relay");
-        },
-        onclose(reasons) {
-          console.log("[FileIndex] Subscription closed:", reasons);
-        },
-      }
-    );
+  const processEvent = async (event: Event) => {
+    const dTag = event.tags.find((t: string[]) => t[0] === "d");
+    const hash = dTag?.[1];
+    if (!hash) return;
 
-    // Wait 10 seconds for events to come in, then process
-    setTimeout(async () => {
-      console.log(`[FileIndex] Timeout reached, processing ${events.length} events`);
-      sub.close();
-      pool.close(RELAYS);
+    // Skip the Drive Key event itself — it's not a file.
+    if (hash.startsWith("0:")) return;
 
-      // Keys were resolving in parallel with the subscription; grab them now.
-      const driveConversationKeys = await driveKeysPromise;
-      console.log(`[FileIndex] Drive Key keyring ready (${driveConversationKeys.length} key(s))`);
+    // Older than what we already hold for this hash — ignore.
+    const existing = entries.get(hash);
+    if (existing && existing.created_at >= event.created_at) return;
 
-      const files: FileMetadata[] = [];
-      const legacyFilesToMigrate: FileMetadata[] = [];
-      const seenHashes = new Set<string>();
+    const driveConversationKeys = await driveKeysPromise;
 
-      // Sort by created_at descending to get latest versions first
-      events.sort((a, b) => b.created_at - a.created_at);
+    let metadata: FileMetadata | null = null;
+    let isLegacy = false;
+    try {
+      const hasFilesTag = event.tags.some(
+        (t: string[]) => t[0] === "t" && t[1] === "files",
+      );
 
-      for (const event of events) {
-        console.log("[FileIndex] Processing event:", event.id, "tags:", event.tags);
-        const dTag = event.tags.find((t: string[]) => t[0] === "d");
-        const hash = dTag?.[1];
-
-        if (!hash) {
-          console.warn("[FileIndex] Event missing d tag:", event.id);
-          continue;
-        }
-
-        // Skip the Drive Key event itself — it's not a file.
-        if (hash.startsWith("0:")) {
-          console.log("[FileIndex] Skipping Drive Key event:", event.id);
-          continue;
-        }
-
-        if (seenHashes.has(hash)) {
-          console.log("[FileIndex] Skipping duplicate hash:", hash);
-          continue;
-        }
-
-        seenHashes.add(hash);
-
+      if (hasFilesTag && driveConversationKeys.length > 0) {
+        // New format: try every Drive Key in the keyring until one decrypts.
         try {
-          const hasFilesTag = event.tags.some(
-            (t: string[]) => t[0] === "t" && t[1] === "files",
+          metadata = decryptMetadataWithDriveKey(
+            event.content,
+            driveConversationKeys,
           );
-
-          let metadata: FileMetadata;
-          if (hasFilesTag && driveConversationKeys.length > 0) {
-            // New format: try every Drive Key in the keyring until one decrypts.
-            try {
-              metadata = decryptMetadataWithDriveKey(event.content, driveConversationKeys);
-            } catch {
-              // No Drive Key worked (e.g. the event predates Drive Keys entirely,
-              // or was encrypted to the Main Identity Key). Fall back to legacy.
-              metadata = await decryptMetadataLegacy(event.content);
-              if (!metadata.deleted) {
-                legacyFilesToMigrate.push(metadata);
-              }
-            }
-          } else {
-            // Legacy format: fall back to the Main Identity Signer.
-            metadata = await decryptMetadataLegacy(event.content);
-            if (driveConversationKeys.length > 0 && !metadata.deleted) {
-              legacyFilesToMigrate.push(metadata);
-            }
-          }
-
-          console.log("[FileIndex] Decrypted metadata:", metadata);
-          if (!metadata.deleted) {
-            files.push(metadata);
-          } else {
-            console.log("[FileIndex] Skipping deleted file:", metadata.name);
-          }
-        } catch (e) {
-          console.debug("[FileIndex] Skipping incompatible event:", event.id, e);
+        } catch {
+          // No Drive Key worked (e.g. the event predates Drive Keys entirely,
+          // or was encrypted to the Main Identity Key). Fall back to legacy.
+          metadata = await decryptMetadataLegacy(event.content);
+          isLegacy = true;
         }
+      } else {
+        // Legacy format: fall back to the Main Identity Signer.
+        metadata = await decryptMetadataLegacy(event.content);
+        isLegacy = driveConversationKeys.length > 0;
       }
+    } catch (e) {
+      console.debug("[FileIndex] Skipping incompatible event:", event.id, e);
+    }
 
-      console.log(`[FileIndex] Successfully loaded ${files.length} files`);
-      resolve(files);
+    // Record even failed decrypts so an older, decryptable version of the same
+    // hash can't resurrect a file the newest event superseded.
+    entries.set(hash, { created_at: event.created_at, metadata });
 
-      // Trigger callback for any legacy files encountered
-      if (legacyFilesToMigrate.length > 0 && onLegacyFilesFound) {
-        onLegacyFilesFound(legacyFilesToMigrate);
-      }
-    }, 10000); // 10 second timeout
-  });
+    if (isLegacy && metadata && !metadata.deleted) {
+      legacyFilesToMigrate.push(metadata);
+      legacyDirty = true;
+    }
+
+    if (metadata) {
+      emitFiles();
+      if (eosed) emitLegacy();
+    }
+  };
+
+  // Serialize event processing: decryption awaits the keyring and may call an
+  // async signer, so a simple promise chain keeps ordering deterministic and
+  // avoids concurrent signer prompts.
+  let queue: Promise<void> = Promise.resolve();
+  const enqueue = (work: () => Promise<void>) => {
+    queue = queue.then(work).catch((e) => {
+      console.error("[FileIndex] Event processing failed", e);
+    });
+  };
+
+  const handle = dataLayer.observe(
+    [{ kinds: [METADATA_KIND], authors: [pubkey] }],
+    {
+      onEvent: (event: Event) => {
+        if (stopped) return;
+        enqueue(() => processEvent(event));
+      },
+      onEose: () => {
+        if (stopped) return;
+        enqueue(async () => {
+          eosed = true;
+          emitFiles();
+          emitLegacy();
+          handlers.onReady?.();
+        });
+      },
+    },
+  );
+
+  return () => {
+    stopped = true;
+    handle.unobserve();
+  };
 }
 
 export async function autoMigrateLegacyFiles(files: FileMetadata[]) {
@@ -224,12 +241,10 @@ export async function autoMigrateLegacyFiles(files: FileMetadata[]) {
  * a background context with no signer access.
  */
 export async function buildSignedMetadataEvent(metadata: FileMetadata): Promise<Event> {
-  console.log("[FileIndex] Building signed metadata event:", metadata);
   const signer = await getSigner();
   const pubkey = await signer.getPublicKey();
 
   const encrypted = await encryptMetadata(metadata);
-  console.log("[FileIndex] Encrypted metadata length:", encrypted.length);
 
   const event: NostrEvent = {
     kind: METADATA_KIND,
@@ -244,30 +259,30 @@ export async function buildSignedMetadataEvent(metadata: FileMetadata): Promise<
     content: encrypted,
   };
 
-  console.log("[FileIndex] Event to sign:", event);
-  const signedEvent = await signer.signEvent(event);
-  console.log("[FileIndex] Signed event:", signedEvent);
-  return signedEvent;
+  return signer.signEvent(event);
 }
 
-export async function publishMetadataEvent(signedEvent: Event): Promise<void> {
-  const pool = new SimplePool();
-  try {
-    const publishPromises = pool.publish(RELAYS, signedEvent);
-    console.log("[FileIndex] Publishing to relays:", RELAYS);
-    await Promise.any(publishPromises);
-    console.log("[FileIndex] Successfully published to at least one relay");
-  } catch (e) {
-    console.error("[FileIndex] Failed to publish metadata:", e);
-    throw e;
-  } finally {
-    pool.close(RELAYS);
+/**
+ * Publish a signed metadata event through the local relay: it lands in the
+ * local store immediately (standing observers see it before any relay acks)
+ * and the worker fans it out upstream. Throws if NO relay accepted it,
+ * matching the old Promise.any semantics; the per-relay outcome is returned
+ * for publish feedback in the upload manager.
+ */
+export async function publishMetadataEvent(signedEvent: Event): Promise<PublishResult> {
+  const result = await dataLayer.publishEvent(signedEvent);
+  if (!result.ok) {
+    const reasons = result.relayResults
+      .map((r) => `${r.relay}: ${r.status}${r.message ? ` (${r.message})` : ""}`)
+      .join(", ");
+    throw new Error(`No relay accepted the metadata event — ${reasons}`);
   }
+  return result;
 }
 
-export async function saveFileMetadata(metadata: FileMetadata): Promise<void> {
+export async function saveFileMetadata(metadata: FileMetadata): Promise<PublishResult> {
   const signedEvent = await buildSignedMetadataEvent(metadata);
-  await publishMetadataEvent(signedEvent);
+  return publishMetadataEvent(signedEvent);
 }
 
 export async function deleteFileMetadata(_hash: string, currentMetadata: FileMetadata): Promise<void> {
@@ -276,27 +291,6 @@ export async function deleteFileMetadata(_hash: string, currentMetadata: FileMet
     deleted: true,
   };
   await saveFileMetadata(deletedMetadata);
-}
-
-export async function updateFileMetadata(
-  hash: string,
-  updates: Partial<Pick<FileMetadata, "name" | "folder">>
-): Promise<void> {
-  const signer = await getSigner();
-  const pubkey = await signer.getPublicKey();
-  const files = await fetchFileIndex(pubkey);
-  const existing = files.find((f) => f.hash === hash);
-
-  if (!existing) {
-    throw new Error("File not found");
-  }
-
-  const updated: FileMetadata = {
-    ...existing,
-    ...updates,
-  };
-
-  await saveFileMetadata(updated);
 }
 
 export function extractFolders(files: FileMetadata[]): string[] {

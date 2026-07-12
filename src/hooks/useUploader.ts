@@ -187,7 +187,13 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
       );
 
       setUploadProgress({ fileName: file.name, stage: "Upload complete", progress: 100 });
-      setFiles((prev) => [metadata, ...prev]);
+      // Optimistic insert; the standing file-index observe also delivers the
+      // published event, so replace rather than duplicate if it won the race.
+      setFiles((prev) =>
+        prev.some((f) => f.hash === metadata.hash)
+          ? prev.map((f) => (f.hash === metadata.hash ? metadata : f))
+          : [metadata, ...prev],
+      );
       return metadata;
       } finally {
         await prepareCancelListener?.remove();
@@ -293,8 +299,24 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
           encryptionAlgorithm: "aes-gcm",
         };
 
-        await saveFileMetadata(metadata);
-        setFiles((prev) => [metadata, ...prev]);
+        const publishResult = await saveFileMetadata(metadata);
+        if (publishResult.accepted < publishResult.total) {
+          const failed = publishResult.relayResults
+            .filter((r) => r.status !== "accepted")
+            .map((r) => `${r.relay}: ${r.status}`)
+            .join(", ");
+          console.warn("[Upload] Metadata not accepted by every relay:", failed);
+          toast.info(
+            `Metadata saved to ${publishResult.accepted}/${publishResult.total} relays`,
+          );
+        }
+        // Optimistic insert; the standing file-index observe also delivers the
+        // published event, so replace rather than duplicate if it won the race.
+        setFiles((prev) =>
+          prev.some((f) => f.hash === metadata.hash)
+            ? prev.map((f) => (f.hash === metadata.hash ? metadata : f))
+            : [metadata, ...prev],
+        );
         if (isAndroidPlatform) {
           void finishUploadNotification(uploadNotifId, file.name, true);
         }
