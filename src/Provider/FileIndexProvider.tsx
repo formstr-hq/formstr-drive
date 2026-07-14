@@ -227,13 +227,20 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       return client;
     };
 
+    // Each blob is deleted independently and best-effort: one failed chunk
+    // must not block the rest, and a blob orphaned on the server is a better
+    // outcome than a partially-deleted file stuck in the index forever.
     for (let i = 0; i < blobHashes.length; i++) {
       // Legacy metadata may carry chunks as bare hash strings; only the
       // object form can override the file's primary server.
       const chunk = file.chunks?.[i];
       const server =
         (typeof chunk === "object" ? chunk.server : undefined) ?? file.server;
-      await clientFor(server).delete(blobHashes[i], auth);
+      try {
+        await clientFor(server).delete(blobHashes[i], auth);
+      } catch (e) {
+        console.warn(`Failed to delete blob ${blobHashes[i]} from ${server}`, e);
+      }
     }
 
     if (file.previewHash) {
