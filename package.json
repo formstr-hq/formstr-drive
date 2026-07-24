@@ -26,6 +26,7 @@
     "@capacitor/preferences": "^8.0.1",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "@formstr/local-relay": "^0.4.2",
     "@khadarvsk/capacitor-secure-storage": "^0.0.1",
     "antd": "^6.3.3",
     "heic2any": "^0.0.4",

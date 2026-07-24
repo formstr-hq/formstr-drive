@@ -4,9 +4,19 @@ import {
   useEffect,
   useCallback,
   useRef,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { FileMetadata } from "../types/metadata";
+import {
+  observeFileIndex,
+  autoMigrateLegacyFiles,
+} from "../services/fileIndex";
+import {
+  getRelayRefresh,
+  subscribeRelayRefresh,
+} from "../dataLayer/relayRefresh";
+import { MigrationPromptModal } from "../components/MigrationPromptModal";
 import { useProfileContext } from "../hooks/useProfileContext";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import {
@@ -61,7 +71,15 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [hasHydratedIndex, setHasHydratedIndex] = useState(false);
+  const [legacyFiles, setLegacyFiles] = useState<FileMetadata[]>([]);
+  const [manualRefreshCount, setManualRefreshCount] = useState(0);
   const processingPendingImportsRef = useRef(false);
+
+  // Bumps when the relay worker can newly serve cached data it couldn't a
+  // moment ago (IndexedDB hydration finished, or the worker restarted after a
+  // mobile suspend and lost its interests) — the effect below re-declares the
+  // file-index observe against the now-populated store.
+  const relayRefresh = useSyncExternalStore(subscribeRelayRefresh, getRelayRefresh);
 
   const { uploadProgress, uploadPreparedFile, cancelUpload } = useUploader({ setFiles, setError });
   const { downloadProgress, downloadFile, cancelDownload } = useDownloader();
@@ -124,32 +142,38 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!isSignedIn || !pubkey) return;
+  // Standing file-index interest: cache replay streams files in instantly on a
+  // warm start, EOSE (onReady) replaces the old 10-second timeout, and the live
+  // tail keeps the list updated as metadata events arrive — including our own
+  // publishes, which the local relay stores before any upstream ack.
+  useEffect(() => {
+    if (restoring) return;
+    if (!isSignedIn || !pubkey) {
+      setFiles([]);
+      setHasHydratedIndex(false);
+      return;
+    }
 
     setLoading(true);
     setError(null);
-    try {
-      const sdk = await getDriveSdk(selectedServer);
-      const index = await sdk.listFiles();
-      setFiles(index.map(driveFileToMetadata));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load files");
-    } finally {
-      setHasHydratedIndex(true);
-      setLoading(false);
-    }
-  }, [isSignedIn, pubkey, selectedServer]);
+    const unobserve = observeFileIndex(pubkey, {
+      onFiles: setFiles,
+      onReady: () => {
+        setHasHydratedIndex(true);
+        setLoading(false);
+      },
+      onLegacyFilesFound: setLegacyFiles,
+    });
 
-  useEffect(() => {
-    if (restoring) return;
-    if (isSignedIn) {
-      void refresh();
-    } else {
-      setFiles([]);
-      setHasHydratedIndex(false);
-    }
-  }, [isSignedIn, refresh, restoring]);
+    return unobserve;
+  }, [isSignedIn, pubkey, restoring, relayRefresh, manualRefreshCount]);
+
+  // With a standing observe the worker keeps the index synced on its own;
+  // a manual refresh just re-declares the interest (cache replay + re-sync).
+  const refresh = useCallback(async () => {
+    if (!isSignedIn || !pubkey) return;
+    setManualRefreshCount((n) => n + 1);
+  }, [isSignedIn, pubkey]);
 
   useEffect(() => {
     if (
@@ -366,6 +390,15 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     };
   }, [hasHydratedIndex, isSignedIn, processPendingImports, restoring]);
 
+  const handleAcceptMigration = async () => {
+    await autoMigrateLegacyFiles(legacyFiles);
+    setLegacyFiles([]);
+  };
+
+  const handleDismissMigration = () => {
+    setLegacyFiles([]);
+  };
+
   return (
     <FileIndexContext.Provider
       value={{
@@ -392,6 +425,11 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         refresh,
       }}
     >
+      <MigrationPromptModal
+        files={legacyFiles}
+        onAccept={handleAcceptMigration}
+        onDismiss={handleDismissMigration}
+      />
       {children}
     </FileIndexContext.Provider>
   );

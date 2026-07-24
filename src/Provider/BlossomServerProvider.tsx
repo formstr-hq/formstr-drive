@@ -5,15 +5,12 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { SimplePool } from "nostr-tools";
+import { dataLayer, type Event } from "@formstr/local-relay";
 import {
   getStoredItem,
   setStoredItem,
   STORAGE_KEYS,
 } from "../utils/persistence";
-import { APP_RELAYS } from "../utils/common";
-
-const PUBLIC_RELAYS = APP_RELAYS;
 
 const DEFAULT_SERVERS = [
   "https://nostr.download",
@@ -60,8 +57,8 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   useEffect(() => {
-    const pool = new SimplePool();
     let cancelled = false;
+    let unobserve: (() => void) | null = null;
 
     const queryServers = async () => {
       try {
@@ -91,71 +88,55 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
                 { url: storedSelectedServer, source: "custom" as const },
               ];
 
-        if (!cancelled) {
-          setServers([
-            ...DEFAULT_SERVERS.map((url) => ({
-              url,
-              source: "default" as const,
-            })),
-            ...ensuredCustomServers,
-          ]);
-          setSelectedServer(storedSelectedServer);
-          setSettingsLoaded(true);
-        }
-
-        const events = await pool.querySync(PUBLIC_RELAYS, {
-          kinds: [36363],
-          limit: 50,
-        });
-
-        const relayServers: ServerInfo[] = [];
-        const seenUrls = new Set([
-          ...DEFAULT_SERVERS,
-          ...ensuredCustomServers.map((server) => server.url),
+        if (cancelled) return;
+        setServers([
+          ...DEFAULT_SERVERS.map((url) => ({
+            url,
+            source: "default" as const,
+          })),
+          ...ensuredCustomServers,
         ]);
+        setSelectedServer(storedSelectedServer);
+        setSettingsLoaded(true);
 
-        for (const event of events) {
-          const dTag = event.tags.find((t) => t[0] === "d");
-          if (dTag && dTag[1]) {
-            let url = dTag[1];
-            // Normalize URL
-            if (!url.startsWith("http://") && !url.startsWith("https://")) {
-              url = "https://" + url;
-            }
-            // Remove trailing slash
-            url = url.replace(/\/$/, "");
-
-            if (!seenUrls.has(url)) {
-              seenUrls.add(url);
-              relayServers.push({ url, source: "relay" });
-            }
-          }
-        }
-
-        if (!cancelled) {
-          setServers((prev) => [
-            ...prev.filter((s) => s.source !== "relay"),
-            ...relayServers,
-          ]);
-        }
+        // Standing interest in published Blossom server lists (kind 36363):
+        // cache replay makes them available instantly on repeat loads, and the
+        // live tail keeps discovering new ones. Dedupe against whatever is
+        // already in the list (defaults, customs, earlier discoveries).
+        const handle = dataLayer.observe(
+          [{ kinds: [36363], limit: 50 }],
+          {
+            onEvent: (event: Event) => {
+              if (cancelled) return;
+              const dTag = event.tags.find((t) => t[0] === "d");
+              if (!dTag?.[1]) return;
+              const url = normalizeServerUrl(dTag[1]);
+              setServers((prev) =>
+                prev.some((s) => s.url === url)
+                  ? prev
+                  : [...prev, { url, source: "relay" }],
+              );
+            },
+            onEose: () => {
+              if (!cancelled) setLoading(false);
+            },
+          },
+        );
+        unobserve = () => handle.unobserve();
       } catch (e) {
         console.error("Failed to query relay servers:", e);
         if (!cancelled) {
           setError("Failed to fetch servers from relays");
           setSettingsLoaded(true);
-        }
-      } finally {
-        if (!cancelled) {
           setLoading(false);
         }
-        pool.close(PUBLIC_RELAYS);
       }
     };
 
     void queryServers();
     return () => {
       cancelled = true;
-      pool.close(PUBLIC_RELAYS);
+      unobserve?.();
     };
   }, []);
 

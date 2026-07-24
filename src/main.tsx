@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { isNativePlatform } from './utils/platform'
+import { bootstrapDataLayer } from './dataLayer/bootstrap'
+
+// Spawn the local-relay worker + DataLayer before anything renders — every
+// relay read/write in the app goes through it.
+bootstrapDataLayer()
 
 // Powers the large-file streaming download fallback (src/services/swStreamDownload.ts)
 // for browsers without the File System Access API. Not needed inside the
