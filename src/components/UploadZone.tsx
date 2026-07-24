@@ -12,26 +12,28 @@ function getHostname(url: string): string {
 }
 
 export function UploadZone() {
-  const { uploadFile } = useFileIndex();
+  const { uploadFile, files } = useFileIndex();
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; fileCount: number } | null>(null);
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [customServerError, setCustomServerError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
-    async (files: FileList) => {
+    async (selectedFiles: FileList) => {
       setError(null);
       setUploading(true);
-      const fileArray = Array.from(files);
+      const fileArray = Array.from(selectedFiles);
       const errors: string[] = [];
+      let successfulUploads = 0;
 
       for (const file of fileArray) {
         try {
           await uploadFile(file, selectedServer);
+          successfulUploads += 1;
         } catch (e) {
           if (isAbortError(e)) {
             break;
@@ -41,11 +43,14 @@ export function UploadZone() {
       }
 
       if (errors.length > 0) {
-        setError(errors.join("\n"));
+        setError({
+          message: errors.join("\n"),
+          fileCount: files.length + successfulUploads,
+        });
       }
       setUploading(false);
     },
-    [uploadFile, selectedServer]
+    [uploadFile, selectedServer, files.length]
   );
 
   const handleDrop = useCallback(
@@ -116,7 +121,9 @@ export function UploadZone() {
             Drop files here or click to upload
           </span>
         )}
-        {error && <span className="upload-error">{error}</span>}
+        {error?.fileCount === files.length && (
+          <span className="upload-error">{error.message}</span>
+        )}
       </div>
 
       <div className="upload-server-selector">

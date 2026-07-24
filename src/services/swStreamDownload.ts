@@ -1,7 +1,8 @@
 import { BlossomClient } from "../blossom";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { aesGcmDecryptBytes, decryptFileWithKey, deriveConversationKeyFromHex } from "../crypto";
+import type { FileMetadata } from "../types/metadata";
+import { decryptFileWithKey } from "../crypto";
 import type { DownloadProgressInfo } from "./downloadFile";
+import { decryptFileChunk, fileChunkRefs } from "./fileCrypto";
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -46,8 +47,13 @@ export async function downloadViaServiceWorker(
 
   try {
     await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(
+        () => reject(new Error("Timed out starting the download service worker")),
+        10000,
+      );
       port.onmessage = (event) => {
         if (event.data?.type === "ready") {
+          window.clearTimeout(timeout);
           resolve();
         }
       };
@@ -61,14 +67,19 @@ export async function downloadViaServiceWorker(
         },
         [channel.port2],
       );
-      setTimeout(() => reject(new Error("Timed out starting the download service worker")), 10000);
     });
 
     throwIfAborted(signal);
-    document.body.appendChild(iframe);
-    iframe.src = `/__stream_download__/${encodeURIComponent(id)}`;
 
-    const client = new BlossomClient(file.server);
+    const clients = new Map<string, BlossomClient>();
+    const clientFor = (server: string) => {
+      let client = clients.get(server);
+      if (!client) {
+        client = new BlossomClient(server);
+        clients.set(server, client);
+      }
+      return client;
+    };
 
     await new Promise<void>((resolve, reject) => {
       let cancelledBySw = false;
@@ -96,11 +107,10 @@ export async function downloadViaServiceWorker(
         });
       port.start();
 
-      (async () => {
+      const producer = (async () => {
         try {
-          const chunks = chunkHashes(file.chunks);
+          const chunks = fileChunkRefs(file);
           if (chunks.length > 0) {
-            const convKey = deriveConversationKeyFromHex(file.encryptionKey);
             const totalChunks = chunks.length;
 
             for (let i = 0; i < totalChunks; i++) {
@@ -111,8 +121,14 @@ export async function downloadViaServiceWorker(
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
-              const encBytes = await client.download(chunks[i], undefined, undefined, signal);
-              const decBytes = await aesGcmDecryptBytes(encBytes, convKey, i);
+              const chunk = chunks[i];
+              const encBytes = await clientFor(chunk.server ?? file.server).download(
+                chunk.hash,
+                undefined,
+                undefined,
+                signal,
+              );
+              const decBytes = await decryptFileChunk(file, encBytes, i);
               const buffer = decBytes.buffer.slice(
                 decBytes.byteOffset,
                 decBytes.byteOffset + decBytes.byteLength,
@@ -132,7 +148,7 @@ export async function downloadViaServiceWorker(
 
             if (!cancelledBySw) {
               onProgress?.({ stage: "Downloading...", progress: 0 });
-              const encBytes = await client.download(file.hash, undefined, (loaded, total) => {
+              const encBytes = await clientFor(file.server).download(file.hash, undefined, (loaded, total) => {
                 if (total > 0) {
                   onProgress?.({ stage: "Downloading...", progress: Math.round((loaded / total) * 100) });
                 }
@@ -164,6 +180,14 @@ export async function downloadViaServiceWorker(
           reject(error);
         }
       })();
+
+      // Start the download request only after the producer has synchronously
+      // installed its first `pull` listener. Otherwise a fast service worker
+      // can send the first pull before waitForPull is listening and stall the
+      // download forever.
+      document.body.appendChild(iframe);
+      iframe.src = `/__stream_download__/${encodeURIComponent(id)}`;
+      void producer;
     });
   } finally {
     cleanup();

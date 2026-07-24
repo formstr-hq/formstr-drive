@@ -3,6 +3,11 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 let ffmpeg: FFmpeg | null = null;
 
+type CaptureStreamCanvas = HTMLCanvasElement & {
+    captureStream?: (frameRate?: number) => MediaStream;
+    mozCaptureStream?: (frameRate?: number) => MediaStream;
+};
+
 
 
 async function loadFFmpeg(): Promise<FFmpeg> {
@@ -50,7 +55,7 @@ export async function generateVideoThumbnail(file: File): Promise<Uint8Array> {
         const url = URL.createObjectURL(file);
         let settled = false;
 
-        let cleanup = () => {
+        const cleanup = () => {
             URL.revokeObjectURL(url);
             if (video.parentNode) video.parentNode.removeChild(video);
         };
@@ -83,7 +88,12 @@ export async function generateVideoThumbnail(file: File): Promise<Uint8Array> {
                 const ctx = canvas.getContext("2d");
                 if (!ctx) throw new Error("Failed to get canvas 2D context");
 
-                const stream = (canvas as any).captureStream ? (canvas as any).captureStream(15) : (canvas as any).mozCaptureStream ? (canvas as any).mozCaptureStream(15) : null;
+                const captureCanvas = canvas as CaptureStreamCanvas;
+                const stream = captureCanvas.captureStream
+                    ? captureCanvas.captureStream(15)
+                    : captureCanvas.mozCaptureStream
+                      ? captureCanvas.mozCaptureStream(15)
+                      : null;
                 const mimeType = typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 
                                  typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : '';
 

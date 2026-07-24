@@ -50,6 +50,7 @@ public class DriveDownloadService extends Service {
     public static final String EXTRA_SERVER = "server";
     public static final String EXTRA_HASH = "hash";
     public static final String EXTRA_ENCRYPTION_KEY = "encryptionKey";
+    public static final String EXTRA_PROTOCOL = "protocol";
     public static final String EXTRA_FILE_NAME = "fileName";
     public static final String EXTRA_MIME_TYPE = "mimeType";
     public static final String EXTRA_CHUNKS_JSON = "chunksJson";
@@ -138,6 +139,7 @@ public class DriveDownloadService extends Service {
         String server = intent.getStringExtra(EXTRA_SERVER);
         String hash = intent.getStringExtra(EXTRA_HASH);
         String encryptionKey = intent.getStringExtra(EXTRA_ENCRYPTION_KEY);
+        String protocol = intent.getStringExtra(EXTRA_PROTOCOL);
         String fileName = intent.getStringExtra(EXTRA_FILE_NAME);
         String mimeType = intent.getStringExtra(EXTRA_MIME_TYPE);
         String chunksJson = intent.getStringExtra(EXTRA_CHUNKS_JSON);
@@ -161,7 +163,8 @@ public class DriveDownloadService extends Service {
         activeCount.incrementAndGet();
 
         executor.execute(() ->
-                runDownload(id, server, chunks, hash, encryptionKey, fileName, mimeType, notifId, signal));
+                runDownload(id, server, chunks, hash, encryptionKey,
+                        protocol == null ? "legacy" : protocol, fileName, mimeType, notifId, signal));
 
         return START_NOT_STICKY;
     }
@@ -172,6 +175,7 @@ public class DriveDownloadService extends Service {
             List<String> chunks,
             String hash,
             String encryptionKey,
+            String protocol,
             String fileName,
             String mimeType,
             int notifId,
@@ -205,7 +209,7 @@ public class DriveDownloadService extends Service {
                         throw new java.io.IOException("Failed to open output stream");
                     }
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, hash, encryptionKey, outputStream,
+                            server, chunks, hash, encryptionKey, protocol, outputStream,
                             (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 
@@ -230,7 +234,7 @@ public class DriveDownloadService extends Service {
 
                 try (FileOutputStream outputStream = new FileOutputStream(outFile)) {
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, hash, encryptionKey, outputStream,
+                            server, chunks, hash, encryptionKey, protocol, outputStream,
                             (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 

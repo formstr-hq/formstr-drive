@@ -532,6 +532,7 @@ public final class DriveManifestStore {
         public final long uploadedAt;
         public final String server;
         public final String encryptionKey;
+        public final String protocol;
         @Nullable public final String previewHash;
         @Nullable public final List<String> chunks;
         public final boolean isPendingImport;
@@ -549,6 +550,7 @@ public final class DriveManifestStore {
                 long uploadedAt,
                 String server,
                 String encryptionKey,
+                String protocol,
                 @Nullable String previewHash,
                 @Nullable List<String> chunks,
                 boolean isPendingImport,
@@ -565,6 +567,7 @@ public final class DriveManifestStore {
             this.uploadedAt = uploadedAt;
             this.server = server;
             this.encryptionKey = encryptionKey;
+            this.protocol = protocol;
             this.previewHash = previewHash;
             this.chunks = chunks;
             this.isPendingImport = isPendingImport;
@@ -586,6 +589,7 @@ public final class DriveManifestStore {
             long uploadedAt = jsonObject.optLong("uploadedAt", 0L);
             String server = jsonObject.optString("server");
             String encryptionKey = jsonObject.optString("encryptionKey");
+            String protocol = jsonObject.optString("protocol", "legacy");
             String previewHash = jsonObject.has("previewHash") ? jsonObject.optString("previewHash") : null;
             
             List<String> chunks = null;
@@ -610,6 +614,7 @@ public final class DriveManifestStore {
                     uploadedAt,
                     server,
                     encryptionKey,
+                    protocol,
                     previewHash,
                     chunks,
                     false,
@@ -630,6 +635,7 @@ public final class DriveManifestStore {
                     entry.createdAt,
                     "",
                     "",
+                    "legacy",
                     null,
                     null,
                     true,

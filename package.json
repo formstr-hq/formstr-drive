@@ -6,10 +6,12 @@
   "androidVersion": "0.0.1",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "eslint src/**/* --quiet",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "dev": "pnpm sdk:build && vite",
+    "build": "pnpm sdk:build && tsc -b && vite build",
+    "lint": "pnpm --filter @formstr/drive-sdk lint && eslint src/**/* --quiet",
+    "typecheck": "pnpm --filter @formstr/drive-sdk typecheck && tsc --noEmit -p tsconfig.app.json",
+    "test": "pnpm --filter @formstr/drive-sdk test",
+    "sdk:build": "pnpm --filter @formstr/drive-sdk build",
     "preview": "vite preview",
     "android:copy": "pnpm build && pnpm exec cap copy android",
     "android:sync": "pnpm build && pnpm exec cap sync android",
@@ -17,6 +19,7 @@
     "android:build-release": "scripts/build-android-release.sh"
   },
   "dependencies": {
+    "@formstr/drive-sdk": "workspace:*",
     "@ant-design/icons": "^6.1.1",
     "@capacitor/android": "^8.3.1",
     "@capacitor/core": "^8.3.1",

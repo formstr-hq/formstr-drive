@@ -7,6 +7,10 @@
     "module": "ESNext",
     "types": ["vite/client"],
     "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@formstr/drive-sdk": ["./packages/drive-sdk/src/index.ts"]
+    },
 
     /* Bundler mode */
     "moduleResolution": "bundler",

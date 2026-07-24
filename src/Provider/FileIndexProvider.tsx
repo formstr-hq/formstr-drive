@@ -6,17 +6,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { BlossomClient } from "../blossom";
-import { createAuthEvent } from "../auth";
-import {
-  fetchFileIndex,
-  saveFileMetadata,
-  deleteFileMetadata,
-  extractFolders,
-  autoMigrateLegacyFiles,
-} from "../services/fileIndex";
-import { MigrationPromptModal } from "../components/MigrationPromptModal";
+import type { FileMetadata } from "../types/metadata";
 import { useProfileContext } from "../hooks/useProfileContext";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import {
@@ -30,6 +20,7 @@ import { useBlossomServer } from "../hooks/useBlossomServer";
 import { isAndroidPlatform } from "../utils/platform";
 import { useUploader, type UploadProgress } from "../hooks/useUploader";
 import { useDownloader, type DownloadProgress } from "../hooks/useDownloader";
+import { driveFileToMetadata, getDriveSdk } from "../services/driveSdk";
 
 export type { UploadProgress, DownloadProgress };
 
@@ -70,7 +61,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [hasHydratedIndex, setHasHydratedIndex] = useState(false);
-  const [legacyFiles, setLegacyFiles] = useState<FileMetadata[]>([]);
   const processingPendingImportsRef = useRef(false);
 
   const { uploadProgress, uploadPreparedFile, cancelUpload } = useUploader({ setFiles, setError });
@@ -140,17 +130,16 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     try {
-      const index = await fetchFileIndex(pubkey, (foundLegacyFiles) => {
-        setLegacyFiles(foundLegacyFiles);
-      });
-      setFiles(index);
+      const sdk = await getDriveSdk(selectedServer);
+      const index = await sdk.listFiles();
+      setFiles(index.map(driveFileToMetadata));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load files");
     } finally {
       setHasHydratedIndex(true);
       setLoading(false);
     }
-  }, [isSignedIn, pubkey]);
+  }, [isSignedIn, pubkey, selectedServer]);
 
   useEffect(() => {
     if (restoring) return;
@@ -195,74 +184,16 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     [currentFolder, uploadPreparedFile],
   );
 
-  const deleteRemoteBlobs = useCallback(async (file: FileMetadata) => {
-    // Chunked files store one blob per chunk; legacy files store a single
-    // blob under file.hash.
-    const blobHashes = chunkHashes(file.chunks);
-    if (blobHashes.length === 0) {
-      blobHashes.push(file.hash);
-    }
-
-    // One auth event covering every blob (chunks + preview), so the user
-    // signs only once per file.
-    const allHashes = file.previewHash
-      ? [...blobHashes, file.previewHash]
-      : blobHashes;
-    // Generous expiration: large chunked files need one DELETE per chunk and
-    // the whole sequence must finish before the auth event expires.
-    const auth = await createAuthEvent(
-      "delete",
-      `Delete ${file.name}`,
-      allHashes,
-      600,
-    );
-
-    const clients = new Map<string, BlossomClient>();
-    const clientFor = (server: string) => {
-      let client = clients.get(server);
-      if (!client) {
-        client = new BlossomClient(server);
-        clients.set(server, client);
-      }
-      return client;
-    };
-
-    // Each blob is deleted independently and best-effort: one failed chunk
-    // must not block the rest, and a blob orphaned on the server is a better
-    // outcome than a partially-deleted file stuck in the index forever.
-    for (let i = 0; i < blobHashes.length; i++) {
-      // Legacy metadata may carry chunks as bare hash strings; only the
-      // object form can override the file's primary server.
-      const chunk = file.chunks?.[i];
-      const server =
-        (typeof chunk === "object" ? chunk.server : undefined) ?? file.server;
-      try {
-        await clientFor(server).delete(blobHashes[i], auth);
-      } catch (e) {
-        console.warn(`Failed to delete blob ${blobHashes[i]} from ${server}`, e);
-      }
-    }
-
-    if (file.previewHash) {
-      try {
-        await clientFor(file.server).delete(file.previewHash, auth);
-      } catch {
-        // Preview deletion failures are non-fatal: the primary blobs are gone
-        // and the preview is unreferenced once the index event is updated.
-      }
-    }
-  }, []);
-
   const deleteFile = useCallback(
     async (hash: string) => {
       const file = files.find((f) => f.hash === hash);
       if (!file) return;
 
-      await deleteRemoteBlobs(file);
-      await deleteFileMetadata(hash, file);
+      const sdk = await getDriveSdk(selectedServer);
+      await sdk.deleteFile(hash);
       setFiles((prev) => prev.filter((f) => f.hash !== hash));
     },
-    [files, deleteRemoteBlobs]
+    [files, selectedServer]
   );
 
   const deleteFiles = useCallback(
@@ -270,11 +201,11 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       const hashSet = new Set(hashes);
       const targetFiles = files.filter((file) => hashSet.has(file.hash));
       const deletedHashes = new Set<string>();
+      const sdk = await getDriveSdk(selectedServer);
 
       for (const file of targetFiles) {
         try {
-          await deleteRemoteBlobs(file);
-          await deleteFileMetadata(file.hash, file);
+          await sdk.deleteFile(file.hash);
           deletedHashes.add(file.hash);
         } catch (e) {
           // Stop on first failure so the user can see and retry; files
@@ -286,7 +217,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
       setFiles((prev) => prev.filter((file) => !hashSet.has(file.hash)));
     },
-    [files, deleteRemoteBlobs]
+    [files, selectedServer]
   );
 
   const moveFile = useCallback(
@@ -294,30 +225,32 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       const file = files.find((f) => f.hash === hash);
       if (!file) return;
 
-      const updated: FileMetadata = { ...file, folder: newFolder };
-      await saveFileMetadata(updated);
+      const sdk = await getDriveSdk(selectedServer);
+      const updated = driveFileToMetadata(await sdk.moveFile(hash, newFolder));
       setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
     },
-    [files]
+    [files, selectedServer]
   );
 
   const moveFiles = useCallback(
     async (hashes: string[], newFolder: string) => {
       const hashSet = new Set(hashes);
       const targetFiles = files.filter((file) => hashSet.has(file.hash));
+      const sdk = await getDriveSdk(selectedServer);
+      const updatedFiles = new Map<string, FileMetadata>();
 
       for (const file of targetFiles) {
-        const updated: FileMetadata = { ...file, folder: newFolder };
-        await saveFileMetadata(updated);
+        const updated = driveFileToMetadata(await sdk.moveFile(file.hash, newFolder));
+        updatedFiles.set(file.hash, updated);
       }
 
       setFiles((prev) =>
         prev.map((file) =>
-          hashSet.has(file.hash) ? { ...file, folder: newFolder } : file
+          updatedFiles.get(file.hash) ?? file
         )
       );
     },
-    [files]
+    [files, selectedServer]
   );
 
   const renameFile = useCallback(
@@ -325,11 +258,11 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       const file = files.find((f) => f.hash === hash);
       if (!file) return;
 
-      const updated: FileMetadata = { ...file, name: newName };
-      await saveFileMetadata(updated);
+      const sdk = await getDriveSdk(selectedServer);
+      const updated = driveFileToMetadata(await sdk.renameFile(hash, newName));
       setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
     },
-    [files]
+    [files, selectedServer]
   );
 
   const processPendingImports = useCallback(async () => {
@@ -433,15 +366,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     };
   }, [hasHydratedIndex, isSignedIn, processPendingImports, restoring]);
 
-  const handleAcceptMigration = async () => {
-    await autoMigrateLegacyFiles(legacyFiles);
-    setLegacyFiles([]);
-  };
-
-  const handleDismissMigration = () => {
-    setLegacyFiles([]);
-  };
-
   return (
     <FileIndexContext.Provider
       value={{
@@ -468,12 +392,20 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         refresh,
       }}
     >
-      <MigrationPromptModal
-        files={legacyFiles}
-        onAccept={handleAcceptMigration}
-        onDismiss={handleDismissMigration}
-      />
       {children}
     </FileIndexContext.Provider>
   );
+}
+
+function extractFolders(files: readonly FileMetadata[]): string[] {
+  const folders = new Set<string>(["/"]);
+  for (const file of files) {
+    const parts = file.folder.split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      current += `/${part}`;
+      folders.add(current);
+    }
+  }
+  return [...folders].sort();
 }

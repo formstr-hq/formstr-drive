@@ -349,6 +349,7 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         String server = call.getString("server");
         String hash = call.getString("hash");
         String encryptionKey = call.getString("encryptionKey");
+        String protocol = call.getString("protocol", "legacy");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType");
         JSArray chunksArray = call.getArray("chunks");
@@ -375,6 +376,7 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         intent.putExtra(DriveDownloadService.EXTRA_SERVER, server);
         intent.putExtra(DriveDownloadService.EXTRA_HASH, hash);
         intent.putExtra(DriveDownloadService.EXTRA_ENCRYPTION_KEY, encryptionKey);
+        intent.putExtra(DriveDownloadService.EXTRA_PROTOCOL, protocol);
         intent.putExtra(DriveDownloadService.EXTRA_FILE_NAME, fileName);
         intent.putExtra(DriveDownloadService.EXTRA_MIME_TYPE, mimeType);
         if (chunksJson != null) {

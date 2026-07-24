@@ -52,6 +52,7 @@ type DriveFilesPlugin = {
     chunks?: string[];
     hash: string;
     encryptionKey: string;
+    protocol?: "nip-fs" | "legacy";
     fileName: string;
     mimeType: string;
     size: number;
@@ -111,6 +112,7 @@ export interface NativeDriveFileEntry {
   uploadedAt: number;
   server: string;
   encryptionKey: string;
+  protocol?: "nip-fs" | "legacy";
   previewHash?: string;
   chunks?: string[];
 }
@@ -259,6 +261,7 @@ export function buildNativeDriveManifest(
       uploadedAt: file.uploadedAt,
       server: file.server,
       encryptionKey: file.encryptionKey,
+      protocol: file.protocol ?? "legacy",
       ...(file.previewHash ? { previewHash: file.previewHash } : {}),
       ...(file.chunks ? { chunks: chunkHashes(file.chunks) } : {}),
     };
@@ -381,6 +384,7 @@ export async function downloadFileToDownloads(
     chunks?: ChunkRef[];
     hash: string;
     encryptionKey: string;
+    protocol?: "nip-fs" | "legacy";
     name: string;
     type?: string;
     size: number;
@@ -415,6 +419,7 @@ export async function downloadFileToDownloads(
       chunks: chunkHashes(file.chunks),
       hash: file.hash,
       encryptionKey: file.encryptionKey,
+      protocol: file.protocol ?? "legacy",
       fileName: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,

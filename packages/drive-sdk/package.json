@@ -1,0 +1,68 @@
+{
+  "name": "@formstr/drive-sdk",
+  "version": "0.1.0",
+  "description": "Protocol and transfer primitives for building encrypted Nostr and Blossom file drives.",
+  "keywords": [
+    "formstr",
+    "nostr",
+    "blossom",
+    "nip44",
+    "nip-fs",
+    "encrypted-files"
+  ],
+  "license": "MIT",
+  "author": "Formstr Inc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/formstr-hq/formstr-drive.git",
+    "directory": "packages/drive-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/formstr-hq/formstr-drive/issues"
+  },
+  "homepage": "https://github.com/formstr-hq/formstr-drive/tree/main/packages/drive-sdk#readme",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "lint": "eslint src test --quiet",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "release:check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && npm pack --dry-run --ignore-scripts",
+    "publish:dry-run": "pnpm run release:check && npm publish --dry-run --ignore-scripts --access public",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run release:check"
+  },
+  "dependencies": {
+    "nostr-tools": "^2.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.9",
+    "typescript": "~5.9.3",
+    "vite": "npm:rolldown-vite@7.2.5",
+    "vitest": "^3.2.4"
+  }
+}

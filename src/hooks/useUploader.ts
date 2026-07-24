@@ -21,12 +21,14 @@ import { isAndroidPlatform } from "../utils/platform";
 import { useToast } from "./useToast";
 import { isAbortError } from "../utils/abortError";
 import { APP_RELAYS } from "../utils/common";
+import type { DriveTransferProgress, DriveTransferTask } from "@formstr/drive-sdk";
+import { driveFileToMetadata, getDriveSdk } from "../services/driveSdk";
 
 // Background (native) upload is temporarily DISABLED. Staging 50 MB chunks to
 // native storage means shipping each as a ~67 MB base64 string across the
 // Capacitor bridge, which OOMs/crashes the app on large files. Until this is
 // reworked to avoid the base64 bridge (native file access + native encryption),
-// Android uploads use the same in-app JS path as web (OPFS-backed, no bridge,
+// Android uploads use the same bounded one-chunk SDK path as web (no bridge,
 // no crash) — foreground-only, no background completion. All the native upload
 // plumbing is left intact behind this flag so it can be re-enabled later.
 const ENABLE_NATIVE_BACKGROUND_UPLOAD = false;
@@ -45,8 +47,8 @@ interface UseUploaderOptions {
 }
 
 /**
- * Owns the file-upload flow — chunking/encryption, the (currently disabled)
- * native background handoff, the JS fallback, and the in-app progress state.
+ * Owns the SDK upload flow, the (currently disabled) native background
+ * handoff, and the in-app progress state.
  * Extracted from FileIndexProvider to keep that provider focused on
  * index/state management. `uploadPreparedFile` is exposed so callers (e.g. the
  * pending-imports processor) can upload into an explicit folder.
@@ -55,6 +57,7 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
   const toast = useToast();
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const sdkUploadTaskRef = useRef<DriveTransferTask<unknown> | null>(null);
   const nativeUploadIdRef = useRef<string | null>(null);
 
   /**
@@ -200,6 +203,111 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
     async (file: File, server: string, targetFolder: string): Promise<FileMetadata> => {
       setError(null);
 
+      if (!isAndroidPlatform || !ENABLE_NATIVE_BACKGROUND_UPLOAD) {
+        if (isAndroidPlatform) await ensureNotificationPermission();
+        const uploadNotificationId = crypto.randomUUID();
+        let lastNotificationPercent = -1;
+        setUploadProgress({
+          fileName: file.name,
+          stage: "Generating preview...",
+          progress: 0,
+        });
+        const preview = await previewFile(file).catch((previewError) => {
+          console.warn("Preview generation failed", previewError);
+          return null;
+        });
+        const sdk = await getDriveSdk(server);
+        const task = sdk.upload(file, {
+          folder: targetFolder,
+          server,
+          ...(preview ? { preview } : {}),
+        });
+        sdkUploadTaskRef.current = task;
+        const unsubscribe = task.subscribe((progress) => {
+          setUploadProgress(toUploadProgress(file.name, progress));
+          if (isAndroidPlatform) {
+            const percent = Math.floor(progress.percent ?? 0);
+            if (percent !== lastNotificationPercent) {
+              lastNotificationPercent = percent;
+              void showUploadNotification(uploadNotificationId, file.name, percent);
+            }
+          }
+        });
+
+        try {
+          const uploaded = driveFileToMetadata(await task.result);
+          setFiles((previous) => [uploaded, ...previous]);
+          if (isAndroidPlatform) {
+            void finishUploadNotification(uploadNotificationId, file.name, true);
+          }
+          return uploaded;
+        } catch (uploadError) {
+          if (isAbortError(uploadError)) {
+            if (isAndroidPlatform) void clearUploadNotification(uploadNotificationId);
+            toast.info("Upload cancelled");
+            throw uploadError;
+          }
+          const errorMessage =
+            uploadError instanceof Error ? uploadError.message : "Upload failed";
+          setError(errorMessage);
+          if (isAndroidPlatform) {
+            void finishUploadNotification(
+              uploadNotificationId,
+              file.name,
+              false,
+              errorMessage,
+            );
+          }
+          toast.error(errorMessage, {
+            action: {
+              label: "Retry",
+              onClick: () => {
+                void (async () => {
+                  sdkUploadTaskRef.current = task;
+                  const unsubscribeRetry = task.subscribe((progress) => {
+                    setUploadProgress(toUploadProgress(file.name, progress));
+                  });
+                  try {
+                    const uploaded = driveFileToMetadata(await task.retry());
+                    setFiles((previous) => [uploaded, ...previous]);
+                    setError(null);
+                    if (isAndroidPlatform) {
+                      void finishUploadNotification(uploadNotificationId, file.name, true);
+                    }
+                  } catch (retryError) {
+                    const retryMessage =
+                      retryError instanceof Error
+                        ? retryError.message
+                        : "Upload retry failed";
+                    setError(retryMessage);
+                    if (isAndroidPlatform) {
+                      void finishUploadNotification(
+                        uploadNotificationId,
+                        file.name,
+                        false,
+                        retryMessage,
+                      );
+                    }
+                    toast.error(retryMessage);
+                  } finally {
+                    unsubscribeRetry();
+                    if (sdkUploadTaskRef.current === task) {
+                      sdkUploadTaskRef.current = null;
+                    }
+                    setUploadProgress(null);
+                  }
+                })();
+              },
+            },
+          });
+          throw uploadError;
+        } finally {
+          unsubscribe();
+          if (sdkUploadTaskRef.current === task) sdkUploadTaskRef.current = null;
+          setUploadProgress(null);
+        }
+      }
+
       const controller = new AbortController();
       uploadAbortRef.current = controller;
       const { signal } = controller;
@@ -325,6 +433,7 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
   );
 
   const cancelUpload = useCallback(() => {
+    void sdkUploadTaskRef.current?.cancel();
     uploadAbortRef.current?.abort();
     if (nativeUploadIdRef.current) {
       void cancelNativeUpload(nativeUploadIdRef.current);
@@ -332,4 +441,29 @@ export function useUploader({ setFiles, setError }: UseUploaderOptions) {
   }, []);
 
   return { uploadProgress, uploadPreparedFile, cancelUpload };
+}
+
+function toUploadProgress(
+  fileName: string,
+  progress: DriveTransferProgress,
+): UploadProgress {
+  const stages: Record<DriveTransferProgress["state"], string> = {
+    queued: "Queued...",
+    preparing: "Encrypting file...",
+    "awaiting-signature": "Waiting for signature approval...",
+    "publishing-metadata": "Publishing metadata...",
+    "uploading-preview": "Uploading preview...",
+    "uploading-chunks": "Uploading file...",
+    downloading: "Downloading...",
+    completed: "Upload complete",
+    failed: "Upload failed",
+    cancelled: "Upload cancelled",
+  };
+  return {
+    fileName,
+    stage: progress.message ?? stages[progress.state],
+    progress: progress.percent,
+    currentChunk: progress.currentChunk,
+    totalChunks: progress.totalChunks,
+  };
 }

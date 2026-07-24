@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import type { FileMetadata } from "../types/metadata";
 import { useFileIndex } from "../hooks/useFileContext";
-import { decryptFileWithKey } from "../crypto";
-import { BlossomClient } from "../blossom";
 import { openDownloadedFile } from "../native/driveManifest";
 import { isNativePlatform } from "../utils/platform";
 import { FilePreviewModal } from "./FilePreviewModal";
 import { detectMimeTypeFromMagicBytes, getFileIcon, MAX_PREVIEW_SIZE } from "../utils/fileTypeHelpers";
 import { useToast } from "../hooks/useToast";
 import { isAbortError } from "../utils/abortError";
+import { getDriveSdk } from "../services/driveSdk";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -45,12 +44,11 @@ async function getPreview(file: FileMetadata): Promise<PreviewData | null> {
   const cached = previewCache.get(file.previewHash);
   if (cached) return cached;
 
-  const client = new BlossomClient(file.server);
-  const uint8arr = await client.download(file.previewHash);
-  const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
-  const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
+  const sdk = await getDriveSdk(file.server);
+  const decrypted = await sdk.getPreview(file.hash);
+  if (!decrypted) return null;
   
-  const arr = new Uint8Array(decrypted as any);
+  const arr = new Uint8Array(decrypted);
   const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
 
   const blob = new Blob([decrypted as BlobPart], { type: mimeType });
