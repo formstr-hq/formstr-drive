@@ -1,8 +1,9 @@
 import { BlossomClient } from "../blossom";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { aesGcmDecryptBytes, decryptFileWithKey, deriveConversationKeyFromHex } from "../crypto";
+import type { FileMetadata } from "../types/metadata";
+import { decryptFileWithKey } from "../crypto";
 import type { DownloadProgressInfo } from "./downloadFile";
 import { withTimeout, TransferFailure } from "../transfers/withTimeout";
+import { decryptFileChunk, fileChunkRefs } from "./fileCrypto";
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -180,16 +181,23 @@ async function attemptDownloadViaServiceWorker(
       setTimeout(() => reject(new Error("sw-attach-timeout")), 5000);
     });
 
-    const client = new BlossomClient(file.server);
+    const clients = new Map<string, BlossomClient>();
+    const clientFor = (server: string) => {
+      let client = clients.get(server);
+      if (!client) {
+        client = new BlossomClient(server);
+        clients.set(server, client);
+      }
+      return client;
+    };
 
     await new Promise<void>((resolve, reject) => {
       (async () => {
         try {
-          const chunks = chunkHashes(file.chunks);
+          const chunks = fileChunkRefs(file);
           let bytesSent = 0;
 
           if (chunks.length > 0) {
-            const convKey = deriveConversationKeyFromHex(file.encryptionKey);
             const totalChunks = chunks.length;
 
             for (let i = 0; i < totalChunks; i++) {
@@ -200,13 +208,19 @@ async function attemptDownloadViaServiceWorker(
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
-              const encBytes = await client.download(chunks[i], undefined, undefined, signal);
-              const decBytes = await aesGcmDecryptBytes(encBytes, convKey, i);
+              const chunk = chunks[i];
+              const encBytes = await clientFor(chunk.server ?? file.server).download(
+                chunk.hash,
+                undefined,
+                undefined,
+                signal,
+              );
+              const decBytes = await decryptFileChunk(file, encBytes, i);
               let buffer = decBytes.buffer.slice(
                 decBytes.byteOffset,
                 decBytes.byteOffset + decBytes.byteLength,
               ) as ArrayBuffer;
-              
+
               if (bytesSent + buffer.byteLength > file.size) {
                 buffer = buffer.slice(0, file.size - bytesSent);
               }
@@ -226,7 +240,7 @@ async function attemptDownloadViaServiceWorker(
 
             if (!cancelledBySw) {
               onProgress?.({ stage: "Downloading...", progress: 0 });
-              const encBytes = await client.download(file.hash, undefined, (loaded, total) => {
+              const encBytes = await clientFor(file.server).download(file.hash, undefined, (loaded, total) => {
                 if (total > 0) {
                   onProgress?.({ stage: "Downloading...", progress: Math.round((loaded / total) * 100) });
                 }

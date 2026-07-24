@@ -1,6 +1,7 @@
 import { BlossomClient } from "../blossom";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { aesGcmDecryptBytes, decryptFileWithKey, deriveConversationKeyFromHex } from "../crypto";
+import type { FileMetadata } from "../types/metadata";
+import { decryptFileWithKey } from "../crypto";
+import { decryptFileChunk, fileChunkRefs } from "./fileCrypto";
 import { downloadViaServiceWorker, hasServiceWorkerSupport } from "./swStreamDownload";
 
 // Browsers without the File System Access API (Firefox, Safari) have no way to
@@ -42,19 +43,31 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortSignal): Promise<Uint8Array> {
-  const client = new BlossomClient(file.server);
+  const clients = new Map<string, BlossomClient>();
+  const clientFor = (server: string) => {
+    let client = clients.get(server);
+    if (!client) {
+      client = new BlossomClient(server);
+      clients.set(server, client);
+    }
+    return client;
+  };
 
-  const hashes = chunkHashes(file.chunks);
-  if (hashes.length > 0) {
-    const convKey = deriveConversationKeyFromHex(file.encryptionKey);
+  const chunks = fileChunkRefs(file);
+  if (chunks.length > 0) {
     const result = new Uint8Array(file.size);
     let offset = 0;
 
-    for (let i = 0; i < hashes.length; i++) {
+    for (let i = 0; i < chunks.length; i++) {
       throwIfAborted(signal);
-      const hash = hashes[i];
-      const encBytes = await client.download(hash, undefined, undefined, signal);
-      const decBytes = await aesGcmDecryptBytes(encBytes, convKey, i);
+      const chunk = chunks[i];
+      const encBytes = await clientFor(chunk.server ?? file.server).download(
+        chunk.hash,
+        undefined,
+        undefined,
+        signal,
+      );
+      const decBytes = await decryptFileChunk(file, encBytes, i);
 
       result.set(decBytes, offset);
       offset += decBytes.length;
@@ -65,7 +78,7 @@ export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortS
   }
 
   // Legacy single-blob fallback
-  const blob = await client.download(file.hash, undefined, undefined, signal);
+  const blob = await clientFor(file.server).download(file.hash, undefined, undefined, signal);
   const ciphertext = new TextDecoder().decode(blob);
   return decryptFileWithKey(ciphertext, file.encryptionKey);
 }
@@ -137,19 +150,32 @@ async function downloadViaFileSystemAccess(
 
   const handle = await showSaveFilePicker({ suggestedName: file.name });
   const writer = await handle.createWritable();
-  const client = new BlossomClient(file.server);
+  const clients = new Map<string, BlossomClient>();
+  const clientFor = (server: string) => {
+    let client = clients.get(server);
+    if (!client) {
+      client = new BlossomClient(server);
+      clients.set(server, client);
+    }
+    return client;
+  };
   let completed = false;
   let bytesWritten = 0;
 
   try {
-    const chunks = chunkHashes(file.chunks);
+    const chunks = fileChunkRefs(file);
     if (chunks.length > 0) {
-      const convKey = deriveConversationKeyFromHex(file.encryptionKey);
       const totalChunks = chunks.length;
 
       const fetchDecrypt = async (index: number): Promise<Uint8Array> => {
-        const encBytes = await client.download(chunks[index], undefined, undefined, signal);
-        return aesGcmDecryptBytes(encBytes, convKey, index);
+        const chunk = chunks[index];
+        const encBytes = await clientFor(chunk.server ?? file.server).download(
+          chunk.hash,
+          undefined,
+          undefined,
+          signal,
+        );
+        return decryptFileChunk(file, encBytes, index);
       };
 
       let nextToFetch = 0;
@@ -166,7 +192,7 @@ async function downloadViaFileSystemAccess(
         throwIfAborted(signal);
         const decBytes = await pending.get(i)!;
         pending.delete(i);
-        
+
         let buffer = decBytes;
         if (bytesWritten + buffer.byteLength > file.size) {
           buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
@@ -184,7 +210,7 @@ async function downloadViaFileSystemAccess(
       }
     } else {
       onProgress?.({ stage: "Downloading...", progress: 0 });
-      const encBytes = await client.download(file.hash, undefined, (loaded, total) => {
+      const encBytes = await clientFor(file.server).download(file.hash, undefined, (loaded, total) => {
         if (total > 0) {
           onProgress?.({ stage: "Downloading...", progress: Math.round((loaded / total) * 100) });
         }
@@ -192,12 +218,12 @@ async function downloadViaFileSystemAccess(
       throwIfAborted(signal);
       const ciphertext = new TextDecoder().decode(encBytes);
       const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
-      
+
       let buffer = decrypted;
       if (bytesWritten + buffer.byteLength > file.size) {
         buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
       }
-      
+
       onProgress?.({ stage: "Saving file...", progress: 100 });
       await writer.write(buffer);
       bytesWritten += buffer.byteLength;

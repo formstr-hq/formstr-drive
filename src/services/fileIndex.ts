@@ -1,5 +1,6 @@
 import { nip44, type Event } from "nostr-tools";
 import { dataLayer, type PublishResult } from "@formstr/local-relay";
+import { isNipFsFileMetadata } from "@formstr/drive-sdk";
 import type { FileMetadata, NostrEvent } from "../types/metadata";
 import { signerManager } from "../signer/manager";
 import {
@@ -28,7 +29,7 @@ async function encryptMetadata(metadata: FileMetadata): Promise<string> {
 function decryptMetadataWithDriveKey(
   ciphertext: string,
   conversationKeys: Uint8Array[],
-): FileMetadata {
+): unknown {
   let lastError: unknown = null;
 
   for (const conversationKey of conversationKeys) {
@@ -42,6 +43,14 @@ function decryptMetadataWithDriveKey(
   }
 
   throw lastError ?? new Error("No Drive Key available to decrypt metadata");
+}
+
+function normalizeFileMetadata(value: unknown, hash: string): FileMetadata {
+  if (isNipFsFileMetadata(value)) {
+    return { ...value, hash, protocol: "nip-fs" };
+  }
+
+  return { ...(value as FileMetadata), protocol: "legacy" };
 }
 
 /**
@@ -152,19 +161,25 @@ export function observeFileIndex(
       if (hasFilesTag && driveConversationKeys.length > 0) {
         // New format: try every Drive Key in the keyring until one decrypts.
         try {
-          metadata = decryptMetadataWithDriveKey(
-            event.content,
-            driveConversationKeys,
+          metadata = normalizeFileMetadata(
+            decryptMetadataWithDriveKey(event.content, driveConversationKeys),
+            hash,
           );
         } catch {
           // No Drive Key worked (e.g. the event predates Drive Keys entirely,
           // or was encrypted to the Main Identity Key). Fall back to legacy.
-          metadata = await decryptMetadataLegacy(event.content);
+          metadata = normalizeFileMetadata(
+            await decryptMetadataLegacy(event.content),
+            hash,
+          );
           isLegacy = true;
         }
       } else {
         // Legacy format: fall back to the Main Identity Signer.
-        metadata = await decryptMetadataLegacy(event.content);
+        metadata = normalizeFileMetadata(
+          await decryptMetadataLegacy(event.content),
+          hash,
+        );
         isLegacy = driveConversationKeys.length > 0;
       }
     } catch (e) {

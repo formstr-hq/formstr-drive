@@ -64,6 +64,7 @@ public final class DriveFileDownloader {
             @Nullable List<String> chunks,
             String hash,
             String encryptionKey,
+            String protocol,
             OutputStream outputStream,
             @Nullable ProgressCallback onProgress,
             @Nullable CancellationSignal signal
@@ -84,7 +85,9 @@ public final class DriveFileDownloader {
                 byte[] encryptedBlob = downloadEncryptedBlob(server, chunkHash, signal, chunkProgress);
                 byte[] decryptedBytes;
                 try {
-                    decryptedBytes = DriveFilesCrypto.decryptChunkBlob(encryptedBlob, encryptionKey, i);
+                    decryptedBytes = "nip-fs".equals(protocol)
+                            ? DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, encryptionKey)
+                            : DriveFilesCrypto.decryptChunkBlob(encryptedBlob, encryptionKey, i);
                 } catch (Exception error) {
                     throw new IOException("Failed to decrypt chunk " + i, error);
                 }
