@@ -1,0 +1,63 @@
+/* Upload Zone */
+.upload-zone-wrapper {
+  margin-bottom: var(--space-12);
+}
+
+.upload-zone {
+  /* A faint accent tint at rest — the primary CTA of the page shouldn't be
+     the one place with zero palette presence before any interaction. */
+  border: 2px dashed var(--color-accent-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-16);
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--motion-fast);
+}
+
+.upload-zone:hover {
+  border-color: var(--color-accent);
+  background: var(--color-bg-sunken);
+}
+
+.upload-zone.dragging {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.upload-zone.uploading {
+  border-color: var(--color-border-hover);
+  background: var(--color-bg-hover);
+}
+
+.upload-prompt {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+}
+
+.upload-status {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-md);
+}
+
+.upload-error {
+  display: block;
+  margin-top: var(--space-4);
+  color: var(--color-danger);
+  font-size: var(--font-size-base);
+}
+
+.upload-server-selector {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-top: var(--space-6);
+  padding: var(--space-6);
+  background: var(--color-bg-sunken);
+  border-radius: var(--radius-md);
+}
+
+.server-label {
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-medium);
+}

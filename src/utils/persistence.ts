@@ -2,19 +2,19 @@ import { Preferences } from "@capacitor/preferences";
 import type { SecureKeyStoragePlugin } from "@khadarvsk/capacitor-secure-storage";
 import { isAndroidPlatform, isNativePlatform } from "./platform";
 
+// PROFILE, AUTH_METHOD, and NSEC are legacy keys kept only so
+// src/signer/migration.ts can find and clear a pre-@formstr/signer nsec
+// login; current signer state lives under the @formstr/signer storage
+// adapter (see src/signer/storageAdapter.ts).
 export const STORAGE_KEYS = {
   PROFILE: "formstr-drive-profile",
   CUSTOM_FOLDERS: "formstr-drive-custom-folders",
   CUSTOM_SERVERS: "formstr-drive-custom-servers",
   SELECTED_SERVER: "formstr-drive-selected-server",
   AUTH_METHOD: "formstr-drive-auth-method",
-  NIP55_PACKAGE_NAME: "formstr-drive-nip55-package-name",
-  NIP55_PUBKEY: "formstr-drive-nip55-pubkey",
-  NIP46_URI: "formstr-drive-nip46-uri",
-  NIP46_PUBKEY: "formstr-drive-nip46-pubkey",
-  NIP46_CLIENT_SECRET_HEX: "formstr-drive-nip46-client-secret-hex",
   NSEC: "formstr-drive-nsec",
   DRIVE_KEY_CACHE: "formstr-drive-drive-key-cache",
+  PROFILE_CACHE: "formstr-drive-profile-cache",
 } as const;
 
 function parseStoredValue<T>(value: string | null, defaultValue: T): T {

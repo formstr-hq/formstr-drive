@@ -1,0 +1,74 @@
+/* Global toast notifications — always an inverse (high-contrast) chip,
+   flips automatically with --color-bg-inverse. */
+.toast-container {
+  position: fixed;
+  top: var(--space-8);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  z-index: var(--z-toast);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  background: var(--color-bg-inverse);
+  color: var(--color-text-inverse-surface);
+  padding: var(--space-5) var(--space-8);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-base);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  animation: toast-in 0.2s ease;
+  pointer-events: auto;
+}
+
+.toast-success {
+  background: var(--color-success-solid);
+}
+
+.toast-error {
+  background: var(--color-danger-solid);
+}
+
+.toast-info {
+  background: var(--color-bg-inverse);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.toast-action {
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--color-text-inverse-surface) 40%, transparent);
+  color: var(--color-text-inverse-surface);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-6);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: color-mix(in srgb, var(--color-text-inverse-surface) 15%, transparent);
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  color: color-mix(in srgb, var(--color-text-inverse-surface) 75%, transparent);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.toast-close:hover {
+  color: var(--color-text-inverse-surface);
+}

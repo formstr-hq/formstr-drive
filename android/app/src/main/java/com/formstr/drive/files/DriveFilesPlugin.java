@@ -387,6 +387,9 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
 
         JSObject started = new JSObject();
         started.put("id", downloadId);
+        // Include the file hash so the JS side can correlate this randomly-generated
+        // download id back to the transfer it started (progress/cancel are keyed by id).
+        started.put("hash", hash);
         notifyListeners("downloadStarted", started);
     }
 

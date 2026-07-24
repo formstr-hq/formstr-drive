@@ -1,0 +1,524 @@
+/* Sign In */
+.sign-in-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--space-12);
+  background:
+    radial-gradient(circle at top, var(--color-bg-surface), var(--color-bg-sunken)),
+    linear-gradient(180deg, var(--color-bg-sunken) 0%, var(--color-bg-active) 100%);
+  box-sizing: border-box;
+}
+
+/* Embedded — nested inside AddAccountModal instead of taking the full
+   viewport. Same card, same every login method, just sized to its
+   container instead of the page. */
+.sign-in-container--embedded {
+  min-height: auto;
+  padding: 0;
+  background: none;
+}
+
+.sign-in-container--embedded .sign-in-card {
+  width: 100%;
+  padding: 0;
+  box-shadow: none;
+  border: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: none;
+}
+
+/* AddAccountModal already owns the padding — a hero h1 sized for a
+   full-viewport screen was the actual cause of the wrap-to-2-lines +
+   scrollbar: it was tall enough to push a 4-button list past the modal's
+   max-height. Compact dialog-appropriate type instead. */
+.sign-in-container--embedded .sign-in-card h1 {
+  font-size: var(--font-size-2xl);
+  margin-bottom: var(--space-2);
+}
+
+.sign-in-container--embedded .sign-in-subtitle {
+  font-size: var(--font-size-md);
+  margin-bottom: var(--space-8);
+}
+
+.sign-in-card {
+  text-align: center;
+  padding: var(--space-14) var(--space-16) var(--space-20);
+  width: min(100%, 560px);
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--color-bg-surface) 98%, transparent);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--color-border);
+  backdrop-filter: blur(10px) var(--surface-blur);
+  -webkit-backdrop-filter: blur(10px) var(--surface-blur);
+}
+
+.sign-in-card,
+.sign-in-card button,
+.sign-in-card input,
+.sign-in-card textarea {
+  font-family: inherit;
+}
+
+.sign-in-card h1 {
+  font-size: var(--font-size-3xl);
+  line-height: var(--line-height-tight);
+  font-weight: var(--font-weight-medium);
+  margin: 0 0 var(--space-5);
+  letter-spacing: var(--letter-spacing-tight);
+  color: var(--color-text-primary);
+}
+
+.sign-in-subtitle {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-14);
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.native-signer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+}
+
+.sign-in-primary-actions {
+  margin-bottom: var(--space-2);
+}
+
+.sign-in-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+.sign-in-choice-btn {
+  width: 100%;
+  padding: var(--space-9) var(--space-10);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  /* Transition background-COLOR only, never the `background` shorthand: the
+     primary variant's background is a gradient (background-image), and
+     animating the shorthand makes background-image discretely drop to `none`
+     mid-transition while background-color is still transparent — a dark flash
+     that reads as hover flicker. Colour-only keeps secondary buttons smooth
+     and leaves the primary's gradient swap instant (no gap). */
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+
+.sign-in-choice-btn:hover:not(.sign-in-choice-btn-primary) {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-border-hover);
+}
+
+.sign-in-choice-btn-primary {
+  border: none;
+  background: var(--color-accent-gradient);
+  color: var(--color-text-on-accent);
+  box-shadow: var(--shadow-accent);
+}
+
+/* Stay a gradient (background-image) on hover so it swaps gradient→gradient
+   instantly — never dropping to `none` and exposing the dark card beneath. */
+.sign-in-choice-btn-primary:hover {
+  background: linear-gradient(180deg, var(--color-accent-hover), var(--color-accent-hover));
+}
+
+.sign-in-back-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0 0 var(--space-9);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+.sign-in-back-btn:hover {
+  color: var(--color-text-primary);
+}
+
+.sign-in-method-section {
+  margin-top: var(--space-5);
+  text-align: left;
+}
+
+.sign-in-method-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+  margin-bottom: var(--space-4);
+}
+
+.sign-in-method-header h2 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.sign-in-secondary-section .sign-in-method-header {
+  justify-content: flex-start;
+}
+
+.sign-in-section-hint {
+  margin: 0 0 var(--space-6);
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.sign-in-remote-header {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: var(--space-7);
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--space-10);
+}
+
+.sign-in-remote-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--color-text-primary);
+}
+
+.sign-in-remote-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.sign-in-remote-copy {
+  text-align: center;
+}
+
+.sign-in-remote-copy h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  line-height: 1.35;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sign-in-remote-copy p {
+  margin: var(--space-3) 0 0;
+  font-size: var(--font-size-md);
+  color: var(--color-text-primary);
+}
+
+.sign-in-tab-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-9);
+  margin-bottom: var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sign-in-tab-btn {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 0 2px var(--space-6);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  cursor: pointer;
+}
+
+.sign-in-tab-btn.active {
+  color: var(--color-text-primary);
+}
+
+.sign-in-tab-btn.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  background: var(--color-accent);
+  border-radius: var(--radius-pill);
+}
+
+.sign-in-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.sign-in-warning-box {
+  padding: var(--space-7) var(--space-8);
+  border-radius: var(--radius-lg);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  border: 1px solid var(--color-warning-border);
+}
+
+.sign-in-warning-box code {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-warning);
+}
+
+.sign-in-secret-output {
+  width: 100%;
+  min-height: 108px;
+  padding: var(--space-8) var(--space-9);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.sign-in-generated-actions {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.sign-in-generated-actions .sign-in-choice-btn {
+  flex: 1;
+}
+
+.sign-in-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.sign-in-input-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.sign-in-text-input {
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-9) var(--space-9);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-xl);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.sign-in-text-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+
+.sign-in-text-input:disabled {
+  background: var(--color-bg-disabled);
+  color: var(--color-text-disabled);
+}
+
+.sign-in-link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+}
+
+.sign-in-link-btn:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.sign-in-qr-panel {
+  padding: var(--space-9);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-sunken);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-7);
+}
+
+.sign-in-qr-placeholder {
+  width: 176px;
+  height: 176px;
+  border-radius: var(--radius-xl);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--color-bg-hover),
+    var(--color-bg-hover) 12px,
+    var(--color-bg-active) 12px,
+    var(--color-bg-active) 24px
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-md);
+  text-align: center;
+  padding: var(--space-8);
+  box-sizing: border-box;
+}
+
+.sign-in-qr-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.native-signer-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  width: 100%;
+  padding: var(--space-8) var(--space-9);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--color-accent-gradient);
+  color: var(--color-text-on-accent);
+  cursor: pointer;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  box-shadow: var(--shadow-accent);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+}
+
+.native-signer-btn:hover {
+  background: var(--color-accent-hover);
+}
+
+.native-signer-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.native-signer-icon,
+.native-signer-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.native-signer-icon {
+  object-fit: cover;
+}
+
+.native-signer-fallback {
+  /* Icon badge stays literal white/ink — reads as an app-icon chip sitting
+     on the accent button, independent of the active theme. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: #111;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+}
+
+.sign-in-btn {
+  padding: var(--space-8) var(--space-10);
+  font-size: 15px;
+  border: none;
+  background: var(--color-accent-gradient);
+  color: var(--color-text-on-accent);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  box-shadow: var(--shadow-accent);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+}
+
+.sign-in-btn:hover {
+  background: var(--color-accent-hover);
+}
+
+.sign-in-btn-block {
+  width: 100%;
+}
+
+.sign-in-hint {
+  padding-top: var(--space-2);
+  margin-top: var(--space-9);
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+
+.sign-in-error {
+  margin-top: var(--space-7);
+  padding: var(--space-6) var(--space-7);
+  border-radius: var(--radius-lg);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+  text-align: left;
+  font-size: var(--font-size-base);
+  line-height: 1.45;
+}
+
+/* Mobile: hidden drawer by default */
+@media (max-width: 768px) {
+  .sign-in-card {
+    padding: var(--space-14) var(--space-9) var(--space-16);
+    border-radius: var(--radius-xl);
+  }
+
+  .sign-in-choice-btn {
+    font-size: var(--font-size-md);
+    padding: var(--space-8) var(--space-9);
+  }
+
+  .sign-in-generated-actions {
+    flex-direction: column;
+  }
+
+  .sign-in-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sign-in-input-row .sign-in-btn,
+  .sign-in-input-column .sign-in-btn {
+    width: 100%;
+  }
+
+  .sign-in-qr-actions {
+    flex-direction: column;
+    text-align: center;
+    gap: var(--space-3);
+  }
+
+  .sign-in-remote-header {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+    gap: var(--space-5);
+  }
+}

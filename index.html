@@ -6,6 +6,25 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Form* Drive</title>
+  <script>
+    (function () {
+      var d = document.documentElement;
+      var PALETTES = ["ember", "violet", "ocean", "forest"];
+      try {
+        var t = localStorage.getItem("formstr-drive-theme");
+        if (t !== "light" && t !== "dark") {
+          t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        var p = localStorage.getItem("formstr-drive-palette");
+        if (PALETTES.indexOf(p) === -1) p = "ember";
+        d.dataset.theme = t;
+        d.dataset.palette = p;
+      } catch (e) {
+        d.dataset.theme = "light";
+        d.dataset.palette = "ember";
+      }
+    })();
+  </script>
 </head>
 
 <body>

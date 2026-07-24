@@ -5,10 +5,10 @@ import {
   useEffect,
   useState,
 } from "react";
-import { getInstalledNativeSignerApps } from "../signer/NIP55Signer";
 import { signerManager } from "../signer/manager";
 import type { NativeSignerApp } from "../signer/types";
 import { isNativePlatform } from "../utils/platform";
+import type { StoredAccount } from "@formstr/signer";
 
 interface ProfileProviderProps {
     children? : ReactNode;
@@ -18,14 +18,27 @@ interface ProfileProviderProps {
 export interface ProfileContextType {
     pubkey? : string;
     requestPubkey : (packageName?: string) => Promise<string | undefined>;
-    loginWithNip46: (uri: string, options?: { abortSignal?: AbortSignal }) => Promise<string | undefined>;
-    loginWithNsec: (nsec: string) => Promise<string | undefined>;
-    createNip46ConnectUri: () => Promise<string>;
+    loginWithBunkerUri: (uri: string) => Promise<string | undefined>;
+    loginWithNostrConnect: (options: {
+        relays: string[];
+        onUri: (uri: string) => void;
+        signal?: AbortSignal;
+    }) => Promise<string | undefined>;
+    generatePendingAccount: (passphrase: string) => { npub: string; ncryptsec: string };
+    confirmPendingAccount: (ncryptsec: string, passphrase: string) => Promise<string | undefined>;
+    unlockWithPassphrase: (passphrase: string) => Promise<string | undefined>;
+    importNsec: (nsec: string, passphrase: string) => Promise<string | undefined>;
     logout : () => Promise<void>;
+    accounts: StoredAccount[];
+    switchAccount: (pubkey: string) => Promise<void>;
+    removeAccount: (pubkey: string) => Promise<void>;
     isSignedIn : boolean;
+    locked: boolean;
     restoring: boolean;
     nativeSignerApps: NativeSignerApp[];
     loadingNativeSignerApps: boolean;
+    pendingNsecMigration: boolean;
+    completeNsecMigration: (passphrase: string) => Promise<string | undefined>;
 }
 
 export interface IProfile {
@@ -36,26 +49,36 @@ export const ProfileContext = createContext<ProfileContextType | undefined>(unde
 
 export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
     const [pubkey, setPubkey] = useState<string | undefined>(undefined);
+    const [locked, setLocked] = useState(false);
+    const [accounts, setAccounts] = useState<StoredAccount[]>([]);
+    const [pendingNsecMigration, setPendingNsecMigration] = useState(false);
     const [restoring, setRestoring] = useState(true);
     const [nativeSignerApps, setNativeSignerApps] = useState<NativeSignerApp[]>([]);
     const [loadingNativeSignerApps, setLoadingNativeSignerApps] = useState(isNativePlatform);
-    const isSignedIn = !!pubkey;
+    const isSignedIn = !!pubkey && !locked;
+
+    const syncFromManager = () => {
+        setPubkey(signerManager.getPubkey());
+        setLocked(signerManager.isLocked());
+        setAccounts(signerManager.listAccounts());
+        setPendingNsecMigration(signerManager.hasPendingNsecMigration());
+    };
 
     useEffect(() => {
-        const unsubscribe = signerManager.onChange((nextPubkey) => {
-            setPubkey(nextPubkey);
+        const unsubscribe = signerManager.onChange(() => {
+            syncFromManager();
         });
 
         const restoreSigner = async () => {
             try {
-                const restoredPubkey = await Promise.race([
-                    signerManager.restoreFromStorage(),
+                await Promise.race([
+                    signerManager.init(),
                     new Promise<undefined>((resolve) => {
                         setTimeout(() => resolve(undefined), 6000);
                     }),
                 ]);
-                setPubkey(restoredPubkey);
             } finally {
+                syncFromManager();
                 setRestoring(false);
             }
         };
@@ -76,7 +99,8 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
         const loadNativeSignerApps = async () => {
             setLoadingNativeSignerApps(true);
             try {
-                const apps = await getInstalledNativeSignerApps();
+                await signerManager.init();
+                const apps = await signerManager.listAndroidSignerApps();
                 setNativeSignerApps(apps);
             } catch (error) {
                 console.error("Failed to load Android signer apps", error);
@@ -91,25 +115,67 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
 
     const requestPubkey = async (packageName?: string) => {
         const publicKey = await signerManager.requestPubkey(packageName);
-        setPubkey(publicKey);
+        syncFromManager();
         return publicKey;
     };
 
-    const loginWithNip46 = async (uri: string, options?: { abortSignal?: AbortSignal }) => {
-        const publicKey = await signerManager.loginWithNip46(uri, options);
-        setPubkey(publicKey);
+    const loginWithBunkerUri = async (uri: string) => {
+        const publicKey = await signerManager.loginWithBunkerUri(uri);
+        syncFromManager();
         return publicKey;
     };
 
-    const loginWithNsec = async (nsec: string) => {
-        const publicKey = await signerManager.loginWithNsec(nsec);
-        setPubkey(publicKey);
+    const loginWithNostrConnect = async (options: {
+        relays: string[];
+        onUri: (uri: string) => void;
+        signal?: AbortSignal;
+    }) => {
+        const publicKey = await signerManager.loginWithNostrConnect(options);
+        syncFromManager();
+        return publicKey;
+    };
+
+    const generatePendingAccount = (passphrase: string) => {
+        return signerManager.generatePendingAccount(passphrase);
+    };
+
+    const confirmPendingAccount = async (ncryptsec: string, passphrase: string) => {
+        const publicKey = await signerManager.confirmPendingAccount(ncryptsec, passphrase);
+        syncFromManager();
+        return publicKey;
+    };
+
+    const unlockWithPassphrase = async (passphrase: string) => {
+        const publicKey = await signerManager.unlockWithPassphrase(passphrase);
+        syncFromManager();
+        return publicKey;
+    };
+
+    const importNsec = async (nsec: string, passphrase: string) => {
+        const publicKey = await signerManager.importNsec(nsec, passphrase);
+        syncFromManager();
+        return publicKey;
+    };
+
+    const completeNsecMigration = async (passphrase: string) => {
+        const publicKey = await signerManager.completeNsecMigration(passphrase);
+        syncFromManager();
         return publicKey;
     };
 
     const logout = async () => {
         await signerManager.logout();
-        setPubkey(undefined);
+        syncFromManager();
+    };
+
+    const switchAccount = async (targetPubkey: string) => {
+        await signerManager.switchAccount(targetPubkey);
+        syncFromManager();
+    };
+
+    const removeAccount = async (targetPubkey: string) => {
+        await signerManager.removeAccount(targetPubkey);
+        syncFromManager();
     };
 
     return (
@@ -117,14 +183,23 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
             value={{
                 pubkey,
                 requestPubkey,
-                loginWithNip46,
-                loginWithNsec,
-                createNip46ConnectUri: () => signerManager.createNip46ConnectUri(),
+                loginWithBunkerUri,
+                loginWithNostrConnect,
+                generatePendingAccount,
+                confirmPendingAccount,
+                unlockWithPassphrase,
+                importNsec,
                 logout,
+                accounts,
+                switchAccount,
+                removeAccount,
                 isSignedIn,
+                locked,
                 restoring,
                 nativeSignerApps,
                 loadingNativeSignerApps,
+                pendingNsecMigration,
+                completeNsecMigration,
             }}
         >
             {children}

@@ -3,17 +3,22 @@ import { BlossomServerProvider } from "./Provider/BlossomServerProvider";
 import { FileIndexProvider } from "./Provider/FileIndexProvider";
 import { useProfileContext } from "./hooks/useProfileContext";
 import { ProfileProvider } from "./Provider/ProfileProvider";
-import { Header } from "./components/Header";
-import { FolderSidebar } from "./components/FolderSidebar";
-import { FileList } from "./components/FileList";
+import { Header } from './components/Header/Header';
+import { FolderSidebar } from './components/Folders/FolderSidebar';
+import { FileList } from './components/Files/FileList';
 import { SignIn } from "./components/SignIn/SignIn";
-import { UploadManager } from "./components/UploadManager";
-import { DownloadManager } from "./components/DownloadManager";
+import { UnlockScreen } from "./components/SignIn/UnlockScreen";
+import { NsecMigrationPrompt } from "./components/SignIn/NsecMigrationPrompt";
+import { UploadManager } from './components/Upload/UploadManager';
+import { DownloadManager } from './components/Upload/DownloadManager';
 import { ToastProvider } from "./context/ToastProvider";
+import { ThemeProvider } from "./context/ThemeProvider";
+import { AntdThemeBridge } from "./components/ui/AntdThemeBridge";
 import "./App.css";
 
 function DriveLayout() {
-  const { isSignedIn, restoring } = useProfileContext();
+  const { isSignedIn, restoring, locked, pendingNsecMigration } =
+    useProfileContext();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   if (restoring) {
@@ -22,6 +27,14 @@ function DriveLayout() {
         <div className="loading-state">Restoring session...</div>
       </div>
     );
+  }
+
+  if (pendingNsecMigration) {
+    return <NsecMigrationPrompt />;
+  }
+
+  if (locked) {
+    return <UnlockScreen />;
   }
 
   if (!isSignedIn) {
@@ -39,8 +52,10 @@ function DriveLayout() {
         <main className="drive-main">
           <FileList />
         </main>
-        <UploadManager />
-        <DownloadManager />
+        <div className="transfer-managers-container">
+          <UploadManager />
+          <DownloadManager />
+        </div>
       </div>
     </div>
   );
@@ -48,15 +63,19 @@ function DriveLayout() {
 
 function App() {
   return (
-    <ToastProvider>
-      <ProfileProvider>
-        <BlossomServerProvider>
-          <FileIndexProvider>
-            <DriveLayout />
-          </FileIndexProvider>
-        </BlossomServerProvider>
-      </ProfileProvider>
-    </ToastProvider>
+    <ThemeProvider>
+      <AntdThemeBridge>
+        <ToastProvider>
+          <ProfileProvider>
+            <BlossomServerProvider>
+              <FileIndexProvider>
+                <DriveLayout />
+              </FileIndexProvider>
+            </BlossomServerProvider>
+          </ProfileProvider>
+        </ToastProvider>
+      </AntdThemeBridge>
+    </ThemeProvider>
   );
 }
 

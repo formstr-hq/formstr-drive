@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
 import { useProfileContext } from "../../hooks/useProfileContext";
-import { createNewNsec } from "../../signer/LocalSigner";
 import { isNativePlatform } from "../../utils/platform";
+import { BunkerLinkIcon } from "../icons/Icons";
+
+import { NIP46_RELAYS } from "../../utils/constants";
 
 type RemoteTab = "uri" | "qr";
-type SignInMethod = "external" | "bunker" | "nsec" | "create";
+type SignInMethod = "external" | "bunker" | "import" | "create";
 
 function getUserFriendlyNsecError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -27,12 +29,50 @@ function getUserFriendlyNsecError(error: unknown): string {
   return "Failed to sign in with nsec";
 }
 
-export function SignIn() {
+// @formstr/signer's loginWithExtension() throws raw, developer-facing
+// messages (e.g. "@formstr\signer: NIP-07 extension not found
+// (globalThis.nostr is undefined)" — the library even has a bug where
+// `\signer` isn't a valid escape, so it renders as the broken-looking
+// "@formstrsigner: ..."). Translate the ones we know into plain language
+// instead of surfacing library internals to the user.
+function getUserFriendlyExtensionError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Failed to connect to NIP-07 extension";
+  }
+
+  const message = error.message;
+
+  if (/nip-07 extension not found|globalThis\.nostr is undefined/i.test(message)) {
+    return "No Nostr browser extension found. Install a NIP-07 signer extension (e.g. Alby, nos2x) and try again.";
+  }
+
+  if (/does not expose nip(04|44)/i.test(message)) {
+    return "Your Nostr extension doesn't support the encryption Drive needs. Try a different extension.";
+  }
+
+  if (/reject|denied|cancel/i.test(message)) {
+    return "Connection request was rejected in your extension.";
+  }
+
+  return message;
+}
+
+interface SignInProps {
+  /** Rendered inside AddAccountModal rather than as the full-page sign-in
+   * screen — swaps the copy, everything else (every login method) is
+   * identical, since adding an account IS signing in, just to a second
+   * identity instead of the first. */
+  embedded?: boolean;
+}
+
+export function SignIn({ embedded = false }: SignInProps) {
   const {
     requestPubkey,
-    loginWithNip46,
-    loginWithNsec,
-    createNip46ConnectUri,
+    loginWithBunkerUri,
+    loginWithNostrConnect,
+    generatePendingAccount,
+    confirmPendingAccount,
+    importNsec,
     nativeSignerApps,
     loadingNativeSignerApps,
     restoring,
@@ -45,33 +85,59 @@ export function SignIn() {
   const [loadingBunker, setLoadingBunker] = useState(false);
   const [loadingQr, setLoadingQr] = useState(false);
   const [nsec, setNsec] = useState("");
-  const [loadingNsec, setLoadingNsec] = useState(false);
-  const [remoteTab, setRemoteTab] = useState<RemoteTab>("uri");
+  const [importPassphrase, setImportPassphrase] = useState("");
+  const [loadingImport, setLoadingImport] = useState(false);
+  const [remoteTab, setRemoteTab] = useState<RemoteTab>("qr");
   const [selectedMethod, setSelectedMethod] = useState<SignInMethod | null>(
     null,
   );
-  const [generatedNsec, setGeneratedNsec] = useState("");
+  const [createPassphrase, setCreatePassphrase] = useState("");
+  const [pendingAccount, setPendingAccount] = useState<{
+    npub: string;
+    ncryptsec: string;
+  } | null>(null);
   const [copiedNewKey, setCopiedNewKey] = useState(false);
   const [loadingCreateKey, setLoadingCreateKey] = useState(false);
+  const [loadingExtension, setLoadingExtension] = useState(false);
   const qrAbortRef = useRef<AbortController | null>(null);
-  const title = nativeShellMode ? "Sign in to Drive by Form*" : "Drive by Form*";
-  const subtitle = nativeShellMode
-    ? "Choose your preferred login method"
-    : "Encrypted file storage on Nostr";
+  const title = embedded
+    ? "Add another account"
+    : nativeShellMode
+      ? "Sign in to Drive by Form*"
+      : "Drive by Form*";
+  const subtitle = embedded
+    ? "Choose a sign-in method"
+    : nativeShellMode
+      ? "Choose your preferred login method"
+      : "Encrypted file storage on Nostr";
 
   const busy =
     loadingPackage !== null ||
     loadingBunker ||
     loadingQr ||
-    loadingNsec ||
-    loadingCreateKey;
-  const nsecBusy = loadingNsec;
+    loadingImport ||
+    loadingCreateKey ||
+    loadingExtension;
+  const importBusy = loadingImport;
 
   useEffect(() => {
     return () => {
       qrAbortRef.current?.abort();
     };
   }, []);
+
+  const handleExtensionLogin = async () => {
+    setError(null);
+    setLoadingExtension(true);
+
+    try {
+      await requestPubkey();
+    } catch (loginError) {
+      setError(getUserFriendlyExtensionError(loginError));
+    } finally {
+      setLoadingExtension(false);
+    }
+  };
 
   const handleNativeLogin = async (packageName: string) => {
     setError(null);
@@ -98,11 +164,7 @@ export function SignIn() {
     setLoadingQr(false);
   };
 
-  const handleBunkerLogin = async (
-    uri: string,
-    loadingMode: "manual" | "qr",
-    abortSignal?: AbortSignal,
-  ) => {
+  const handleBunkerLogin = async (uri: string) => {
     setError(null);
 
     if (!uri.trim()) {
@@ -110,64 +172,53 @@ export function SignIn() {
       return;
     }
 
-    if (loadingMode === "manual") {
-      setLoadingBunker(true);
-    } else {
-      setLoadingQr(true);
-    }
+    setLoadingBunker(true);
 
     try {
-      await loginWithNip46(
-        uri.trim(),
-        abortSignal ? { abortSignal } : undefined,
-      );
+      await loginWithBunkerUri(uri.trim());
     } catch (loginError) {
-      if (
-        abortSignal?.aborted ||
-        (loginError instanceof Error &&
-          (loginError.name === "AbortError" ||
-            loginError.message.toLowerCase().includes("abort")))
-      ) {
-        return;
-      }
-
       setError(
         loginError instanceof Error
           ? loginError.message
           : "Failed to connect with bunker signer",
       );
     } finally {
-      if (loadingMode === "manual") {
-        setLoadingBunker(false);
-      } else {
-        setLoadingQr(false);
-      }
+      setLoadingBunker(false);
     }
   };
 
   const handleGenerateQr = async () => {
     setError(null);
     stopQrWaiting();
+    setQrUri(null);
+
+    const controller = new AbortController();
+    qrAbortRef.current = controller;
+    setLoadingQr(true);
 
     try {
-      const uri = await createNip46ConnectUri();
-      setQrUri(uri);
-      const controller = new AbortController();
-      qrAbortRef.current = controller;
-      await handleBunkerLogin(uri, "qr", controller.signal);
+      await loginWithNostrConnect({
+        relays: NIP46_RELAYS,
+        onUri: (uri) => setQrUri(uri),
+        signal: controller.signal,
+      });
     } catch (qrError) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       setError(
         qrError instanceof Error
           ? qrError.message
           : "Failed to generate QR code",
       );
-      setLoadingQr(false);
     } finally {
+      setLoadingQr(false);
       qrAbortRef.current = null;
     }
   };
 
-  const handleNsecLogin = async () => {
+  const handleImportNsec = async () => {
     setError(null);
 
     if (!nsec.trim()) {
@@ -175,14 +226,19 @@ export function SignIn() {
       return;
     }
 
-    setLoadingNsec(true);
+    if (!importPassphrase) {
+      setError("Choose a passphrase to secure your key");
+      return;
+    }
+
+    setLoadingImport(true);
 
     try {
-      await loginWithNsec(nsec.trim());
+      await importNsec(nsec.trim(), importPassphrase);
     } catch (loginError) {
       setError(getUserFriendlyNsecError(loginError));
     } finally {
-      setLoadingNsec(false);
+      setLoadingImport(false);
     }
   };
 
@@ -201,24 +257,30 @@ export function SignIn() {
   const generateKey = () => {
     setError(null);
     setCopiedNewKey(false);
-    setGeneratedNsec(createNewNsec());
+
+    if (!createPassphrase) {
+      setError("Choose a passphrase to secure your new key");
+      return;
+    }
+
+    setPendingAccount(generatePendingAccount(createPassphrase));
   };
 
   const copyGeneratedKey = async () => {
-    if (!generatedNsec || !navigator.clipboard) {
+    if (!pendingAccount || !navigator.clipboard) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(generatedNsec);
+      await navigator.clipboard.writeText(pendingAccount.ncryptsec);
       setCopiedNewKey(true);
     } catch {
-      setError("Failed to copy the generated nsec");
+      setError("Failed to copy the generated key backup");
     }
   };
 
   const handleContinueWithGeneratedKey = async () => {
-    if (!generatedNsec) {
+    if (!pendingAccount) {
       setError("Create a key first");
       return;
     }
@@ -227,7 +289,7 @@ export function SignIn() {
     setLoadingCreateKey(true);
 
     try {
-      await loginWithNsec(generatedNsec);
+      await confirmPendingAccount(pendingAccount.ncryptsec, createPassphrase);
     } catch (loginError) {
       setError(
         loginError instanceof Error
@@ -260,7 +322,7 @@ export function SignIn() {
     }
 
     if (method === "bunker") {
-      setRemoteTab("uri");
+      switchRemoteTab("qr");
     }
 
     if (method !== "create") {
@@ -271,12 +333,12 @@ export function SignIn() {
   const goBackToMethods = () => {
     setError(null);
     stopQrWaiting();
-    setRemoteTab("uri");
+    setRemoteTab("qr");
     setSelectedMethod(null);
   };
 
   return (
-    <div className="sign-in-container">
+    <div className={`sign-in-container${embedded ? " sign-in-container--embedded" : ""}`}>
       <div className="sign-in-card">
         <h1>{title}</h1>
         <p className="sign-in-subtitle">{subtitle}</p>
@@ -299,10 +361,10 @@ export function SignIn() {
                   <button
                     type="button"
                     className="sign-in-choice-btn sign-in-choice-btn-primary"
-                    onClick={() => void requestPubkey()}
+                    onClick={() => void handleExtensionLogin()}
                     disabled={busy}
                   >
-                    Continue with NIP-07 signer
+                    {loadingExtension ? "Connecting..." : "Continue with NIP-07 signer"}
                   </button>
                 )}
 
@@ -311,28 +373,24 @@ export function SignIn() {
                   className="sign-in-choice-btn"
                   onClick={() => openMethod("bunker")}
                 >
-                  Continue with bunker URL
+                  Connect with bunker or QR
                 </button>
 
-                {nativeShellMode && (
-                  <button
-                    type="button"
-                    className="sign-in-choice-btn"
-                    onClick={() => openMethod("nsec")}
-                  >
-                    Continue with nsec
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="sign-in-choice-btn"
+                  onClick={() => openMethod("import")}
+                >
+                  Import existing key
+                </button>
 
-                {nativeShellMode && (
-                  <button
-                    type="button"
-                    className="sign-in-choice-btn"
-                    onClick={() => openMethod("create")}
-                  >
-                    Create new key
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="sign-in-choice-btn"
+                  onClick={() => openMethod("create")}
+                >
+                  Create new key
+                </button>
               </div>
             ) : (
               <>
@@ -391,19 +449,11 @@ export function SignIn() {
                   <div className="sign-in-method-section">
                     <div className="sign-in-remote-header">
                       <div className="sign-in-remote-icon" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" fill="none">
-                          <path
-                            d="M10.25 13.75 13.75 10.25M8 15.5H6.5a3 3 0 1 1 0-6H8m8 6h1.5a3 3 0 1 0 0-6H16"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
+                        <BunkerLinkIcon />
                       </div>
                       <div className="sign-in-remote-copy">
                         <h2>Connect with remote signer</h2>
-                        <p>(NIP-46)</p>
+                        <p>Scan a QR code, or paste a bunker:// URI</p>
                       </div>
                     </div>
 
@@ -415,20 +465,20 @@ export function SignIn() {
                       <button
                         type="button"
                         role="tab"
-                        aria-selected={remoteTab === "uri"}
-                        className={`sign-in-tab-btn${remoteTab === "uri" ? " active" : ""}`}
-                        onClick={() => switchRemoteTab("uri")}
-                      >
-                        Paste URI
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
                         aria-selected={remoteTab === "qr"}
                         className={`sign-in-tab-btn${remoteTab === "qr" ? " active" : ""}`}
                         onClick={() => switchRemoteTab("qr")}
                       >
-                        QR Code
+                        Scan QR
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={remoteTab === "uri"}
+                        className={`sign-in-tab-btn${remoteTab === "uri" ? " active" : ""}`}
+                        onClick={() => switchRemoteTab("uri")}
+                      >
+                        Paste URI instead
                       </button>
                     </div>
 
@@ -446,16 +496,14 @@ export function SignIn() {
                           disabled={loadingBunker}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
-                              void handleBunkerLogin(bunkerUri, "manual");
+                              void handleBunkerLogin(bunkerUri);
                             }
                           }}
                         />
                         <button
                           type="button"
                           className="sign-in-btn sign-in-btn-block"
-                          onClick={() =>
-                            void handleBunkerLogin(bunkerUri, "manual")
-                          }
+                          onClick={() => void handleBunkerLogin(bunkerUri)}
                           disabled={loadingBunker || !bunkerUri.trim()}
                         >
                           {loadingBunker ? "Connecting..." : "Connect"}
@@ -498,14 +546,14 @@ export function SignIn() {
                   </div>
                 )}
 
-                {selectedMethod === "nsec" && nativeShellMode && (
+                {selectedMethod === "import" && (
                   <div className="sign-in-method-section sign-in-secondary-section">
                     <div className="sign-in-method-header">
-                      <h2>Continue with nsec</h2>
+                      <h2>Import existing key</h2>
                     </div>
                     <p className="sign-in-section-hint">
-                      Your nsec stays on this device and is stored in Android
-                      secure storage.
+                      Your nsec is encrypted with the passphrase below and
+                      never leaves this device unencrypted.
                     </p>
                     <div className="sign-in-input-column">
                       <input
@@ -517,52 +565,84 @@ export function SignIn() {
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
-                        disabled={nsecBusy}
+                        disabled={importBusy}
+                      />
+                      <input
+                        className="sign-in-text-input"
+                        type="password"
+                        value={importPassphrase}
+                        onChange={(event) =>
+                          setImportPassphrase(event.target.value)
+                        }
+                        placeholder="Choose a passphrase"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        disabled={importBusy}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
-                            void handleNsecLogin();
+                            void handleImportNsec();
                           }
                         }}
                       />
                       <button
                         type="button"
                         className="sign-in-btn sign-in-btn-block"
-                        onClick={() => void handleNsecLogin()}
-                        disabled={nsecBusy || !nsec.trim()}
+                        onClick={() => void handleImportNsec()}
+                        disabled={
+                          importBusy || !nsec.trim() || !importPassphrase
+                        }
                       >
-                        {loadingNsec ? "Connecting..." : "Continue with nsec"}
+                        {loadingImport ? "Connecting..." : "Import key"}
                       </button>
                     </div>
                   </div>
                 )}
 
-                {selectedMethod === "create" && nativeShellMode && (
+                {selectedMethod === "create" && (
                   <div className="sign-in-method-section sign-in-secondary-section">
                     <div className="sign-in-method-header">
                       <h2>Create new key</h2>
                     </div>
                     <p className="sign-in-section-hint">
-                      Generate a brand-new Nostr key for this app. Save it
+                      Generate a brand-new Nostr key for this app, protected
+                      by a passphrase you choose. Save the encrypted backup
                       before you continue.
                     </p>
 
-                    {!generatedNsec ? (
-                      <button
-                        type="button"
-                        className="sign-in-btn sign-in-btn-block"
-                        onClick={generateKey}
-                      >
-                        Generate key
-                      </button>
+                    {!pendingAccount ? (
+                      <div className="sign-in-input-column">
+                        <input
+                          className="sign-in-text-input"
+                          type="password"
+                          value={createPassphrase}
+                          onChange={(event) =>
+                            setCreatePassphrase(event.target.value)
+                          }
+                          placeholder="Choose a passphrase"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                        />
+                        <button
+                          type="button"
+                          className="sign-in-btn sign-in-btn-block"
+                          onClick={generateKey}
+                          disabled={!createPassphrase}
+                        >
+                          Generate key
+                        </button>
+                      </div>
                     ) : (
                       <div className="sign-in-input-column">
                         <div className="sign-in-warning-box">
-                          Save this <code>nsec</code> now. If you lose it, you
-                          may lose access to your drive.
+                          Save this encrypted backup (<code>ncryptsec</code>)
+                          and remember your passphrase. If you lose either,
+                          you may lose access to your drive.
                         </div>
                         <textarea
                           className="sign-in-secret-output"
-                          value={generatedNsec}
+                          value={pendingAccount.ncryptsec}
                           readOnly
                           rows={3}
                         />
@@ -572,7 +652,7 @@ export function SignIn() {
                             className="sign-in-choice-btn"
                             onClick={() => void copyGeneratedKey()}
                           >
-                            {copiedNewKey ? "Copied" : "Copy key"}
+                            {copiedNewKey ? "Copied" : "Copy backup"}
                           </button>
                           <button
                             type="button"

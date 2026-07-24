@@ -1,0 +1,470 @@
+/* =============================================================================
+   Formstr Drive — design tokens
+   -----------------------------------------------------------------------------
+   Three independent axes, all set as attributes on <html>:
+     data-theme   : light | dark        (surfaces + text invert)
+     data-palette : ember | violet | ocean | forest   (brand hue)
+     data-ui      : soft | sharp | rounded             (radius/density/shadow)
+
+   Two layers:
+     LAYER 1  primitives  (--fs-*)   raw ramps. A PALETTE swaps only this.
+     LAYER 2  semantics   (--color-*, --space-*, ...) roles. THEME/UI swap this.
+
+   Rule: nothing outside this file may reference --fs-* or a literal hex.
+   ========================================================================== */
+
+/* =============================================================================
+   LAYER 1 — PRIMITIVES
+   ========================================================================== */
+
+/* Brand ramps — one block per palette. :root defaults to ember. */
+:root,
+[data-palette="ember"] {
+  --fs-accent-50: #fff3ef;
+  --fs-accent-100: #ffe0d6;
+  --fs-accent-200: #ffc2af;
+  --fs-accent-300: #ff9e80;
+  --fs-accent-400: #ff7a56;
+  --fs-accent-500: #ff5733; /* brand primary */
+  --fs-accent-600: #e8431f;
+  --fs-accent-700: #bf3315;
+  --fs-grad-from: #ff6b00;
+  --fs-grad-to: #ff2e00;
+}
+
+[data-palette="violet"] {
+  --fs-accent-50: #f5f1ff;
+  --fs-accent-100: #ece3ff;
+  --fs-accent-200: #d8c4ff;
+  --fs-accent-300: #bfa1ff;
+  --fs-accent-400: #a385f7;
+  --fs-accent-500: #8b5cf6;
+  --fs-accent-600: #7c3aed;
+  --fs-accent-700: #6528d4;
+  --fs-grad-from: #9f75ff;
+  --fs-grad-to: #7c3aed;
+}
+
+[data-palette="ocean"] {
+  --fs-accent-50: #eef6ff;
+  --fs-accent-100: #d8ebff;
+  --fs-accent-200: #aed3ff;
+  --fs-accent-300: #7db6f5;
+  --fs-accent-400: #3b8fe0;
+  --fs-accent-500: #0066cc;
+  --fs-accent-600: #0052a3;
+  --fs-accent-700: #003f7d;
+  --fs-grad-from: #1e7fe0;
+  --fs-grad-to: #0052a3;
+}
+
+[data-palette="forest"] {
+  --fs-accent-50: #ecf7ef;
+  --fs-accent-100: #d4edda;
+  --fs-accent-200: #a6dcb3;
+  --fs-accent-300: #6fc687;
+  --fs-accent-400: #40b45f;
+  --fs-accent-500: #1e8e3e;
+  --fs-accent-600: #166f30;
+  --fs-accent-700: #105625;
+  --fs-grad-from: #2aa84c;
+  --fs-grad-to: #166f30;
+}
+
+/* Fixed brand mark color — the logo always reads as ember-orange, regardless
+   of which --fs-accent-* palette is active. A brand mark that shifted hue
+   with the UI theme would stop being recognizable as "the" logo. */
+:root {
+  --brand-ember-500: #ff5733;
+}
+
+/* Neutral + status ramps — theme-invariant. Ink anchored on #263238. */
+:root {
+  --fs-neutral-0: #ffffff;
+  --fs-neutral-25: #fbfcfc;
+  --fs-neutral-50: #f5f7f8;
+  --fs-neutral-100: #eceff1;
+  --fs-neutral-200: #dde3e6;
+  --fs-neutral-300: #cfd8dc;
+  --fs-neutral-400: #b0bec5;
+  --fs-neutral-500: #8ca0ab;
+  --fs-neutral-600: #607d8b;
+  --fs-neutral-700: #455a64;
+  --fs-neutral-800: #263238;
+  --fs-neutral-850: #1b2429;
+  --fs-neutral-900: #141b1f;
+  --fs-neutral-950: #0e1316;
+
+  --fs-red-50: #fff2f2;
+  --fs-red-100: #ffdddd;
+  --fs-red-300: #ff7e89;
+  --fs-red-500: #d32f2f;
+  --fs-red-600: #b00020;
+
+  --fs-green-50: #e8f5e9;
+  --fs-green-300: #6edc8c;
+  --fs-green-500: #1e8e3e;
+
+  --fs-amber-50: #fff7e8;
+  --fs-amber-200: #f0d498;
+  --fs-amber-700: #92400e;
+
+  --fs-blue-50: #f0f7ff;
+  --fs-blue-300: #6aa6ff;
+  --fs-blue-500: #0066cc;
+
+  --fs-purple-50: #f5f0ff;
+  --fs-purple-200: #d8b4fe;
+  --fs-purple-500: #a855f7;
+}
+
+/* =============================================================================
+   LAYER 2 — SEMANTICS (light)
+   ========================================================================== */
+:root {
+  /* Surfaces */
+  --color-bg-canvas: var(--fs-neutral-0);
+  --color-bg-surface: var(--fs-neutral-0);
+  --color-bg-raised: var(--fs-neutral-0);
+  --color-bg-sunken: var(--fs-neutral-50);
+  --color-bg-subtle: var(--fs-neutral-50);
+  --color-bg-hover: var(--fs-neutral-100);
+  --color-bg-active: var(--fs-neutral-200);
+  --color-bg-disabled: var(--fs-neutral-100);
+
+  /* Text */
+  --color-text-primary: var(--fs-neutral-800);
+  --color-text-secondary: var(--fs-neutral-600);
+  --color-text-muted: var(--fs-neutral-500);
+  --color-text-disabled: var(--fs-neutral-400);
+  --color-text-inverse: var(--fs-neutral-0);
+  --color-text-on-accent: var(--fs-neutral-0);
+
+  /* Borders */
+  --color-border: var(--fs-neutral-200);
+  --color-border-strong: var(--fs-neutral-300);
+  --color-border-hover: var(--fs-neutral-400);
+
+  /* Accent */
+  --color-accent: var(--fs-accent-500);
+  --color-accent-hover: var(--fs-accent-600);
+  --color-accent-active: var(--fs-accent-700);
+  --color-accent-subtle: var(--fs-accent-50);
+  --color-accent-border: var(--fs-accent-200);
+  --color-accent-gradient: linear-gradient(
+    180deg,
+    var(--fs-grad-from) 0%,
+    var(--fs-grad-to) 60.92%
+  );
+  --color-focus-ring: color-mix(in srgb, var(--fs-accent-500) 28%, transparent);
+
+  /* Status */
+  --color-danger: var(--fs-red-500);
+  --color-danger-strong: var(--fs-red-600);
+  --color-danger-subtle: var(--fs-red-50);
+  --color-danger-border: var(--fs-red-100);
+  --color-success: var(--fs-green-500);
+  --color-success-subtle: var(--fs-green-50);
+  --color-warning: var(--fs-amber-700);
+  --color-warning-subtle: var(--fs-amber-50);
+  --color-warning-border: var(--fs-amber-200);
+  --color-info: var(--fs-blue-500);
+  --color-info-subtle: var(--fs-blue-50);
+
+  /* Scrims */
+  --color-scrim: rgba(0, 0, 0, 0.4);
+  --color-scrim-strong: rgba(0, 0, 0, 0.64);
+  --color-scrim-weak: rgba(0, 0, 0, 0.12);
+
+  /* File-type chips. Images tie to the active palette (they're the most
+     common file type, so this is the single highest-leverage place to make
+     switching palettes visibly change the file grid). PDF/video stay on
+     fixed red/purple — collapsing all three into one accent would erase
+     the at-a-glance type distinction the colors exist for. */
+  --color-filetype-img-bg: var(--color-accent-subtle);
+  --color-filetype-img-fg: var(--color-accent);
+  --color-filetype-pdf-bg: var(--fs-red-50);
+  --color-filetype-pdf-fg: var(--fs-red-500);
+  --color-filetype-vid-bg: var(--fs-purple-50);
+  --color-filetype-vid-fg: var(--fs-purple-500);
+
+  /* Logo */
+  --color-logo-bg: var(--fs-neutral-800);
+  --color-logo-fg: var(--fs-neutral-0);
+
+  /* Inverse surface (toast) — flips with theme */
+  --color-bg-inverse: var(--fs-neutral-800);
+  --color-text-inverse-surface: var(--fs-neutral-0);
+
+  color-scheme: light;
+}
+
+/* =============================================================================
+   LAYER 2b — SEMANTICS (dark). Re-points names only; no new hex.
+   ========================================================================== */
+[data-theme="dark"] {
+  /* True black — not a dark-gray tint — for the page and its resting
+     content (canvas, cards). Surfaces there are told apart by
+     --color-border (hairline), not by shading against each other.
+
+     --color-bg-raised is the deliberate exception: it's for content that
+     floats ABOVE the page — modals, menus, popovers — and Apple's own
+     dark-mode convention is exactly this: elevation is a shade lighter
+     than the canvas, never shadow alone, because a shadow physically
+     cannot read against a background it can't get darker than. Modals
+     using pure black here were invisible against an equally-black page +
+     scrim — this is the fix, not a shadow tweak.
+
+     --color-bg-hover/-active stay a step above #000 too — interaction
+     feedback needs to be visibly different from "nothing changed", which
+     a black-on-black hover state structurally cannot be. */
+  --color-bg-canvas: #000000;
+  --color-bg-surface: #000000;
+  --color-bg-raised: var(--fs-neutral-900);
+  --color-bg-sunken: #000000;
+  --color-bg-subtle: #000000;
+  --color-bg-hover: var(--fs-neutral-850);
+  --color-bg-active: var(--fs-neutral-800);
+  --color-bg-disabled: var(--fs-neutral-900);
+
+  --color-text-primary: var(--fs-neutral-100);
+  --color-text-secondary: var(--fs-neutral-400);
+  --color-text-muted: var(--fs-neutral-500);
+  --color-text-disabled: var(--fs-neutral-600);
+  --color-text-inverse: var(--fs-neutral-900);
+  --color-text-on-accent: var(--fs-neutral-0);
+
+  --color-border: var(--fs-neutral-800);
+  --color-border-strong: var(--fs-neutral-700);
+  --color-border-hover: var(--fs-neutral-600);
+
+  /* A saturated 500-step color reads muddier/redder on true black than on
+     white — simultaneous-contrast, the same reason a color swatch looks
+     darker against black paper. Text-sized and thin-line accent uses (the
+     sidebar's active label, focus rings, subtle tints) need a step brighter
+     to read as the same hue; large filled shapes (buttons) don't suffer the
+     same way, so --color-accent-gradient is untouched.
+     Dark also inverts the hover direction — lift, don't darken into bg. */
+  --color-accent: var(--fs-accent-400);
+  --color-accent-hover: var(--fs-accent-300);
+  --color-accent-active: var(--fs-accent-500);
+  --color-accent-subtle: color-mix(in srgb, var(--fs-accent-400) 18%, transparent);
+  --color-accent-border: color-mix(in srgb, var(--fs-accent-400) 42%, transparent);
+  --color-focus-ring: color-mix(in srgb, var(--fs-accent-400) 45%, transparent);
+
+  --color-danger: var(--fs-red-300);
+  --color-danger-strong: var(--fs-red-300);
+  --color-danger-subtle: color-mix(in srgb, var(--fs-red-500) 16%, transparent);
+  --color-danger-border: color-mix(in srgb, var(--fs-red-500) 36%, transparent);
+  --color-success: var(--fs-green-300);
+  --color-success-subtle: color-mix(in srgb, var(--fs-green-500) 16%, transparent);
+  --color-warning: var(--fs-amber-200);
+  --color-warning-subtle: color-mix(in srgb, var(--fs-amber-200) 14%, transparent);
+  --color-warning-border: color-mix(in srgb, var(--fs-amber-200) 30%, transparent);
+  --color-info: var(--fs-blue-300);
+  --color-info-subtle: color-mix(in srgb, var(--fs-blue-500) 18%, transparent);
+
+  --color-scrim: rgba(0, 0, 0, 0.64);
+  --color-scrim-strong: rgba(0, 0, 0, 0.78);
+  --color-scrim-weak: rgba(0, 0, 0, 0.4);
+
+  --color-filetype-img-bg: var(--color-accent-subtle);
+  --color-filetype-img-fg: var(--color-accent);
+  --color-filetype-pdf-bg: color-mix(in srgb, var(--fs-red-500) 18%, transparent);
+  --color-filetype-pdf-fg: var(--fs-red-300);
+  --color-filetype-vid-bg: color-mix(in srgb, var(--fs-purple-500) 18%, transparent);
+  --color-filetype-vid-fg: var(--fs-purple-200);
+
+  --color-logo-bg: var(--fs-neutral-0);
+  --color-logo-fg: var(--fs-neutral-900);
+
+  --color-bg-inverse: var(--fs-neutral-100);
+  --color-text-inverse-surface: var(--fs-neutral-900);
+
+  /* Shadows need more opacity to read on dark surfaces. */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.48);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.56);
+  --shadow-lg: 0 12px 30px rgba(0, 0, 0, 0.64);
+  --shadow-xl: 0 28px 70px rgba(0, 0, 0, 0.72);
+  --shadow-accent: 0 10px 18px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
+
+/* Solid status fills — pinned in BOTH themes so white text always passes
+   contrast on them (the dark --color-success is a light *foreground*). */
+:root,
+[data-theme="dark"] {
+  --color-success-solid: var(--fs-green-500);
+  --color-danger-solid: var(--fs-red-500);
+}
+
+/* Always-dark named scope for media chrome (preview modal). Re-points the
+   same semantic names, so markup inside uses plain tokens. */
+[data-surface="inverse"] {
+  --color-bg-surface: var(--fs-neutral-950);
+  --color-bg-raised: var(--fs-neutral-850);
+  --color-bg-sunken: #0a0c10;
+  --color-bg-hover: rgba(255, 255, 255, 0.14);
+  --color-bg-active: rgba(255, 255, 255, 0.2);
+  --color-text-primary: #f4f6fa;
+  --color-text-secondary: #b2bdca;
+  --color-text-muted: #b9c5d8;
+  --color-border: rgba(255, 255, 255, 0.14);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
+  --color-border-hover: rgba(255, 255, 255, 0.28);
+  --color-danger: var(--fs-red-300);
+  color-scheme: dark;
+}
+
+/* =============================================================================
+   LAYER 2c — Non-color scales (theme-invariant defaults = data-ui "soft")
+   ========================================================================== */
+:root {
+  /* Spacing — 4px base; covers every raw px in App.css */
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 14px;
+  --space-8: 16px;
+  --space-9: 18px;
+  --space-10: 20px;
+  --space-12: 24px;
+  --space-14: 28px;
+  --space-16: 32px;
+  --space-20: 40px;
+  --space-24: 48px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-pill: 999px;
+  --radius-full: 50%;
+
+  /* Shadow */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 12px 30px rgba(16, 24, 40, 0.16);
+  --shadow-xl: 0 28px 70px rgba(0, 0, 0, 0.2);
+  --shadow-accent: 0 10px 18px rgba(0, 0, 0, 0.12);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, sans-serif;
+  --font-mono: Consolas, "Courier New", monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 15px;
+  --font-size-xl: 17px;
+  --font-size-2xl: 20px;
+  --font-size-3xl: clamp(34px, 4vw, 48px);
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.08;
+  --line-height-snug: 1.35;
+  --line-height-base: 1.5;
+  --letter-spacing-tight: -0.04em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.04em;
+
+  /* Z-index */
+  --z-base: 1;
+  --z-raised: 3;
+  --z-dropdown-backdrop: 30;
+  --z-dropdown: 40;
+  --z-sticky: 100;
+  --z-drawer-backdrop: 199;
+  --z-drawer: 200;
+  --z-bulk-bar: 250;
+  --z-overlay: 1000;
+  --z-modal: 1100;
+  --z-toast: 1200;
+
+  /* Motion */
+  --motion-fast: 0.15s;
+  --motion-base: 0.2s;
+  --motion-slow: 0.3s;
+  --motion-drawer: 0.5s;
+  --motion-ease: ease;
+  --motion-ease-out: ease-out;
+
+  /* Layout */
+  --layout-sidebar-width: 240px;
+  --layout-gutter: var(--space-12);
+  --layout-content-max: 1200px;
+  --layout-control-height: 36px;
+  --layout-control-height-sm: 34px;
+
+  /* Material feel — soft, warm, spacious. Pill controls, big diffused
+     depth, accent-tinted surfaces, springy motion. The one UI language
+     the app ships (see PLUSH note below for why these values). */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+  --radius-2xl: 32px;
+  --radius-pill: 999px;
+
+  --shadow-xs: 0 2px 6px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 24px 56px rgba(16, 24, 40, 0.16);
+  --shadow-xl: 0 36px 90px rgba(0, 0, 0, 0.22);
+  --shadow-accent: 0 16px 32px color-mix(in srgb, var(--fs-accent-500) 32%, transparent);
+
+  --space-6: 14px;
+  --space-8: 20px;
+  --space-12: 28px;
+
+  --layout-control-height: 42px;
+  --layout-control-height-sm: 38px;
+
+  --hover-lift: translateY(-3px);
+  --press-scale: scale(0.98);
+  --motion-fast: 0.22s;
+  --motion-ease: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --surface-blur: none;
+  --font-family-meta: var(--font-sans);
+  --control-border-width: 1px;
+}
+
+/* PLUSH material, folded into :root directly rather than gated behind a
+   [data-ui] switch — this was one of four selectable UI languages; the
+   others (classic/finder/focus, which also changed DriveLayout's DOM
+   structure) were removed and plush kept as the shipped design.
+   [data-theme="dark"] MUST come after :root here — same specificity,
+   so source order decides, and dark's override has to win in dark mode. */
+:root {
+  --color-bg-sunken: color-mix(in srgb, var(--fs-accent-500) 4%, var(--fs-neutral-50));
+  --color-bg-subtle: color-mix(in srgb, var(--fs-accent-500) 3%, var(--fs-neutral-50));
+}
+[data-theme="dark"] {
+  /* True black wins over plush's accent-tinted sunken/subtle surfaces —
+     an accent tint on top of pure black reads as a color cast, not a
+     depth cue, so dark mode drops the tint rather than dilute the black. */
+  --color-bg-sunken: #000000;
+  --color-bg-subtle: #000000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0.01ms;
+    --motion-base: 0.01ms;
+    --motion-slow: 0.01ms;
+    --motion-drawer: 0.01ms;
+  }
+}

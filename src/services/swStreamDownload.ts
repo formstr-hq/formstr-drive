@@ -2,6 +2,7 @@ import { BlossomClient } from "../blossom";
 import type { FileMetadata } from "../types/metadata";
 import { decryptFileWithKey } from "../crypto";
 import type { DownloadProgressInfo } from "./downloadFile";
+import { withTimeout, TransferFailure } from "../transfers/withTimeout";
 import { decryptFileChunk, fileChunkRefs } from "./fileCrypto";
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -26,10 +27,49 @@ export async function downloadViaServiceWorker(
   onProgress?: (info: DownloadProgressInfo) => void,
   signal?: AbortSignal,
 ): Promise<{ uri: null }> {
-  const registration = await navigator.serviceWorker.ready;
-  const controller = navigator.serviceWorker.controller;
-  if (!registration.active || !controller) {
-    throw new Error("Download service worker is not active yet. Please reload the page and try again.");
+  try {
+    return await attemptDownloadViaServiceWorker(file, onProgress, signal);
+  } catch (e) {
+    if (e instanceof Error && e.message === "sw-attach-timeout") {
+      console.warn("SW attach timed out, retrying once...");
+      return await attemptDownloadViaServiceWorker(file, onProgress, signal);
+    }
+    throw e;
+  }
+}
+
+async function attemptDownloadViaServiceWorker(
+  file: FileMetadata,
+  onProgress?: (info: DownloadProgressInfo) => void,
+  signal?: AbortSignal,
+): Promise<{ uri: null }> {
+  // `serviceWorker.ready` never resolves AND never rejects when no registration
+  // exists (e.g. /sw.js failed to load in production). Without a timeout the
+  // whole download hangs at 0% forever and the FSA/blob fallbacks in
+  // downloadFileStreaming are never reached. Reject instead so it falls through.
+  await withTimeout(
+    navigator.serviceWorker.ready,
+    3000,
+    "sw-unavailable",
+    "Download service worker is unavailable.",
+  );
+  let controller = navigator.serviceWorker.controller;
+  if (!controller) {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("Download service worker is not active yet. Please reload the page and try again.")),
+        5000,
+      );
+      const onControllerChange = () => {
+        controller = navigator.serviceWorker.controller;
+        if (controller) {
+          clearTimeout(timeout);
+          navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+          resolve();
+        }
+      };
+      navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    });
   }
 
   const id = crypto.randomUUID();
@@ -46,18 +86,80 @@ export async function downloadViaServiceWorker(
   };
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error("Timed out starting the download service worker")),
-        10000,
-      );
-      port.onmessage = (event) => {
-        if (event.data?.type === "ready") {
-          window.clearTimeout(timeout);
-          resolve();
+    let pullCredits = 0;
+    interface PullWaiter {
+      resolve: () => void;
+      reject: (e: unknown) => void;
+    }
+    let pullWaiters: PullWaiter[] = [];
+    let readyResolver: (() => void) | null = null;
+    let fetchAttachedResolver: (() => void) | null = null;
+    let completeResolver: (() => void) | null = null;
+    let cancelledBySw = false;
+
+    port.onmessage = (event) => {
+      const msg = event.data;
+      if (msg?.type === "ready") {
+        readyResolver?.();
+      } else if (msg?.type === "fetch-attached") {
+        fetchAttachedResolver?.();
+      } else if (msg?.type === "complete") {
+        completeResolver?.();
+      } else if (msg?.type === "pull") {
+        // Hand the credit straight to a blocked waiter if there is one; only
+        // bank it when nobody is waiting. Incrementing unconditionally (the old
+        // bug) left credits > 0 forever, so takePull() stopped ever blocking and
+        // all backpressure was lost.
+        const waiter = pullWaiters.shift();
+        if (waiter) waiter.resolve();
+        else pullCredits++;
+      } else if (msg?.type === "cancelled") {
+        cancelledBySw = true;
+        const waiters = pullWaiters;
+        pullWaiters = [];
+        waiters.forEach((w) => w.resolve()); // let the producer loop observe cancelledBySw and stop
+      }
+    };
+    port.start();
+
+    const takePull = () =>
+      new Promise<void>((resolve, reject) => {
+        if (cancelledBySw) return resolve();
+        if (signal?.aborted) return reject(new DOMException("Download aborted", "AbortError"));
+        if (pullCredits > 0) {
+          pullCredits--;
+          return resolve();
         }
-      };
-      controller.postMessage(
+
+        let settled = false;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          pullWaiters = pullWaiters.filter((x) => x !== waiter);
+          fn();
+        };
+        const onAbort = () => finish(() => reject(new DOMException("Download aborted", "AbortError")));
+        const timer = setTimeout(
+          () =>
+            finish(() =>
+              reject(new TransferFailure("sw-pull-timeout", "Timed out waiting for the browser to accept download data.")),
+            ),
+          30000,
+        );
+        const waiter: PullWaiter = {
+          resolve: () => finish(resolve),
+          reject: (e) => finish(() => reject(e)),
+        };
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+        pullWaiters.push(waiter);
+      });
+
+    await new Promise<void>((resolve, reject) => {
+      readyResolver = resolve;
+      controller!.postMessage(
         {
           type: "start",
           id,
@@ -67,9 +169,17 @@ export async function downloadViaServiceWorker(
         },
         [channel.port2],
       );
+      setTimeout(() => reject(new Error("Timed out starting the download service worker")), 10000);
     });
 
     throwIfAborted(signal);
+    document.body.appendChild(iframe);
+    iframe.src = `/__stream_download__/${encodeURIComponent(id)}`;
+
+    await new Promise<void>((resolve, reject) => {
+      fetchAttachedResolver = resolve;
+      setTimeout(() => reject(new Error("sw-attach-timeout")), 5000);
+    });
 
     const clients = new Map<string, BlossomClient>();
     const clientFor = (server: string) => {
@@ -82,34 +192,11 @@ export async function downloadViaServiceWorker(
     };
 
     await new Promise<void>((resolve, reject) => {
-      let cancelledBySw = false;
-
-      port.onmessage = (event) => {
-        const msg = event.data;
-        if (msg?.type === "cancelled") {
-          cancelledBySw = true;
-        }
-      };
-
-      const waitForPull = () =>
-        new Promise<void>((pullResolve) => {
-          const handler = (event: MessageEvent) => {
-            if (event.data?.type === "pull") {
-              port.removeEventListener("message", handler);
-              pullResolve();
-            } else if (event.data?.type === "cancelled") {
-              cancelledBySw = true;
-              port.removeEventListener("message", handler);
-              pullResolve();
-            }
-          };
-          port.addEventListener("message", handler);
-        });
-      port.start();
-
-      const producer = (async () => {
+      (async () => {
         try {
           const chunks = fileChunkRefs(file);
+          let bytesSent = 0;
+
           if (chunks.length > 0) {
             const totalChunks = chunks.length;
 
@@ -117,7 +204,7 @@ export async function downloadViaServiceWorker(
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
-              await waitForPull();
+              await takePull();
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
@@ -129,10 +216,15 @@ export async function downloadViaServiceWorker(
                 signal,
               );
               const decBytes = await decryptFileChunk(file, encBytes, i);
-              const buffer = decBytes.buffer.slice(
+              let buffer = decBytes.buffer.slice(
                 decBytes.byteOffset,
                 decBytes.byteOffset + decBytes.byteLength,
               ) as ArrayBuffer;
+
+              if (bytesSent + buffer.byteLength > file.size) {
+                buffer = buffer.slice(0, file.size - bytesSent);
+              }
+              bytesSent += buffer.byteLength;
               port.postMessage({ type: "chunk", buffer }, [buffer]);
 
               onProgress?.({
@@ -143,7 +235,7 @@ export async function downloadViaServiceWorker(
               });
             }
           } else {
-            await waitForPull();
+            await takePull();
             throwIfAborted(signal);
 
             if (!cancelledBySw) {
@@ -156,10 +248,16 @@ export async function downloadViaServiceWorker(
               throwIfAborted(signal);
               const ciphertext = new TextDecoder().decode(encBytes);
               const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
-              const buffer = decrypted.buffer.slice(
+              let buffer = decrypted.buffer.slice(
                 decrypted.byteOffset,
                 decrypted.byteOffset + decrypted.byteLength,
               ) as ArrayBuffer;
+
+              if (bytesSent + buffer.byteLength > file.size) {
+                buffer = buffer.slice(0, file.size - bytesSent);
+              }
+              bytesSent += buffer.byteLength;
+
               onProgress?.({ stage: "Saving file...", progress: 100 });
               port.postMessage({ type: "chunk", buffer }, [buffer]);
             }
@@ -170,7 +268,20 @@ export async function downloadViaServiceWorker(
             return;
           }
 
+          if (bytesSent !== file.size) {
+            throw new Error(`size-mismatch: expected ${file.size} bytes, got ${bytesSent} bytes`);
+          }
+
           port.postMessage({ type: "end" });
+
+          // Wait for the SW to confirm it closed the stream before tearing down
+          // the iframe, so we don't cancel an in-progress write. Capped at 5s as
+          // a safety net — backpressure means all bytes were already consumed.
+          await new Promise<void>((res) => {
+            completeResolver = res;
+            setTimeout(res, 5000);
+          });
+
           resolve();
         } catch (error) {
           port.postMessage({
@@ -180,14 +291,6 @@ export async function downloadViaServiceWorker(
           reject(error);
         }
       })();
-
-      // Start the download request only after the producer has synchronously
-      // installed its first `pull` listener. Otherwise a fast service worker
-      // can send the first pull before waitForPull is listening and stall the
-      // download forever.
-      document.body.appendChild(iframe);
-      iframe.src = `/__stream_download__/${encodeURIComponent(id)}`;
-      void producer;
     });
   } finally {
     cleanup();

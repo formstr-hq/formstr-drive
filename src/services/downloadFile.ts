@@ -1,8 +1,8 @@
 import { BlossomClient } from "../blossom";
 import type { FileMetadata } from "../types/metadata";
 import { decryptFileWithKey } from "../crypto";
-import { downloadViaServiceWorker, hasServiceWorkerSupport } from "./swStreamDownload";
 import { decryptFileChunk, fileChunkRefs } from "./fileCrypto";
+import { downloadViaServiceWorker, hasServiceWorkerSupport } from "./swStreamDownload";
 
 // Browsers without the File System Access API (Firefox, Safari) have no way to
 // stream bytes to disk, so large files would have to be buffered fully in memory.
@@ -24,10 +24,12 @@ export interface DownloadProgressInfo {
 interface FileSystemWritableFileStream {
   write(data: Uint8Array): Promise<void>;
   close(): Promise<void>;
+  abort(): Promise<void>;
 }
 
 interface FileSystemFileHandleLike {
   createWritable(): Promise<FileSystemWritableFileStream>;
+  remove?(): Promise<void>;
 }
 
 function hasFileSystemAccess(): boolean {
@@ -41,6 +43,16 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortSignal): Promise<Uint8Array> {
+  const clients = new Map<string, BlossomClient>();
+  const clientFor = (server: string) => {
+    let client = clients.get(server);
+    if (!client) {
+      client = new BlossomClient(server);
+      clients.set(server, client);
+    }
+    return client;
+  };
+
   const chunks = fileChunkRefs(file);
   if (chunks.length > 0) {
     const result = new Uint8Array(file.size);
@@ -49,8 +61,12 @@ export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortS
     for (let i = 0; i < chunks.length; i++) {
       throwIfAborted(signal);
       const chunk = chunks[i];
-      const client = new BlossomClient(chunk.server ?? file.server);
-      const encBytes = await client.download(chunk.hash, undefined, undefined, signal);
+      const encBytes = await clientFor(chunk.server ?? file.server).download(
+        chunk.hash,
+        undefined,
+        undefined,
+        signal,
+      );
       const decBytes = await decryptFileChunk(file, encBytes, i);
 
       result.set(decBytes, offset);
@@ -62,8 +78,7 @@ export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortS
   }
 
   // Legacy single-blob fallback
-  const client = new BlossomClient(file.server);
-  const blob = await client.download(file.hash, undefined, undefined, signal);
+  const blob = await clientFor(file.server).download(file.hash, undefined, undefined, signal);
   const ciphertext = new TextDecoder().decode(blob);
   return decryptFileWithKey(ciphertext, file.encryptionKey);
 }
@@ -81,17 +96,27 @@ export async function downloadFileStreaming(
   onProgress?: (info: DownloadProgressInfo) => void,
   signal?: AbortSignal,
 ): Promise<{ uri: string | null }> {
+  // Primary Strategy: Service Worker (All browsers, background queue compatible)
+  if (hasServiceWorkerSupport()) {
+    try {
+      return await downloadViaServiceWorker(file, onProgress, signal);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        throw e;
+      }
+      console.warn("Service worker download failed, falling back to File System Access if available:", e);
+    }
+  }
+
+  // Fallback 1: File System Access API (Chromium only)
   if (hasFileSystemAccess()) {
     return downloadViaFileSystemAccess(file, onProgress, signal);
   }
 
-  if (hasServiceWorkerSupport()) {
-    return downloadViaServiceWorker(file, onProgress, signal);
-  }
-
+  // Fallback 2: In-memory blob (Fails on large files)
   if (file.size > UNSAFE_INMEMORY_SIZE) {
     throw new Error(
-      "This file is too large to download in this browser. Open it in a Chromium-based browser or the Formstr Drive app to download large files.",
+      "This file is too large to download in this browser. Please enable Service Workers or use a Chromium-based browser.",
     );
   }
 
@@ -134,6 +159,8 @@ async function downloadViaFileSystemAccess(
     }
     return client;
   };
+  let completed = false;
+  let bytesWritten = 0;
 
   try {
     const chunks = fileChunkRefs(file);
@@ -165,7 +192,13 @@ async function downloadViaFileSystemAccess(
         throwIfAborted(signal);
         const decBytes = await pending.get(i)!;
         pending.delete(i);
-        await writer.write(decBytes);
+
+        let buffer = decBytes;
+        if (bytesWritten + buffer.byteLength > file.size) {
+          buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
+        }
+        await writer.write(buffer);
+        bytesWritten += buffer.byteLength;
         fillPending();
 
         onProgress?.({
@@ -185,11 +218,37 @@ async function downloadViaFileSystemAccess(
       throwIfAborted(signal);
       const ciphertext = new TextDecoder().decode(encBytes);
       const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
+
+      let buffer = decrypted;
+      if (bytesWritten + buffer.byteLength > file.size) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
+      }
+
       onProgress?.({ stage: "Saving file...", progress: 100 });
-      await writer.write(decrypted);
+      await writer.write(buffer);
+      bytesWritten += buffer.byteLength;
     }
+
+    if (bytesWritten !== file.size) {
+      throw new Error(`size-mismatch: expected ${file.size} bytes, got ${bytesWritten} bytes`);
+    }
+
+    completed = true;
   } finally {
-    await writer.close();
+    if (completed) {
+      await writer.close();
+    } else {
+      try {
+        await writer.abort();
+      } catch (e) {
+        console.warn("Failed to abort writer:", e);
+      }
+      try {
+        await handle.remove?.();
+      } catch (e) {
+        console.warn("Failed to remove file:", e);
+      }
+    }
   }
 
   return { uri: null };

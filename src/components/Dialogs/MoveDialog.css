@@ -1,0 +1,130 @@
+/* Move Dialog */
+.move-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--color-scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-overlay);
+}
+
+.move-dialog {
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  width: 90%;
+  max-width: 480px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-xl);
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur);
+  animation: dialogFadeIn 0.18s ease;
+}
+
+@keyframes dialogFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.move-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-10) var(--space-12);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.move-dialog-header h3 {
+  margin: 0;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+}
+
+.move-dialog-header button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 24px;
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.move-dialog-header button:hover {
+  background: var(--color-bg-hover);
+}
+
+.move-dialog-body {
+  padding: var(--space-8) var(--space-12) var(--space-12);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-list-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.folder-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--motion-fast);
+  font-size: var(--font-size-md);
+}
+
+.folder-option:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.folder-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.folder-option.current {
+  background: var(--color-bg-subtle);
+  border-color: var(--color-border-hover);
+}
+
+.folder-icon {
+  font-size: 18px;
+}
+
+.folder-path {
+  flex: 1;
+  font-weight: var(--font-weight-medium);
+}
+
+.current-badge {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-active);
+  padding: 2px var(--space-4);
+  border-radius: var(--radius-sm);
+}

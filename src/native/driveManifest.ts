@@ -4,6 +4,7 @@ import { isAndroidPlatform } from "../utils/platform";
 
 export interface NativeDownloadStartedEvent {
   id: string;
+  hash: string;
 }
 
 export interface NativeDownloadEvent {
@@ -378,6 +379,46 @@ export async function saveFileToDownloads(
   return null;
 }
 
+interface DownloadCallbacks {
+  onProgress?: (percent: number) => void;
+  onStarted?: (cancel: () => void) => void;
+  // The native download id (a random UUID) once `downloadStarted` has arrived.
+  // Until then progress/cancel can't be routed, so the entry lives in
+  // `pendingDownloadsByHash` keyed by the file hash we do know up front.
+  nativeId?: string;
+}
+
+// The native plugin generates a random UUID per download and reports progress
+// and completion under that id — NOT the file hash. So callbacks are registered
+// by hash first (pendingDownloadsByHash), then re-keyed to the native id when
+// the `downloadStarted` event delivers the correlation (event.hash -> event.id).
+const pendingDownloadsByHash = new Map<string, DownloadCallbacks>();
+const activeDownloadsById = new Map<string, DownloadCallbacks>();
+let nativeListenersInitialized = false;
+
+async function ensureNativeListeners() {
+  if (nativeListenersInitialized || !driveFilesPlugin) return;
+  nativeListenersInitialized = true;
+
+  await driveFilesPlugin.addListener("downloadStarted", (event) => {
+    const callbacks = pendingDownloadsByHash.get(event.hash);
+    if (!callbacks) return;
+    pendingDownloadsByHash.delete(event.hash);
+    callbacks.nativeId = event.id;
+    activeDownloadsById.set(event.id, callbacks);
+    callbacks.onStarted?.(() => {
+      void driveFilesPlugin?.cancelDownload({ id: event.id });
+    });
+  });
+
+  await driveFilesPlugin.addListener("downloadEvent", (event) => {
+    const callbacks = activeDownloadsById.get(event.id);
+    if (event.type === "progress" && typeof event.percent === "number") {
+      callbacks?.onProgress?.(event.percent);
+    }
+  });
+}
+
 export async function downloadFileToDownloads(
   file: {
     server: string;
@@ -397,23 +438,15 @@ export async function downloadFileToDownloads(
   }
   const plugin = driveFilesPlugin;
 
-  const listeners: PluginListenerHandle[] = [];
-  try {
-    listeners.push(
-      await plugin.addListener("downloadStarted", (event) => {
-        onStarted?.(() => {
-          void plugin.cancelDownload({ id: event.id });
-        });
-      }),
-    );
-    listeners.push(
-      await plugin.addListener("downloadEvent", (event) => {
-        if (event.type === "progress" && typeof event.percent === "number") {
-          onProgress?.(event.percent);
-        }
-      }),
-    );
+  await ensureNativeListeners();
 
+  const callbacks: DownloadCallbacks = { onProgress, onStarted };
+  pendingDownloadsByHash.set(file.hash, callbacks);
+
+  try {
+    // No timeout here: downloadToDownloads resolves only when the *whole* file
+    // finishes, so wrapping it in a fixed timeout would spuriously fail every
+    // real download while the native foreground service kept running headless.
     return await plugin.downloadToDownloads({
       server: file.server,
       chunks: chunkHashes(file.chunks),
@@ -430,10 +463,18 @@ export async function downloadFileToDownloads(
     }
     throw e;
   } finally {
-    for (const listener of listeners) {
-      await listener.remove();
-    }
+    pendingDownloadsByHash.delete(file.hash);
+    if (callbacks.nativeId) activeDownloadsById.delete(callbacks.nativeId);
   }
+}
+
+/**
+ * True if a native download with this id is being driven by the current
+ * session's queue (via downloadFileToDownloads). Adoption uses this to avoid
+ * creating a duplicate row for a download it's already tracking.
+ */
+export function isNativeDownloadTracked(nativeId: string): boolean {
+  return activeDownloadsById.has(nativeId);
 }
 
 export async function openDownloadedFile(uri: string, mimeType: string): Promise<void> {

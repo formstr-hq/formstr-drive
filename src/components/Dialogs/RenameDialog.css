@@ -1,0 +1,56 @@
+/* Rename Input */
+.rename-input {
+  width: 100%;
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  outline: none;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.rename-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+  background: var(--color-bg-surface);
+}
+
+/* Rename Actions */
+.rename-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  margin-top: var(--space-8);
+}
+
+/* Buttons (reuse patterns but refine) */
+.rename-btn {
+  padding: var(--space-4) var(--space-7);
+  border: none;
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--motion-fast);
+}
+
+.rename-btn:hover {
+  background: var(--color-accent-hover);
+}
+
+.cancel-btn {
+  padding: var(--space-4) var(--space-7);
+  border: none;
+  background: var(--color-bg-active);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  transition: background var(--motion-fast);
+}
+
+.cancel-btn:hover {
+  background: var(--color-border-strong);
+}

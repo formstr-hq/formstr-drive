@@ -1,6 +1,8 @@
 export const LOCAL_STORAGE_KEYS = {
     PROFILE: "formstr-drive-profile",
     CUSTOM_FOLDERS: "formstr-drive-custom-folders",
+    THEME: "formstr-drive-theme",
+    PALETTE: "formstr-drive-palette",
 }
 
 export function getItem<T>(key: string, { parseAsJson = true } = {}) : T | null {

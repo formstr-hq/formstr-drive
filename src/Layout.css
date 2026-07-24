@@ -1,0 +1,23 @@
+/* Layout */
+.drive-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+}
+
+.drive-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.drive-main {
+  flex: 1;
+  overflow: hidden;
+  padding: var(--space-12);
+  min-height: 0;
+}

@@ -1,0 +1,207 @@
+/* ── Grid tile layout ── */
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-8);
+}
+
+.file-tile {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: visible;
+  background: var(--color-bg-surface);
+  cursor: default;
+  transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+  position: relative;
+}
+
+.file-tile.selected {
+  border-color: var(--color-accent);
+  box-shadow:
+    0 0 0 2px var(--color-focus-ring),
+    0 6px 20px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.file-tile:hover .file-select {
+  opacity: 1;
+}
+
+.file-select-tile {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+}
+
+.file-tile:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-border-hover);
+  z-index: 2;
+}
+
+.file-tile.menu-open {
+  z-index: 50;
+}
+
+/* Square preview */
+.file-tile-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--color-bg-subtle);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.file-tile-preview.menu-open {
+  overflow: visible;
+}
+
+.file-tile-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.file-tile-icon-fallback {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.file-tile-emoji {
+  font-size: 40px;
+  line-height: 1;
+}
+
+.file-tile-ext {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+}
+
+/* Grid view's fallback icon had no file-type coloring at all — only the
+   small list-view .file-icon did — so image/pdf/video tiles read as flat
+   gray boxes. Same tokens, same tint, now in both views. */
+.file-tile-icon-fallback[data-type="img"] {
+  background: var(--color-filetype-img-bg);
+}
+.file-tile-icon-fallback[data-type="img"] .file-tile-ext {
+  color: var(--color-filetype-img-fg);
+}
+.file-tile-icon-fallback[data-type="pdf"] {
+  background: var(--color-filetype-pdf-bg);
+}
+.file-tile-icon-fallback[data-type="pdf"] .file-tile-ext {
+  color: var(--color-filetype-pdf-fg);
+}
+.file-tile-icon-fallback[data-type="vid"] {
+  background: var(--color-filetype-vid-bg);
+}
+.file-tile-icon-fallback[data-type="vid"] .file-tile-ext {
+  color: var(--color-filetype-vid-fg);
+}
+
+/* Hover action overlay — a scrim over the thumbnail image itself, so it
+   stays a dark overlay regardless of app theme (needs to work against
+   arbitrary image content, not app chrome). */
+.file-tile-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+  pointer-events: none;
+}
+
+.file-tile:hover .file-tile-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.file-tile.menu-open .file-tile-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tile-action-btn {
+  /* Sits on the image scrim above, so it stays a literal light chip
+     regardless of theme — same reasoning as .file-tile-overlay. */
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: #111;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.tile-action-btn:hover {
+  background: #fff;
+}
+
+.tile-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tile-menu {
+  top: calc(100% + 8px);
+  bottom: auto;
+  right: -18px;
+  margin: 0;
+  z-index: 60;
+}
+
+/* Footer */
+.file-tile-footer {
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-tile-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-primary);
+}
+
+.file-tile-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-family-meta);
+}
+
+.file-tile-footer .file-server-badge {
+  margin-left: 0;
+  margin-top: 2px;
+  align-self: flex-start;
+}

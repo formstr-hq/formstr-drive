@@ -1,11 +1,13 @@
+@import "./styles/tokens.css";
+
 * {
   box-sizing: border-box;
 }
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  font-family: var(--font-sans);
+  line-height: var(--line-height-base);
+  font-weight: var(--font-weight-normal);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -16,6 +18,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
 }
 
 #root {
@@ -24,8 +28,20 @@ body {
 
 button {
   font-family: inherit;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+button:active:not(:disabled) {
+  transform: var(--press-scale);
 }
 
 input {
   font-family: inherit;
+}
+
+.app-logo {
+  display: block;
+  height: 32px;
+  width: auto;
+  flex-shrink: 0;
 }

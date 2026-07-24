@@ -1,0 +1,125 @@
+/* Toolbar */
+.file-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  margin-bottom: var(--space-8);
+  padding-bottom: var(--space-8);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.file-list-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.search-wrap {
+  flex: 1;
+  position: relative;
+}
+
+.search-icon {
+  position: absolute;
+  left: var(--space-5);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  height: var(--layout-control-height);
+  padding: 0 var(--space-6) 0 34px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  background: var(--color-bg-sunken);
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+
+.sort-select {
+  flex-shrink: 0;
+  height: var(--layout-control-height);
+  padding: 0 var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  background: var(--color-bg-sunken);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select:hover {
+  border-color: var(--color-border-hover);
+}
+
+.sort-select:focus {
+  border-color: var(--color-accent);
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+
+
+.bulk-select-toggle {
+  white-space: nowrap;
+}
+
+.view-toggle {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.view-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.view-btn.active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.view-btn:hover:not(.active) {
+  background: var(--color-bg-hover);
+}
+
+@media (max-width: 768px) {
+  .file-list-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .file-list-toolbar-actions {
+    justify-content: space-between;
+  }
+}
+
+/* List view */
+.file-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.file-list-view .file-card {
+  padding: var(--space-4) var(--space-7);
+}

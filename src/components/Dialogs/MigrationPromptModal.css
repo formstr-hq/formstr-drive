@@ -1,0 +1,41 @@
+/* Migration Modal overrides — a normal light dialog. It borrows
+   .preview-modal for layout only; it does NOT get data-surface="inverse",
+   so the semantic tokens above resolve to the ambient (light/dark) theme
+   instead of the always-dark preview chrome. */
+.migration-modal {
+  width: min(480px, 90%);
+  height: auto;
+  min-height: 200px;
+}
+
+.migration-modal .preview-modal-body {
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: var(--space-12);
+}
+
+.migration-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-6);
+  width: 100%;
+  margin-top: var(--space-4);
+}
+
+.migration-actions button {
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  border: none;
+}
+
+.migration-actions .preview-doc-btn {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+
+.migration-actions .preview-doc-btn:hover {
+  background: var(--color-accent-hover);
+}

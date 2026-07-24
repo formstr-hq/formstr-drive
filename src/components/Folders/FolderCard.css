@@ -1,0 +1,122 @@
+.folder-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-7);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-row:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-hover);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Dragging a file over a folder row/tile — accent border, ready to receive. */
+.folder-row.drag-over {
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent);
+}
+
+.folder-row-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.folder-row-icon svg {
+  width: 22px;
+  height: 16px;
+}
+
+.folder-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.folder-row-name {
+  display: block;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-row-meta {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-family-meta);
+}
+
+.folder-tile {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-bg-surface);
+  cursor: pointer;
+  transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+  padding: 0;
+  text-align: left;
+  color: inherit;
+}
+
+.folder-tile:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-border-hover);
+}
+
+.folder-tile.drag-over {
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-md);
+}
+
+.folder-tile-preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--color-bg-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.folder-tile-icon {
+  width: 54px;
+  height: 36px;
+  color: var(--color-text-secondary);
+}
+
+.folder-tile-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-5);
+}
+
+.folder-tile-name {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-tile-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}

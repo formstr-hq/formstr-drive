@@ -23,9 +23,6 @@ build/
 # Ignore TypeScript config backups
 tsconfig.json~
 
-# Ignore public directory (if needed, otherwise remove this line)
-public/
-
 # Android local artifacts
 android/.gradle/
 android/.idea/

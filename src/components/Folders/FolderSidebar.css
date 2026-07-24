@@ -1,0 +1,307 @@
+/* Sidebar */
+.folder-sidebar {
+  width: var(--layout-sidebar-width);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg-sunken);
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur);
+}
+
+.sidebar-section + .sidebar-section {
+  border-top: 1px solid var(--color-border);
+}
+
+.sidebar-section--grow {
+  flex: 1;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-8);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-base);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-secondary);
+}
+
+.new-folder-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 18px;
+  color: var(--color-text-secondary);
+}
+
+.new-folder-btn:hover {
+  color: var(--color-accent);
+}
+
+.folder-feedback {
+  padding: var(--space-4) var(--space-6);
+  margin: 0 var(--space-6) var(--space-4);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  text-align: center;
+  font-weight: var(--font-weight-medium);
+}
+
+.new-folder-input {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-6) var(--space-6);
+}
+
+.new-folder-input input {
+  flex: 1;
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-base);
+  min-width: 0;
+}
+
+.new-folder-input button {
+  padding: var(--space-3) var(--space-5);
+  border: none;
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  flex-shrink: 0;
+  min-width: 32px;
+}
+
+.new-folder-input button:hover {
+  background: var(--color-accent-hover);
+}
+
+.new-folder-input button.cancel-btn {
+  background: var(--color-bg-active);
+  color: var(--color-text-secondary);
+}
+
+.new-folder-input button.cancel-btn:hover {
+  background: var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+
+.folder-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 var(--space-3);
+  padding-right: var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  position: relative;
+  /* background-COLOR only — transitioning the `background` shorthand animates
+     every background sub-property (image/position/size) and can flicker on
+     repaint; the colour is all that changes here. */
+  transition: background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.folder-item:hover:not(.active) {
+  background-color: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+}
+
+.folder-item.active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+.folder-item.active::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.folder-item.active .folder-item-icon {
+  color: var(--color-accent);
+}
+
+/* Dragging a file over a folder row — accent border, ready to receive. */
+.folder-item.drag-over {
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent);
+}
+
+.folder-toggle {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+}
+
+.folder-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.folder-toggle--spacer {
+  cursor: default;
+}
+
+.folder-chevron {
+  width: 10px;
+  height: 10px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.folder-chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.folder-item-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5) 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  color: inherit;
+  font: inherit;
+}
+
+.folder-item-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  color: var(--color-text-secondary);
+}
+
+.folder-item.active .folder-item-icon {
+  color: var(--color-accent);
+}
+
+.folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-count {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-family-meta);
+}
+
+/* ---- Recent files quick-access ---- */
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-3) var(--space-3);
+  gap: 1px;
+}
+
+.recent-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-3) var(--space-6);
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.recent-item:hover {
+  background-color: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+}
+
+.recent-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+}
+
+.recent-item-time {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-family-meta);
+}
+
+/* Mobile: hidden drawer by default */
+@media (max-width: 768px) {
+  .folder-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100%;
+    z-index: var(--z-drawer);
+    transform: translateX(-100%);
+    transition: transform var(--motion-drawer) ease;
+  }
+
+  .folder-sidebar.sidebar-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--color-scrim);
+    z-index: var(--z-drawer-backdrop);
+  }
+}
+
+/* Hide backdrop on desktop */
+@media (min-width: 769px) {
+  .sidebar-backdrop {
+    display: none !important;
+  }
+}

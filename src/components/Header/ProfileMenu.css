@@ -1,0 +1,293 @@
+.profile-menu {
+  position: relative;
+}
+
+.profile-menu-trigger {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  border-radius: var(--radius-full);
+}
+
+.profile-menu-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+
+.profile-menu-panel {
+  position: absolute;
+  top: calc(100% + var(--space-3));
+  right: 0;
+  width: 260px;
+  background: var(--color-bg-raised);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  z-index: var(--z-dropdown);
+}
+
+.profile-menu-section + .profile-menu-section {
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--color-border);
+}
+
+.profile-menu-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+/* ---- One shared control size for every row-style element in the panel:
+   account rows, add/logout, the server select, the add-server input.
+   Same height, same padding, same radius — differentiated by color/content,
+   not by size, so the panel reads as one component. ---- */
+.profile-menu-row-btn {
+  width: 100%;
+  height: 36px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+}
+
+.profile-menu-row-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.profile-menu-row-btn--danger {
+  color: var(--color-danger);
+}
+
+.profile-menu-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.profile-menu-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.profile-menu-account-switch {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  height: auto;
+  min-height: 36px;
+  padding: var(--space-2) var(--space-4);
+}
+
+.profile-menu-account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.profile-menu-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu-account-npub {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu-account.is-active .profile-menu-account-switch {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-weight: var(--font-weight-medium);
+}
+
+.profile-menu-account-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.profile-menu-account-remove {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  line-height: 1;
+}
+
+.profile-menu-account-remove:hover {
+  background: var(--color-danger-subtle);
+  border-color: var(--color-danger-border);
+  color: var(--color-danger);
+}
+
+.profile-menu-account-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* ---- Appearance: one row, one heading-free section — theme toggle +
+   palette swatches side by side, not two stacked labeled blocks. ---- */
+.profile-menu-appearance {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.profile-menu-theme-toggle {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.profile-menu-theme-toggle:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.profile-menu-appearance-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}
+
+.profile-menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.profile-menu-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-bg-surface);
+  box-shadow: 0 0 0 1px var(--color-border);
+  cursor: pointer;
+  padding: 0;
+}
+
+.profile-menu-swatch.is-active {
+  box-shadow: 0 0 0 2px var(--color-text-primary);
+}
+
+.profile-menu-select {
+  appearance: auto;
+  padding: 0 var(--space-5);
+}
+
+.profile-menu-add-server {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.profile-menu-add-server .profile-menu-row-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-menu-add-server-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font: inherit;
+}
+
+.profile-menu-add-server-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.profile-menu-error {
+  margin: var(--space-3) 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+}
+
+.add-account-modal {
+  position: relative;
+  /* --color-bg-raised, not -surface: this floats above the page, and in
+     dark mode needs to be a shade lighter than the pure-black canvas to
+     read as elevated at all — see the token's comment in tokens.css. */
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xl);
+  width: min(440px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-xl);
+  padding: var(--space-8);
+}
+
+.add-account-modal-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-raised);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  line-height: 1;
+  z-index: 1;
+}
+
+.add-account-modal-close:hover {
+  background: var(--color-bg-hover);
+}
