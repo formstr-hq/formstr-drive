@@ -3,11 +3,16 @@ import { useFileIndex } from '../../hooks/useFileContext';
 import { useToast } from '../../hooks/useToast';
 import { FileCard } from "./FileCard";
 import { UploadZone } from '../Upload/UploadZone';
-import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon } from '../icons/Icons';
+import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon, ShareIcon } from '../icons/Icons';
 
-import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../utils/folder';
+import { isDirectChildFolder, getFolderName, getFolderItemCount, filesUnderFolder } from '../../utils/folder';
+import { isLegacyFile } from '../../types/metadata';
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
+import { PullToRefresh } from '../ui/PullToRefresh';
+import { isAndroidPlatform } from '../../utils/platform';
+import { ShareModal } from './ShareModal';
+import { useShares } from '../../context/SharesProvider';
 
 export function FileList() {
   const {
@@ -15,12 +20,13 @@ export function FileList() {
     folders,
     currentFolder,
     setCurrentFolder,
-    loading,
-    hasHydratedIndex,
+    keyReady,
     deleteFiles,
     moveFiles,
+    refresh,
   } = useFileIndex();
   const toast = useToast();
+  const { isFolderShared } = useShares();
   const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
@@ -29,8 +35,19 @@ export function FileList() {
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [shareFolderPath, setShareFolderPath] = useState<string | null>(null);
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isGridView = viewMode === "grid";
+
+  const shareTarget = useMemo(() => {
+    if (!shareFolderPath) return null;
+    return {
+      mode: "folder" as const,
+      folderName: getFolderName(shareFolderPath),
+      path: shareFolderPath,
+      files: filesUnderFolder(files, shareFolderPath),
+    };
+  }, [shareFolderPath, files]);
 
   const currentFolders = useMemo(
     () =>
@@ -62,11 +79,11 @@ export function FileList() {
     });
   }, [files, currentFolder, normalizedQuery, sortKey]);
   const currentFileHashes = useMemo(
-    () => new Set(currentFiles.map((file) => file.hash)),
+    () => new Set(currentFiles.map((file) => file.id)),
     [currentFiles]
   );
   const selectedFiles = useMemo(
-    () => currentFiles.filter((file) => selectedFileHashes.has(file.hash)),
+    () => currentFiles.filter((file) => selectedFileHashes.has(file.id)),
     [currentFiles, selectedFileHashes]
   );
   const selectedCount = selectedFiles.length;
@@ -112,7 +129,12 @@ export function FileList() {
       if (allVisibleSelected) {
         return new Set();
       }
-      return new Set(currentFiles.map((file) => file.hash));
+      // Legacy files (pre-dating the random id) all share the same undefined
+      // id — including them here would collapse them into one shared "select
+      // all" entry and let bulk actions touch the wrong files.
+      return new Set(
+        currentFiles.filter((file) => !isLegacyFile(file)).map((file) => file.id),
+      );
     });
   };
 
@@ -132,7 +154,7 @@ export function FileList() {
     setBulkAction("delete");
 
     try {
-      await deleteFiles(selectedFiles.map((file) => file.hash));
+      await deleteFiles(selectedFiles.map((file) => file.id));
       setSelectedFileHashes(new Set());
       setShowDeleteDialog(false);
     } catch (e) {
@@ -156,7 +178,7 @@ export function FileList() {
     setBulkAction("move");
 
     try {
-      await moveFiles(selectedFiles.map((file) => file.hash), folder);
+      await moveFiles(selectedFiles.map((file) => file.id), folder);
       setSelectedFileHashes(new Set());
       setShowMoveDialog(false);
     } catch (e) {
@@ -225,7 +247,7 @@ export function FileList() {
           </p>
           <ul className="bulk-delete-list">
             {selectedFiles.map((file) => (
-              <li key={file.hash} className="bulk-delete-list-item">
+              <li key={file.id} className="bulk-delete-list-item">
                 <span className="bulk-delete-file-name" title={file.name}>
                   {file.name}
                 </span>
@@ -255,7 +277,10 @@ export function FileList() {
     </div>
   );
 
-  if (loading || !hasHydratedIndex) {
+  // Only the Drive Key needs to be ready to start rendering — files then
+  // populate progressively via the standing file-index subscription as each
+  // one decrypts, rather than blocking behind the full replay (hasHydratedIndex).
+  if (!keyReady) {
     return (
       <div className="loading-container">
         <div className="loading-state">Hold tight while we are fetching your files...</div>
@@ -264,10 +289,9 @@ export function FileList() {
     );
   }
 
-  return (
-    <div className="file-list-container">
-      <div className="file-list-scroll" style={selectedCount > 0 ? { paddingBottom: 120 } : undefined}>
-        <UploadZone />
+  const scrollContent = (
+    <>
+      <UploadZone />
 
         <div className="file-list-toolbar">
           <div className="search-wrap">
@@ -342,9 +366,10 @@ export function FileList() {
               };
 
               return isGridView ? (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-tile${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -359,11 +384,22 @@ export function FileList() {
                     </span>
                     <span className="folder-tile-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                  <button
+                    className={`tile-action-btn folder-tile-share-btn${isFolderShared(folderPath) ? " is-shared" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShareFolderPath(folderPath);
+                    }}
+                    title={isFolderShared(folderPath) ? "Shared — click to manage" : "Share folder"}
+                  >
+                    <ShareIcon />
+                  </button>
+                </div>
               ) : (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-row${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -378,22 +414,62 @@ export function FileList() {
                     </span>
                     <span className="folder-row-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                  <div className="file-actions folder-row-actions">
+                    <button
+                      className={`action-btn${isFolderShared(folderPath) ? " is-shared" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShareFolderPath(folderPath);
+                      }}
+                      title={isFolderShared(folderPath) ? "Shared — click to manage" : "Share folder"}
+                    >
+                      <ShareIcon />
+                    </button>
+                  </div>
+                </div>
               );
             })}
 
-            {currentFiles.map((file) => (
+            {currentFiles.map((file, index) => (
               <FileCard
-                key={file.hash}
+                // Legacy files (pre-dating the random id) all have id === undefined —
+                // falling back to `file.id` alone would give every such row the exact
+                // same React key, which is invalid and can destabilize reconciliation
+                // for the whole list (React warns and may reuse DOM nodes across
+                // unrelated rows when siblings share a key).
+                key={file.id ?? `legacy-${index}`}
                 file={file}
                 viewMode={viewMode}
-                selected={selectedFileHashes.has(file.hash)}
+                selected={selectedFileHashes.has(file.id)}
                 onToggleSelection={toggleFileSelection}
+                // If this card is part of a multi-selection, dragging it should move
+                // the WHOLE selection, matching standard file-manager behavior — not
+                // just the one card that happened to receive the native dragstart.
+                dragIds={
+                  selectedFileHashes.has(file.id) && selectedFileHashes.size > 1
+                    ? Array.from(selectedFileHashes)
+                    : [file.id]
+                }
               />
             ))}
           </div>
         )}
-      </div>
+    </>
+  );
+
+  const scrollStyle = selectedCount > 0 ? { paddingBottom: 120 } : undefined;
+
+  return (
+    <div className="file-list-container">
+      {isAndroidPlatform ? (
+        <PullToRefresh className="file-list-scroll" style={scrollStyle} onRefresh={refresh}>
+          {scrollContent}
+        </PullToRefresh>
+      ) : (
+        <div className="file-list-scroll" style={scrollStyle}>
+          {scrollContent}
+        </div>
+      )}
 
       {selectedCount > 0 && (
         <div className="bulk-action-bar">
@@ -427,6 +503,9 @@ export function FileList() {
       )}
       {bulkDeleteDialog}
       {bulkMoveDialog}
+      {shareTarget && (
+        <ShareModal target={shareTarget} onClose={() => setShareFolderPath(null)} />
+      )}
     </div>
   );
 }

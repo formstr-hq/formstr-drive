@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { FileMetadata } from '../../types/metadata';
+import { isLegacyFile, LEGACY_FILE_MESSAGE, type FileMetadata } from '../../types/metadata';
 import { useFileIndex } from '../../hooks/useFileContext';
 import { decryptFileWithKey } from '../../crypto';
 import { BlossomClient } from '../../blossom';
@@ -8,14 +8,21 @@ import { detectMimeTypeFromMagicBytes, getFileIcon, MAX_PREVIEW_SIZE } from '../
 import { useToast } from '../../hooks/useToast';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { formatSize, formatDate, getHostname } from '../../utils/format';
-import { PreviewEyeIcon } from '../icons/Icons';
+import { PreviewEyeIcon, ShareIcon } from '../icons/Icons';
 import { queueDownload } from "../../transfers/transferQueue";
+import { canvasToBlobWithFallback } from "../../utils/canvas";
+import { ShareModal } from "./ShareModal";
+import { useShares } from "../../context/SharesProvider";
 
 interface FileCardProps {
   file: FileMetadata;
   viewMode?: "grid" | "list";
   selected?: boolean;
   onToggleSelection?: (hash: string) => void;
+  /** Ids to move when THIS card is dragged — the caller's full multi-selection
+   *  when this card is part of one, otherwise just `[file.id]`. Defaults to
+   *  `[file.id]` so other call sites don't need to opt in. */
+  dragIds?: string[];
 }
 
 
@@ -32,11 +39,36 @@ function ServerBadge({ server }: { server: string }) {
 interface PreviewData {
   url: string;
   type: string;
+  /** A static (non-animated) frame, only set for image/gif previews — shown
+   *  by default so the animation only plays on hover, not continuously in
+   *  the file list. Absent (falls back to `url`) if extraction failed. */
+  staticUrl?: string;
 }
 
 // Session-level preview cache: avoids re-fetching (and re-signing) when
 // navigating between folders. Keyed by previewHash → PreviewData.
 const previewCache = new Map<string, PreviewData>();
+
+/** Draws `blobUrl`'s current (first) frame to a canvas and re-exports it as a
+ *  static webp — used to derive a non-animated poster frame from a GIF. */
+async function extractStaticFrame(blobUrl: string): Promise<string> {
+  const img = new Image();
+  img.src = blobUrl;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Failed to load image for static frame extraction"));
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Failed to get canvas 2D context");
+  ctx.drawImage(img, 0, 0);
+
+  const blob = await canvasToBlobWithFallback(canvas, 0.8);
+  return URL.createObjectURL(blob);
+}
 
 async function getPreview(file: FileMetadata): Promise<PreviewData | null> {
   if (!file.previewHash) return null;
@@ -48,13 +80,23 @@ async function getPreview(file: FileMetadata): Promise<PreviewData | null> {
   const uint8arr = await client.download(file.previewHash);
   const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
   const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
-  
+
   const arr = new Uint8Array(decrypted as any);
   const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
 
   const blob = new Blob([decrypted as BlobPart], { type: mimeType });
   const imageUrl = URL.createObjectURL(blob);
-  const data = { url: imageUrl, type: mimeType };
+
+  let staticUrl: string | undefined;
+  if (mimeType === "image/gif") {
+    try {
+      staticUrl = await extractStaticFrame(imageUrl);
+    } catch (e) {
+      console.warn("Failed to extract a static frame for GIF preview; it will always animate", e);
+    }
+  }
+
+  const data: PreviewData = { url: imageUrl, type: mimeType, staticUrl };
 
   previewCache.set(file.previewHash, data);
   return data;
@@ -65,30 +107,33 @@ export function FileCard({
   viewMode = "list",
   selected = false,
   onToggleSelection,
+  dragIds,
 }: FileCardProps) {
   const { deleteFile, moveFile, folders, renameFile } = useFileIndex();
   const toast = useToast();
+  // Files uploaded before the random-id refactor share no resolvable identity
+  // (see isLegacyFile) — every action below must be blocked at this layer,
+  // since the context functions can only defend against a falsy hash, not
+  // against this component handing them one in the first place.
+  const isLegacy = isLegacyFile(file);
+  const { isFileShared } = useShares();
+  const isShared = !isLegacy && isFileShared(file.id);
   const [showMenu, setShowMenu] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
 
   const [previewloaded, setPreviewloaded] = useState(false);
   const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [isHovering, setIsHovering] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  const handleTileMouseEnter = () => {
-    videoRef.current?.play().catch(() => {});
-  };
-
-  const handleTileMouseLeave = () => {
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
-  };
+  // GIF previews only animate while hovered — shows the static frame
+  // otherwise, matching the still-image behavior of every other file type.
+  const previewSrc =
+    preview?.type === "image/gif" && preview.staticUrl && !isHovering ? preview.staticUrl : preview?.url;
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +190,10 @@ export function FileCard({
   };
 
   const handleDownload = () => {
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      return;
+    }
     // The transfer panel is the source of truth for progress, errors and retry,
     // so there's no success toast here. Only tell the user when the click was a
     // no-op because the file is already downloading.
@@ -155,9 +204,14 @@ export function FileCard({
   };
 
   const handleDelete = async () => {
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      setShowMenu(false);
+      return;
+    }
     if (confirm(`Delete "${file.name}"?`)) {
       try {
-        await deleteFile(file.hash);
+        await deleteFile(file.id);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Delete failed");
       }
@@ -166,6 +220,11 @@ export function FileCard({
   };
 
   const handleRenameOpen = () => {
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      setShowMenu(false);
+      return;
+    }
     setRenameValue(file.name);
     setShowRenameModal(true);
     setShowMenu(false);
@@ -175,7 +234,7 @@ export function FileCard({
     const trimmed = renameValue.trim();
     if (trimmed && trimmed !== file.name) {
       try {
-        await renameFile(file.hash, trimmed);
+        await renameFile(file.id, trimmed);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Rename failed");
       }
@@ -189,24 +248,46 @@ export function FileCard({
   };
 
   const handleMoveClick = () => {
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      setShowMenu(false);
+      return;
+    }
     setShowMenu(false);
     setShowMoveDialog(true);
   };
 
   const handleMove = async (newFolder: string) => {
     try {
-      await moveFile(file.hash, newFolder);
+      await moveFile(file.id, newFolder);
       setShowMoveDialog(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Move failed");
     }
   };
 
+  const handleShareClick = () => {
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      setShowMenu(false);
+      return;
+    }
+    setShowMenu(false);
+    setShowShareModal(true);
+  };
+
   const icon = getFileIcon(file.type);
   const hasPreview = previewloaded && !!preview;
 
   const handleSelectionToggle = () => {
-    onToggleSelection?.(file.hash);
+    // Every legacy file shares the same undefined id — letting one into the
+    // selected set would select all of them together and let bulk move/delete
+    // act on the wrong files.
+    if (isLegacy) {
+      toast.error(LEGACY_FILE_MESSAGE);
+      return;
+    }
+    onToggleSelection?.(file.id);
   };
 
 
@@ -219,7 +300,7 @@ export function FileCard({
     >
       <input
         type="checkbox"
-        checked={selected}
+        checked={!isLegacy && selected}
         onChange={handleSelectionToggle}
         aria-label={`Select ${file.name}`}
       />
@@ -295,30 +376,19 @@ export function FileCard({
         )}
         <div
           className={`file-tile ${showMenu ? "menu-open" : ""} ${selected ? "selected" : ""}`}
-          onMouseEnter={handleTileMouseEnter}
-          onMouseLeave={handleTileMouseLeave}
-          draggable
+          draggable={!isLegacy}
           onDragStart={(e) => {
-            e.dataTransfer.setData(FILE_HASH_MIME, file.hash);
+            e.dataTransfer.setData(FILE_HASH_MIME, (dragIds ?? [file.id]).join(","));
             e.dataTransfer.effectAllowed = "move";
           }}
+          onMouseEnter={() => setIsHovering(true)}
+          onMouseLeave={() => setIsHovering(false)}
         >
           {/* Preview area */}
           <div className={`file-tile-preview ${showMenu ? "menu-open" : ""}`}>
             {selectionControl}
             {hasPreview ? (
-              preview?.type.startsWith("video/") ? (
-                <video
-                  ref={videoRef}
-                  src={preview.url}
-                  className="file-tile-img"
-                  muted
-                  loop
-                  playsInline
-                />
-              ) : (
-                <img src={preview!.url} alt={file.name} className="file-tile-img" />
-              )
+              <img src={previewSrc} alt={file.name} className="file-tile-img" />
             ) : null}
             <div
               className="file-tile-icon-fallback"
@@ -346,6 +416,16 @@ export function FileCard({
                 title="Download"
               >
                 ↓
+              </button>
+              <button
+                className={`tile-action-btn${isShared ? " is-shared" : ""}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleShareClick();
+                }}
+                title={isShared ? "Shared — click to manage" : "Share"}
+              >
+                <ShareIcon />
               </button>
               <button
                 className="tile-action-btn"
@@ -378,6 +458,9 @@ export function FileCard({
         {showPreview && <FilePreviewModal file={file} onClose={() => setShowPreview(false)} />}
         {moveDialog}
         {renameModal}
+        {showShareModal && (
+          <ShareModal target={{ mode: "file", file }} onClose={() => setShowShareModal(false)} />
+        )}
       </>
     );
   }
@@ -388,28 +471,18 @@ export function FileCard({
       {showMenu && <div className="file-menu-backdrop" onClick={() => setShowMenu(false)} />}
       <div
         className={`file-card ${selected ? "selected" : ""}`}
-        onMouseEnter={handleTileMouseEnter}
-        onMouseLeave={handleTileMouseLeave}
-        draggable
+        draggable={!isLegacy}
         onDragStart={(e) => {
-          e.dataTransfer.setData(FILE_HASH_MIME, file.hash);
+          e.dataTransfer.setData(FILE_HASH_MIME, (dragIds ?? [file.id]).join(","));
           e.dataTransfer.effectAllowed = "move";
         }}
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={() => setIsHovering(false)}
       >
         {selectionControl}
         {previewloaded && preview ? (
           <div className="file-icon" data-type={icon}>
-            {preview.type.startsWith("video/") ? (
-              <video
-                ref={videoRef}
-                src={preview.url}
-                muted
-                loop
-                playsInline
-              />
-            ) : (
-              <img src={preview.url} alt="" />
-            )}
+            <img src={previewSrc} alt="" />
           </div>
         ) : (
           <div className="file-icon" data-type={icon}>
@@ -427,12 +500,19 @@ export function FileCard({
           <button className="action-btn" onClick={handleDownload} title="Download">
             ↓
           </button>
-          <button 
-            className="action-btn" 
+          <button
+            className="action-btn"
             onClick={handlePreviewClick}
             title="Preview"
           >
             <PreviewEyeIcon />
+          </button>
+          <button
+            className={`action-btn${isShared ? " is-shared" : ""}`}
+            onClick={handleShareClick}
+            title={isShared ? "Shared — click to manage" : "Share"}
+          >
+            <ShareIcon />
           </button>
           <button className="action-btn menu-btn" onClick={() => setShowMenu(!showMenu)} title="More">
             ⋮
@@ -449,6 +529,9 @@ export function FileCard({
       {showPreview && <FilePreviewModal file={file} onClose={() => setShowPreview(false)} />}
       {moveDialog}
       {renameModal}
+      {showShareModal && (
+        <ShareModal target={{ mode: "file", file }} onClose={() => setShowShareModal(false)} />
+      )}
     </>
   );
 }

@@ -177,6 +177,27 @@
   cursor: default;
 }
 
+/* Shared-item indicator — a small dot on the Share action, on both the
+   grid tile (.tile-action-btn) and list row (.action-btn) variants. */
+.action-btn.is-shared,
+.tile-action-btn.is-shared {
+  position: relative;
+  color: var(--color-accent);
+}
+
+.action-btn.is-shared::after,
+.tile-action-btn.is-shared::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  border: 1px solid var(--color-bg-surface, var(--color-bg-raised));
+}
+
 .menu-btn {
   position: relative;
 }

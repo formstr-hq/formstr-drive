@@ -1,6 +1,6 @@
 import { generateSecretKey } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
-import type { FileMetadata } from "../types/metadata";
+import { generateFileId, type FileMetadata } from "../types/metadata";
 import { uploadFile as chunkedUploadFile } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
 import { saveFileMetadata } from "../services/fileIndex";
@@ -15,11 +15,15 @@ import {
 
 export async function uploadDriver(
   file: File,
-  server: string,
+  servers: string[],
   targetFolder: string,
   signal: AbortSignal,
   onProgress: (info: any) => void
 ): Promise<FileMetadata> {
+  // The primary/display server — what shows up as `metadata.server`. The rest
+  // of `servers` are fallback candidates only used if a chunk's PUT fails on
+  // this one after retries (see uploadFile.ts's uploadChunkWithRetry).
+  const server = servers[0];
   const uploadNotifId = crypto.randomUUID();
   let lastNotifPercent = -1;
 
@@ -35,12 +39,18 @@ export async function uploadDriver(
       return null;
     });
 
-    onProgress({ stage: "Encrypting & Uploading...", progress: 0 });
+    // Only the very first tick before uploadFile()'s own stage reporting takes
+    // over ("Encrypting...", "Uploading...", "Connecting...", "Retrying...",
+    // etc. — see src/services/uploadFile.ts). A single merged label here used
+    // to be the *only* label shown for the network phase, which is why a
+    // stalled connection (CORS block, dropped socket) looked identical to
+    // ongoing encryption for the whole retry cascade.
+    onProgress({ stage: "Encrypting...", progress: 0 });
     const privateKeyHex = bytesToHex(generateSecretKey());
 
-    const { hashes, previewHash } = await chunkedUploadFile(
+    const { hashes, previewHash, chunkServers, unencryptedFileHash } = await chunkedUploadFile(
       file,
-      server,
+      servers,
       privateKeyHex,
       (info: any) => {
         onProgress(info);
@@ -59,14 +69,20 @@ export async function uploadDriver(
     onProgress({ stage: "Saving metadata...", progress: 98 });
     const metadata: FileMetadata = {
       name: file.name,
-      hash: hashes[0],
+      id: generateFileId(),
+      unencryptedFileHash,
       size: file.size,
       type: file.type || "application/octet-stream",
       folder: targetFolder,
       uploadedAt: Date.now(),
       server,
       ...(previewHash ? { previewHash } : {}),
-      chunks: hashes.map((h: string) => ({ hash: h })),
+      // A fallback server is recorded per chunk only when that chunk actually
+      // landed somewhere other than the primary — the common case keeps the
+      // original `{ hash }`-only shape.
+      chunks: hashes.map((h: string, i: number) =>
+        chunkServers?.[i] ? { hash: h, server: chunkServers[i] } : { hash: h },
+      ),
       encryptionKey: privateKeyHex,
       encryptionAlgorithm: "aes-gcm",
     };

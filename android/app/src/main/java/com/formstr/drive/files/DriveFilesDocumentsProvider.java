@@ -452,6 +452,7 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
                         file.chunks,
                         file.hash,
                         file.encryptionKey,
+                        file.unencryptedFileHash,
                         outputStream,
                         finalOnProgress,
                         signal

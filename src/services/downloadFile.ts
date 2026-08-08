@@ -1,7 +1,36 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "nostr-tools/utils";
 import { BlossomClient } from "../blossom";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { aesGcmDecryptBytes, decryptFileWithKey, deriveConversationKeyFromHex } from "../crypto";
+import { resolveChunks, type FileMetadata } from "../types/metadata";
+import { aesGcmDecryptBytes, deriveConversationKeyFromHex } from "../crypto";
 import { downloadViaServiceWorker, hasServiceWorkerSupport } from "./swStreamDownload";
+
+/** Verifies NIP-FS's optional unencryptedFileHash, if the metadata carries one. */
+function verifyUnencryptedFileHash(file: FileMetadata, plaintext: Uint8Array): void {
+  if (!file.unencryptedFileHash) return;
+  const actualHash = bytesToHex(sha256(plaintext));
+  if (actualHash !== file.unencryptedFileHash) {
+    throw new Error(
+      `File integrity check failed: expected hash ${file.unencryptedFileHash}, got ${actualHash}`,
+    );
+  }
+}
+
+/** One BlossomClient per distinct server URL a file's chunks actually use —
+ *  most files only ever touch one server, but a chunk that fell back to a
+ *  different server during upload must be fetched from that server, not
+ *  file.server (see types/metadata.ts's resolveChunks). */
+function clientCache(): (server: string) => BlossomClient {
+  const cache = new Map<string, BlossomClient>();
+  return (server: string) => {
+    let client = cache.get(server);
+    if (!client) {
+      client = new BlossomClient(server);
+      cache.set(server, client);
+    }
+    return client;
+  };
+}
 
 // Browsers without the File System Access API (Firefox, Safari) have no way to
 // stream bytes to disk, so large files would have to be buffered fully in memory.
@@ -42,32 +71,31 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 export async function downloadAndDecryptFile(file: FileMetadata, signal?: AbortSignal): Promise<Uint8Array> {
-  const client = new BlossomClient(file.server);
+  const getClient = clientCache();
 
-  const hashes = chunkHashes(file.chunks);
-  if (hashes.length > 0) {
+  const chunks = resolveChunks(file.chunks, file.server);
+  if (chunks.length > 0) {
     const convKey = deriveConversationKeyFromHex(file.encryptionKey);
     const result = new Uint8Array(file.size);
     let offset = 0;
 
-    for (let i = 0; i < hashes.length; i++) {
+    for (let i = 0; i < chunks.length; i++) {
       throwIfAborted(signal);
-      const hash = hashes[i];
-      const encBytes = await client.download(hash, undefined, undefined, signal);
-      const decBytes = await aesGcmDecryptBytes(encBytes, convKey, i);
+      const { hash, server } = chunks[i];
+      const encBytes = await getClient(server).download(hash, undefined, undefined, signal);
+      const decBytes = await aesGcmDecryptBytes(encBytes, convKey);
 
       result.set(decBytes, offset);
       offset += decBytes.length;
     }
 
     // Trim trailing padding if last chunk wasn't full
-    return result.subarray(0, offset);
+    const trimmed = result.subarray(0, offset);
+    verifyUnencryptedFileHash(file, trimmed);
+    return trimmed;
   }
 
-  // Legacy single-blob fallback
-  const blob = await client.download(file.hash, undefined, undefined, signal);
-  const ciphertext = new TextDecoder().decode(blob);
-  return decryptFileWithKey(ciphertext, file.encryptionKey);
+  throw new Error("File has no chunks — cannot download");
 }
 
 /**
@@ -137,19 +165,22 @@ async function downloadViaFileSystemAccess(
 
   const handle = await showSaveFilePicker({ suggestedName: file.name });
   const writer = await handle.createWritable();
-  const client = new BlossomClient(file.server);
+  const getClient = clientCache();
   let completed = false;
   let bytesWritten = 0;
 
+  const plaintextHasher = file.unencryptedFileHash ? sha256.create() : null;
+
   try {
-    const chunks = chunkHashes(file.chunks);
+    const chunks = resolveChunks(file.chunks, file.server);
     if (chunks.length > 0) {
       const convKey = deriveConversationKeyFromHex(file.encryptionKey);
       const totalChunks = chunks.length;
 
       const fetchDecrypt = async (index: number): Promise<Uint8Array> => {
-        const encBytes = await client.download(chunks[index], undefined, undefined, signal);
-        return aesGcmDecryptBytes(encBytes, convKey, index);
+        const { hash, server } = chunks[index];
+        const encBytes = await getClient(server).download(hash, undefined, undefined, signal);
+        return aesGcmDecryptBytes(encBytes, convKey);
       };
 
       let nextToFetch = 0;
@@ -171,6 +202,7 @@ async function downloadViaFileSystemAccess(
         if (bytesWritten + buffer.byteLength > file.size) {
           buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
         }
+        plaintextHasher?.update(buffer);
         await writer.write(buffer);
         bytesWritten += buffer.byteLength;
         fillPending();
@@ -183,28 +215,20 @@ async function downloadViaFileSystemAccess(
         });
       }
     } else {
-      onProgress?.({ stage: "Downloading...", progress: 0 });
-      const encBytes = await client.download(file.hash, undefined, (loaded, total) => {
-        if (total > 0) {
-          onProgress?.({ stage: "Downloading...", progress: Math.round((loaded / total) * 100) });
-        }
-      }, signal);
-      throwIfAborted(signal);
-      const ciphertext = new TextDecoder().decode(encBytes);
-      const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
-      
-      let buffer = decrypted;
-      if (bytesWritten + buffer.byteLength > file.size) {
-        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, file.size - bytesWritten);
-      }
-      
-      onProgress?.({ stage: "Saving file...", progress: 100 });
-      await writer.write(buffer);
-      bytesWritten += buffer.byteLength;
+      throw new Error("File has no chunks — cannot download");
     }
 
     if (bytesWritten !== file.size) {
       throw new Error(`size-mismatch: expected ${file.size} bytes, got ${bytesWritten} bytes`);
+    }
+
+    if (plaintextHasher && file.unencryptedFileHash) {
+      const actualHash = bytesToHex(plaintextHasher.digest());
+      if (actualHash !== file.unencryptedFileHash) {
+        throw new Error(
+          `File integrity check failed: expected hash ${file.unencryptedFileHash}, got ${actualHash}`,
+        );
+      }
     }
 
     completed = true;

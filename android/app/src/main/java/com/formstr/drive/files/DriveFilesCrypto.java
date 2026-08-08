@@ -40,6 +40,22 @@ public final class DriveFilesCrypto {
         }
     }
 
+    /**
+     * Decrypts one Blossom chunk blob. Two formats exist and they differ in more
+     * than a version byte, so the branches must not share a code path:
+     *
+     *  - v2 (current, produced by src/crypto.ts's aesGcmEncryptRaw):
+     *    {@code 0x02 || nonce(32) || ciphertext}. The stored nonce is the HKDF
+     *    salt and there is NO additional authenticated data. This is the exact
+     *    same blob layout NIP-44 v2 uses for event content — the chunk path just
+     *    skips the base64 layer.
+     *  - v3 (legacy, written by older builds): the salt was derived from the
+     *    chunk index rather than stored, and the index was also fed in as GCM
+     *    AAD. Kept so files uploaded before the format change stay readable.
+     *
+     * Applying the v3 AAD to a v2 blob fails the GCM tag check, which is why
+     * this is version-gated rather than unconditional.
+     */
     public static byte[] decryptChunkBlob(byte[] rawBlob, String privateKeyHex, int chunkIndex)
             throws GeneralSecurityException {
         byte[] conversationKey = deriveConversationKey(privateKeyHex);
@@ -48,27 +64,21 @@ public final class DriveFilesCrypto {
             throw new GeneralSecurityException("Encrypted chunk payload is too short");
         }
 
-        // Big-endian chunk index — the HKDF salt seed (v3) and the GCM AAD (both versions).
-        byte[] indexBytes = new byte[4];
-        indexBytes[0] = (byte) ((chunkIndex >> 24) & 0xFF);
-        indexBytes[1] = (byte) ((chunkIndex >> 16) & 0xFF);
-        indexBytes[2] = (byte) ((chunkIndex >> 8) & 0xFF);
-        indexBytes[3] = (byte) (chunkIndex & 0xFF);
-
         byte version = rawBlob[0];
         byte[] salt;
         byte[] ciphertext;
-        if (version == PAYLOAD_VERSION_V3) {
-            // Salt was not stored — re-derive it deterministically from the index.
-            salt = hmacSha256(conversationKey, indexBytes);
-            ciphertext = Arrays.copyOfRange(rawBlob, 1, rawBlob.length);
-        } else if (version == PAYLOAD_VERSION) {
-            // Legacy: salt is prepended to the payload.
+        byte[] additionalData = null;
+
+        if (version == PAYLOAD_VERSION) {
             if (rawBlob.length <= PAYLOAD_NONCE_LENGTH + 1) {
                 throw new GeneralSecurityException("Encrypted chunk payload is too short");
             }
             salt = Arrays.copyOfRange(rawBlob, 1, 1 + PAYLOAD_NONCE_LENGTH);
             ciphertext = Arrays.copyOfRange(rawBlob, 1 + PAYLOAD_NONCE_LENGTH, rawBlob.length);
+        } else if (version == PAYLOAD_VERSION_V3) {
+            additionalData = chunkIndexBytes(chunkIndex);
+            salt = hmacSha256(conversationKey, additionalData);
+            ciphertext = Arrays.copyOfRange(rawBlob, 1, rawBlob.length);
         } else {
             throw new GeneralSecurityException("Unsupported encrypted payload version");
         }
@@ -83,9 +93,21 @@ public final class DriveFilesCrypto {
                 new SecretKeySpec(aesKey, "AES"),
                 new GCMParameterSpec(128, aesNonce));
 
-        cipher.updateAAD(indexBytes);
+        if (additionalData != null) {
+            cipher.updateAAD(additionalData);
+        }
 
         return cipher.doFinal(ciphertext);
+    }
+
+    /** Big-endian 4-byte chunk index — the v3 salt seed and AAD. */
+    private static byte[] chunkIndexBytes(int chunkIndex) {
+        return new byte[] {
+                (byte) ((chunkIndex >> 24) & 0xFF),
+                (byte) ((chunkIndex >> 16) & 0xFF),
+                (byte) ((chunkIndex >> 8) & 0xFF),
+                (byte) (chunkIndex & 0xFF),
+        };
     }
 
     private static byte[] deriveConversationKey(String privateKeyHex) throws GeneralSecurityException {

@@ -7,12 +7,19 @@ import android.os.CancellationSignal;
 
 import androidx.annotation.Nullable;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -30,7 +37,73 @@ public final class DriveFileDownloader {
         void onProgress(int percent);
     }
 
+    /**
+     * One encrypted chunk and the Blossom server it actually lives on. A chunk
+     * that fell back to a different server during upload must be fetched from
+     * that server, not the file's primary one — this mirrors resolveChunks() in
+     * src/types/metadata.ts, and is why the native side can no longer treat a
+     * file as "one server, N hashes".
+     */
+    public static final class Chunk {
+        public final String hash;
+        public final String server;
+
+        public Chunk(String hash, String server) {
+            this.hash = hash;
+            this.server = server;
+        }
+    }
+
     private DriveFileDownloader() {
+    }
+
+    /**
+     * Reads a chunk list in either published shape: the current
+     * {@code [{ "hash": …, "server"?: … }]} objects, or the legacy bare
+     * {@code ["hash", …]} strings. Entries without their own server resolve to
+     * {@code fallbackServer} (the file's primary). Returns null for absent or
+     * unparseable input so callers can fall back to the single-blob path.
+     */
+    @Nullable
+    public static List<Chunk> parseChunks(@Nullable String chunksJson, String fallbackServer) {
+        if (chunksJson == null || chunksJson.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            return parseChunks(new JSONArray(chunksJson), fallbackServer);
+        } catch (JSONException error) {
+            return null;
+        }
+    }
+
+    @Nullable
+    public static List<Chunk> parseChunks(@Nullable JSONArray chunksJson, String fallbackServer) {
+        if (chunksJson == null) {
+            return null;
+        }
+
+        List<Chunk> chunks = new ArrayList<>(chunksJson.length());
+        for (int i = 0; i < chunksJson.length(); i++) {
+            JSONObject entry = chunksJson.optJSONObject(i);
+            if (entry != null) {
+                String hash = entry.optString("hash", "");
+                if (hash.isEmpty()) {
+                    return null;
+                }
+                String server = entry.optString("server", "");
+                chunks.add(new Chunk(hash, server.isEmpty() ? fallbackServer : server));
+                continue;
+            }
+
+            String hash = chunksJson.optString(i, "");
+            if (hash.isEmpty()) {
+                return null;
+            }
+            chunks.add(new Chunk(hash, fallbackServer));
+        }
+
+        return chunks;
     }
 
     public static void ensureNotificationChannel(NotificationManager nm) {
@@ -55,23 +128,37 @@ public final class DriveFileDownloader {
     }
 
     /**
-     * Streams chunk-by-chunk (or a single legacy blob) from the Blossom server,
-     * decrypts each piece, and writes it straight to outputStream — nothing is
-     * buffered beyond a single chunk.
+     * Streams chunk-by-chunk (or a single legacy blob) from Blossom, decrypts
+     * each piece, and writes it straight to outputStream — nothing is buffered
+     * beyond a single chunk. Each chunk is fetched from its own resolved server.
+     *
+     * When {@code unencryptedFileHash} is present it is verified against the
+     * plaintext as it streams and a mismatch fails the download, matching the
+     * web path's verifyUnencryptedFileHash (src/services/downloadFile.ts).
      */
     public static void downloadAndDecryptToStream(
             String server,
-            @Nullable List<String> chunks,
+            @Nullable List<Chunk> chunks,
             String hash,
             String encryptionKey,
+            @Nullable String unencryptedFileHash,
             OutputStream outputStream,
             @Nullable ProgressCallback onProgress,
             @Nullable CancellationSignal signal
     ) throws IOException {
+        MessageDigest plaintextDigest = null;
+        if (unencryptedFileHash != null && !unencryptedFileHash.isEmpty()) {
+            try {
+                plaintextDigest = MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException error) {
+                throw new IOException("SHA-256 is unavailable on this device", error);
+            }
+        }
+
         if (chunks != null && !chunks.isEmpty()) {
             int totalChunks = chunks.size();
             for (int i = 0; i < totalChunks; i++) {
-                String chunkHash = chunks.get(i);
+                Chunk chunk = chunks.get(i);
                 int currentChunk = i;
                 ProgressCallback chunkProgress = null;
                 if (onProgress != null) {
@@ -81,12 +168,15 @@ public final class DriveFileDownloader {
                     };
                 }
 
-                byte[] encryptedBlob = downloadEncryptedBlob(server, chunkHash, signal, chunkProgress);
+                byte[] encryptedBlob = downloadEncryptedBlob(chunk.server, chunk.hash, signal, chunkProgress);
                 byte[] decryptedBytes;
                 try {
                     decryptedBytes = DriveFilesCrypto.decryptChunkBlob(encryptedBlob, encryptionKey, i);
                 } catch (Exception error) {
                     throw new IOException("Failed to decrypt chunk " + i, error);
+                }
+                if (plaintextDigest != null) {
+                    plaintextDigest.update(decryptedBytes);
                 }
                 outputStream.write(decryptedBytes);
             }
@@ -98,10 +188,30 @@ public final class DriveFileDownloader {
             } catch (Exception error) {
                 throw new IOException("Failed to decrypt Drive file", error);
             }
+            if (plaintextDigest != null) {
+                plaintextDigest.update(decryptedBytes);
+            }
             outputStream.write(decryptedBytes);
         }
 
         outputStream.flush();
+
+        if (plaintextDigest != null) {
+            String actual = bytesToHex(plaintextDigest.digest());
+            if (!actual.equalsIgnoreCase(unencryptedFileHash)) {
+                throw new IOException(
+                        "File integrity check failed: expected hash " + unencryptedFileHash + ", got " + actual);
+            }
+        }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder builder = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            builder.append(Character.forDigit((b >> 4) & 0xF, 16));
+            builder.append(Character.forDigit(b & 0xF, 16));
+        }
+        return builder.toString();
     }
 
     public static byte[] downloadEncryptedBlob(

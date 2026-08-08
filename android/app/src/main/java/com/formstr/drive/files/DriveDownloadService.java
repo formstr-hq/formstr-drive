@@ -19,10 +19,8 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 
+import com.formstr.drive.MainActivity;
 import com.formstr.drive.R;
-
-import org.json.JSONArray;
-import org.json.JSONException;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -53,6 +51,7 @@ public class DriveDownloadService extends Service {
     public static final String EXTRA_FILE_NAME = "fileName";
     public static final String EXTRA_MIME_TYPE = "mimeType";
     public static final String EXTRA_CHUNKS_JSON = "chunksJson";
+    public static final String EXTRA_UNENCRYPTED_FILE_HASH = "unencryptedFileHash";
 
     public static final String EVENT_PROGRESS = "progress";
     public static final String EVENT_COMPLETE = "complete";
@@ -141,13 +140,14 @@ public class DriveDownloadService extends Service {
         String fileName = intent.getStringExtra(EXTRA_FILE_NAME);
         String mimeType = intent.getStringExtra(EXTRA_MIME_TYPE);
         String chunksJson = intent.getStringExtra(EXTRA_CHUNKS_JSON);
+        String unencryptedFileHash = intent.getStringExtra(EXTRA_UNENCRYPTED_FILE_HASH);
 
         if (id == null || server == null || hash == null || encryptionKey == null
                 || fileName == null || mimeType == null) {
             return START_NOT_STICKY;
         }
 
-        List<String> chunks = parseChunks(chunksJson);
+        List<DriveFileDownloader.Chunk> chunks = DriveFileDownloader.parseChunks(chunksJson, server);
 
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         DriveFileDownloader.ensureNotificationChannel(nm);
@@ -161,7 +161,8 @@ public class DriveDownloadService extends Service {
         activeCount.incrementAndGet();
 
         executor.execute(() ->
-                runDownload(id, server, chunks, hash, encryptionKey, fileName, mimeType, notifId, signal));
+                runDownload(id, server, chunks, hash, encryptionKey, unencryptedFileHash,
+                        fileName, mimeType, notifId, signal));
 
         return START_NOT_STICKY;
     }
@@ -169,9 +170,10 @@ public class DriveDownloadService extends Service {
     private void runDownload(
             String id,
             String server,
-            List<String> chunks,
+            @Nullable List<DriveFileDownloader.Chunk> chunks,
             String hash,
             String encryptionKey,
+            @Nullable String unencryptedFileHash,
             String fileName,
             String mimeType,
             int notifId,
@@ -180,6 +182,10 @@ public class DriveDownloadService extends Service {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         Uri fileUri = null;
         ContentValues pendingValues = null;
+        // Pre-Q writes go straight to a real file rather than a pending
+        // MediaStore entry, so a failure (including an integrity mismatch)
+        // has to remove it explicitly — cleanupPending only covers MediaStore.
+        File legacyOutFile = null;
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         PowerManager.WakeLock wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "formstr:download:" + id);
@@ -205,7 +211,7 @@ public class DriveDownloadService extends Service {
                         throw new java.io.IOException("Failed to open output stream");
                     }
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, hash, encryptionKey, outputStream,
+                            server, chunks, hash, encryptionKey, unencryptedFileHash, outputStream,
                             (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 
@@ -228,9 +234,10 @@ public class DriveDownloadService extends Service {
                     counter++;
                 }
 
+                legacyOutFile = outFile;
                 try (FileOutputStream outputStream = new FileOutputStream(outFile)) {
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, hash, encryptionKey, outputStream,
+                            server, chunks, hash, encryptionKey, unencryptedFileHash, outputStream,
                             (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 
@@ -239,11 +246,11 @@ public class DriveDownloadService extends Service {
 
             onComplete(id, fileName, mimeType, fileUri, notifId, nm);
         } catch (Exception error) {
+            cleanupPending(fileUri, pendingValues != null);
+            cleanupLegacyFile(legacyOutFile);
             if (signal.isCanceled()) {
-                cleanupPending(fileUri, pendingValues != null);
                 onCancelled(id, notifId, nm);
             } else {
-                cleanupPending(fileUri, pendingValues != null);
                 onError(id, fileName, error, notifId, nm);
             }
         } finally {
@@ -272,6 +279,17 @@ public class DriveDownloadService extends Service {
             getContentResolver().delete(fileUri, null, null);
         } catch (Exception ignored) {
             // best-effort cleanup of a partial/cancelled download entry
+        }
+    }
+
+    private void cleanupLegacyFile(@Nullable File outFile) {
+        if (outFile == null) {
+            return;
+        }
+        try {
+            outFile.delete();
+        } catch (Exception ignored) {
+            // best-effort cleanup of a partial/cancelled download file
         }
     }
 
@@ -309,6 +327,17 @@ public class DriveDownloadService extends Service {
         }
     }
 
+    /** Tapping the notification body (not the Cancel action) brings the app to
+     *  the foreground. MainActivity is singleTask, so this reuses the existing
+     *  task instead of spawning a duplicate. */
+    private PendingIntent openAppPendingIntent(int requestCode) {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        return PendingIntent.getActivity(
+                this, requestCode, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
     private Notification buildProgressNotification(String id, String fileName, int percent, int notifId) {
         Intent cancelIntent = new Intent(this, DriveDownloadService.class);
         cancelIntent.setAction(ACTION_CANCEL);
@@ -319,9 +348,11 @@ public class DriveDownloadService extends Service {
 
         return new NotificationCompat.Builder(this, DriveFileDownloader.DOWNLOAD_CHANNEL_ID)
                 .setContentTitle("Downloading " + fileName)
+                .setContentText(percent + "%")
                 .setSmallIcon(R.drawable.ic_notification)                .setProgress(100, percent, false)
                 .setOngoing(true)
                 .setSilent(true)
+                .setContentIntent(openAppPendingIntent(notifId))
                 .addAction(0, "Cancel", cancelPendingIntent)
                 .build();
     }
@@ -334,6 +365,8 @@ public class DriveDownloadService extends Service {
                 .setOngoing(false);
 
         if (fileUri != null) {
+            // Prefer opening the file directly — that's what tapping a
+            // completed download normally does.
             Intent viewIntent = new Intent(Intent.ACTION_VIEW);
             viewIntent.setDataAndType(fileUri, mimeType);
             viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -342,6 +375,10 @@ public class DriveDownloadService extends Service {
                     this, fileUri.hashCode(), viewIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             builder.setContentIntent(contentIntent);
+        } else {
+            // No URI to open (shouldn't normally happen) — fall back to just
+            // opening the app rather than leaving the tap do nothing.
+            builder.setContentIntent(openAppPendingIntent(fileName.hashCode() & 0x7fffffff));
         }
 
         return builder.build();
@@ -353,6 +390,7 @@ public class DriveDownloadService extends Service {
                 .setContentText(fileName + ": " + message)
                 .setSmallIcon(R.drawable.ic_notification)                .setAutoCancel(true)
                 .setOngoing(false)
+                .setContentIntent(openAppPendingIntent(fileName.hashCode() & 0x7fffffff))
                 .build();
     }
 
@@ -362,21 +400,5 @@ public class DriveDownloadService extends Service {
 
     private static int terminalNotificationIdFor(String downloadId) {
         return (downloadId + ":result").hashCode() & 0x7fffffff;
-    }
-
-    private static List<String> parseChunks(@Nullable String chunksJson) {
-        if (chunksJson == null || chunksJson.trim().isEmpty()) {
-            return null;
-        }
-        try {
-            JSONArray array = new JSONArray(chunksJson);
-            List<String> chunks = new ArrayList<>();
-            for (int i = 0; i < array.length(); i++) {
-                chunks.add(array.getString(i));
-            }
-            return chunks;
-        } catch (JSONException error) {
-            return null;
-        }
     }
 }

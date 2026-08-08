@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
+import { chunkHashes, LEGACY_FILE_MESSAGE, type FileMetadata } from "../types/metadata";
 import { BlossomClient } from "../blossom";
 import { createAuthEvent } from "../auth";
 import {
@@ -16,13 +16,13 @@ import {
   saveFileMetadata,
   deleteFileMetadata,
   extractFolders,
-  autoMigrateLegacyFiles,
+  clearFileIndexStore,
 } from "../services/fileIndex";
+import { drainMetadataOutbox } from "../services/metadataOutbox";
 import {
   getRelayRefresh,
   subscribeRelayRefresh,
 } from "../dataLayer/relayRefresh";
-import { MigrationPromptModal } from "../components/Dialogs/MigrationPromptModal";
 import { useProfileContext } from "../hooks/useProfileContext";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import {
@@ -33,10 +33,15 @@ import {
   syncNativeDriveManifest,
 } from "../native/driveManifest";
 import { useBlossomServer } from "../hooks/useBlossomServer";
+import { getUploadCandidateServers } from "./BlossomServerProvider";
 import { isAndroidPlatform } from "../utils/platform";
 import { queueUpload } from "../transfers/transferQueue";
 import { getTransfers } from "../transfers/transferStore";
-import { adoptActiveNativeDownloads, startNativeEventBridge } from "../transfers/nativeAdoption";
+import {
+  adoptActiveNativeDownloads,
+  adoptActiveNativeUploads,
+  startNativeEventBridge,
+} from "../transfers/nativeAdoption";
 
 // Re-export type if needed anywhere else
 export type { FileMetadata };
@@ -50,6 +55,10 @@ export interface FileIndexContextType {
   setCurrentFolder: (folder: string) => void;
   loading: boolean;
   hasHydratedIndex: boolean;
+  /** True once the Drive Key is ready — the file list UI should gate only on
+   *  this, rendering `files` as they stream in rather than waiting for
+   *  hasHydratedIndex (full replay). */
+  keyReady: boolean;
   error: string | null;
   deleteFile: (hash: string) => Promise<void>;
   deleteFiles: (hashes: string[]) => Promise<void>;
@@ -63,7 +72,7 @@ export const FileIndexContext = createContext<FileIndexContextType | null>(null)
 
 export function FileIndexProvider({ children }: { children: ReactNode }) {
   const { isSignedIn, pubkey, restoring } = useProfileContext();
-  const { selectedServer } = useBlossomServer();
+  const { selectedServer, servers } = useBlossomServer();
 
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [currentFolder, setCurrentFolder] = useState("/");
@@ -72,9 +81,17 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [hasHydratedIndex, setHasHydratedIndex] = useState(false);
-  const [legacyFiles, setLegacyFiles] = useState<FileMetadata[]>([]);
+  // True once the Drive Key keyring has resolved (or definitively failed) —
+  // fires well before hasHydratedIndex (which waits for the full relay
+  // replay/EOSE). The file list UI should only block on this: once the key
+  // is ready, files render as they stream in via onFiles rather than waiting
+  // for the whole index to finish hydrating. hasHydratedIndex keeps its
+  // existing meaning for the things that genuinely need a complete picture
+  // (pending-import processing, native manifest sync) — unaffected by this.
+  const [keyReady, setKeyReady] = useState(false);
   const [manualRefreshCount, setManualRefreshCount] = useState(0);
   const processingPendingImportsRef = useRef(false);
+  const drainingOutboxRef = useRef(false);
 
   // Bumps when the relay worker can newly serve cached data it couldn't a
   // moment ago (IndexedDB hydration finished, or the worker restarted after a
@@ -93,18 +110,21 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   }, [files, customFolders]);
 
   // Warn before the tab/window closes while transfers are still in flight and
-  // would be lost. A native download runs in a foreground service and survives,
-  // so it needs no warning; a native upload runs in the webview (background
-  // upload is disabled) and DOES die — so the rule is: warn unless every active
-  // transfer is a native download. On web nothing survives a close, so any
-  // active transfer warns.
+  // would be lost. On Android a download always runs in a foreground service
+  // and survives; an upload survives only once it has handed off to the upload
+  // service (`survivesAppClose`) — before that it's still encrypting in the
+  // WebView and dies with it. On web nothing survives a close, so any active
+  // transfer warns.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       const active = getTransfers().filter(
         (t) => t.status === "running" || t.status === "pending",
       );
       if (active.length === 0) return;
-      const allSurvive = active.every((t) => t.type === "download" && isAndroidPlatform);
+      const allSurvive = active.every(
+        (t) =>
+          isAndroidPlatform && (t.type === "download" || t.survivesAppClose === true),
+      );
       if (allSurvive) return;
       e.preventDefault();
       e.returnValue = "";
@@ -143,8 +163,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     }
   }, [isSignedIn, pubkey, restoring]);
 
-  // Android only: re-adopt native downloads that outlived the JS context (app
-  // killed/relaunched mid-download) so they reappear as cancellable rows, and
+  // Android only: re-adopt native transfers that outlived the JS context (app
+  // killed/relaunched mid-transfer) so they reappear as cancellable rows, and
   // keep a single app-lifetime listener routing their progress/completion.
   useEffect(() => {
     if (!isAndroidPlatform) return;
@@ -154,10 +174,12 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       teardown = fn;
     });
     void adoptActiveNativeDownloads();
+    void adoptActiveNativeUploads();
 
     const onVisible = () => {
       if (document.visibilityState === "visible") {
         void adoptActiveNativeDownloads();
+        void adoptActiveNativeUploads();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -181,8 +203,13 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (restoring) return;
     if (!isSignedIn || !pubkey) {
+      // Drop the shared store's state too — otherwise a subsequent sign-in
+      // (possibly a different account) would see the previous account's
+      // files replayed immediately on subscribe.
+      clearFileIndexStore();
       setFiles([]);
       setHasHydratedIndex(false);
+      setKeyReady(false);
       return;
     }
 
@@ -191,15 +218,51 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
     const unobserve = observeFileIndex(pubkey, {
       onFiles: setFiles,
+      onKeyReady: () => setKeyReady(true),
       onReady: () => {
         setHasHydratedIndex(true);
         setLoading(false);
       },
-      onLegacyFilesFound: setLegacyFiles,
     });
 
     return unobserve;
   }, [isSignedIn, pubkey, restoring, relayRefresh, manualRefreshCount]);
+
+  // Drain any metadata events that were signed (with the Drive Key — free,
+  // no signer prompt) but never confirmed published: the app may have been
+  // killed between chunkedUploadFile resolving and saveFileMetadata's publish
+  // call, or every relay may have rate-limited the attempt. Retrying costs
+  // zero prompts, so this can run freely on mount, on reconnect, and whenever
+  // the tab becomes visible again.
+  const drainOutbox = useCallback(async () => {
+    if (drainingOutboxRef.current) return;
+    drainingOutboxRef.current = true;
+    try {
+      const { published } = await drainMetadataOutbox();
+      if (published > 0) {
+        console.log(`[FileIndex] Drained ${published} queued metadata event(s)`);
+      }
+    } catch (e) {
+      console.warn("[FileIndex] Metadata outbox drain failed", e);
+    } finally {
+      drainingOutboxRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (restoring || !isSignedIn || !pubkey) return;
+    void drainOutbox();
+  }, [isSignedIn, pubkey, restoring, relayRefresh, drainOutbox]);
+
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === "visible" && isSignedIn && !restoring) {
+        void drainOutbox();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
+  }, [isSignedIn, restoring, drainOutbox]);
 
   // With a standing observe the worker keeps the index synced on its own;
   // a manual refresh just re-declares the interest (cache replay + re-sync).
@@ -237,12 +300,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
 
   const deleteRemoteBlobs = useCallback(async (file: FileMetadata) => {
-    // Chunked files store one blob per chunk; legacy files store a single
-    // blob under file.hash.
+    // One Blossom blob per chunk.
     const blobHashes = chunkHashes(file.chunks);
-    if (blobHashes.length === 0) {
-      blobHashes.push(file.hash);
-    }
 
     // One auth event covering every blob (chunks + preview), so the user
     // signs only once per file.
@@ -296,79 +355,78 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
   const deleteFile = useCallback(
     async (hash: string) => {
-      const file = files.find((f) => f.hash === hash);
+      // Every legacy file (pre-dating the random `id`) shares the same
+      // undefined id — matching on a falsy hash risks deleting a DIFFERENT
+      // legacy file than the one the user actually selected. Reject up front
+      // rather than resolve to the wrong file.
+      if (!hash) throw new Error(LEGACY_FILE_MESSAGE);
+      const file = files.find((f) => f.id === hash);
       if (!file) return;
 
       await deleteRemoteBlobs(file);
+      // deleteFileMetadata (via saveFileMetadata) writes the tombstone
+      // straight into the shared file-index store, which re-emits the
+      // filtered list synchronously — no separate optimistic setFiles needed,
+      // and no risk of it disagreeing with what the store already reflects.
       await deleteFileMetadata(hash, file);
-      setFiles((prev) => prev.filter((f) => f.hash !== hash));
     },
     [files, deleteRemoteBlobs]
   );
 
   const deleteFiles = useCallback(
     async (hashes: string[]) => {
+      if (hashes.some((h) => !h)) throw new Error(LEGACY_FILE_MESSAGE);
       const hashSet = new Set(hashes);
-      const targetFiles = files.filter((file) => hashSet.has(file.hash));
-      const deletedHashes = new Set<string>();
+      const targetFiles = files.filter((file) => hashSet.has(file.id));
 
       for (const file of targetFiles) {
-        try {
-          await deleteRemoteBlobs(file);
-          await deleteFileMetadata(file.hash, file);
-          deletedHashes.add(file.hash);
-        } catch (e) {
-          // Stop on first failure so the user can see and retry; files
-          // already deleted in this batch stay deleted.
-          setFiles((prev) => prev.filter((f) => !deletedHashes.has(f.hash)));
-          throw e;
-        }
+        // Each successful delete already updates the shared store (see
+        // deleteFile above); on failure, files already deleted this batch
+        // stay deleted — the store reflects that without help from here.
+        await deleteRemoteBlobs(file);
+        await deleteFileMetadata(file.id, file);
       }
-
-      setFiles((prev) => prev.filter((file) => !hashSet.has(file.hash)));
     },
     [files, deleteRemoteBlobs]
   );
 
   const moveFile = useCallback(
     async (hash: string, newFolder: string) => {
-      const file = files.find((f) => f.hash === hash);
+      if (!hash) throw new Error(LEGACY_FILE_MESSAGE);
+      const file = files.find((f) => f.id === hash);
       if (!file) return;
 
       const updated: FileMetadata = { ...file, folder: newFolder };
+      // saveFileMetadata writes this straight into the shared file-index
+      // store (synchronously, before its own network publish), which
+      // re-emits the list — no separate optimistic setFiles needed here.
       await saveFileMetadata(updated);
-      setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
     },
     [files]
   );
 
   const moveFiles = useCallback(
     async (hashes: string[], newFolder: string) => {
+      if (hashes.some((h) => !h)) throw new Error(LEGACY_FILE_MESSAGE);
       const hashSet = new Set(hashes);
-      const targetFiles = files.filter((file) => hashSet.has(file.hash));
+      const targetFiles = files.filter((file) => hashSet.has(file.id));
 
       for (const file of targetFiles) {
         const updated: FileMetadata = { ...file, folder: newFolder };
         await saveFileMetadata(updated);
       }
-
-      setFiles((prev) =>
-        prev.map((file) =>
-          hashSet.has(file.hash) ? { ...file, folder: newFolder } : file
-        )
-      );
     },
     [files]
   );
 
   const renameFile = useCallback(
     async (hash: string, newName: string) => {
-      const file = files.find((f) => f.hash === hash);
+      if (!hash) throw new Error(LEGACY_FILE_MESSAGE);
+      const file = files.find((f) => f.id === hash);
       if (!file) return;
 
       const updated: FileMetadata = { ...file, name: newName };
       await saveFileMetadata(updated);
-      setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
     },
     [files]
   );
@@ -410,11 +468,17 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
           // before it finishes, the import is retained and retried on the next
           // launch (at-least-once) rather than being lost. A still-running
           // upload with the same id dedupes, so re-scanning is safe.
-          queueUpload(importedFile, selectedServer, importPayload.folderPath, {
-            onComplete: () => {
-              void removePendingNativeImport(importPayload.id);
+          queueUpload(
+            importedFile,
+            selectedServer,
+            importPayload.folderPath,
+            getUploadCandidateServers(selectedServer, servers),
+            {
+              onComplete: () => {
+                void removePendingNativeImport(importPayload.id);
+              },
             },
-          });
+          );
         } catch (pendingError) {
           console.error("Failed to process pending Android Files import", pendingError);
           setError(
@@ -434,6 +498,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     loading,
     pubkey,
     selectedServer,
+    servers,
   ]);
 
   useEffect(() => {
@@ -477,15 +542,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     };
   }, [hasHydratedIndex, isSignedIn, processPendingImports, restoring]);
 
-  const handleAcceptMigration = async () => {
-    await autoMigrateLegacyFiles(legacyFiles);
-    setLegacyFiles([]);
-  };
-
-  const handleDismissMigration = () => {
-    setLegacyFiles([]);
-  };
-
   // Memoized so the context value's identity only changes when something in
   // it actually changed — otherwise every re-render of this provider (for
   // any reason) handed every consumer a brand new object, forcing them all
@@ -500,6 +556,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       setCurrentFolder,
       loading,
       hasHydratedIndex,
+      keyReady,
       error,
       deleteFile,
       deleteFiles,
@@ -516,6 +573,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       currentFolder,
       loading,
       hasHydratedIndex,
+      keyReady,
       error,
       deleteFile,
       deleteFiles,
@@ -528,11 +586,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
   return (
     <FileIndexContext.Provider value={value}>
-      <MigrationPromptModal
-        files={legacyFiles}
-        onAccept={handleAcceptMigration}
-        onDismiss={handleDismissMigration}
-      />
       {children}
     </FileIndexContext.Provider>
   );
