@@ -1,0 +1,193 @@
+.shared-by-me {
+  padding: var(--space-8);
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.shared-by-me-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+
+.shared-by-me-header h2 {
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xl);
+  color: var(--color-text-secondary);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.back-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.shared-by-me-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.shared-by-me-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+}
+
+.shared-by-me-item:hover {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--shadow-xs);
+}
+
+.shared-by-me-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: 1;
+  min-width: 0;
+}
+
+.shared-by-me-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.shared-by-me-item.is-revoked {
+  opacity: 0.55;
+}
+
+.shared-by-me-revoked-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: var(--space-3) var(--space-6);
+}
+
+.shared-by-me-revoke-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--color-danger, #e5484d);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-danger, #e5484d);
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.shared-by-me-revoke-btn:hover {
+  background: color-mix(in srgb, var(--color-danger, #e5484d) 10%, transparent);
+}
+
+.shared-by-me-revoke-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shared-by-me-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.shared-by-me-name {
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shared-by-me-date {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.shared-by-me-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.shared-by-me-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-6);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: white;
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+
+.shared-by-me-copy-btn:hover {
+  background: var(--color-accent-hover);
+}
+
+.shared-by-me-empty {
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-text-secondary);
+}
+
+.shared-by-me-empty p {
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .shared-by-me-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-4);
+  }
+  
+  .shared-by-me-actions {
+    display: flex;
+    justify-content: stretch;
+  }
+  
+  .shared-by-me-copy-btn,
+  .shared-by-me-revoke-btn {
+    flex: 1;
+    justify-content: center;
+  }
+}
