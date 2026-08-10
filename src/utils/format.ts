@@ -9,6 +9,13 @@ export function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
+/** Same as {@link formatDate}, but for a unix-SECONDS timestamp (e.g. a
+ *  Nostr event's `created_at`) rather than the millisecond timestamps
+ *  `formatDate` expects everywhere else in the app. */
+export function formatUnixSeconds(seconds: number): string {
+  return formatDate(seconds * 1000);
+}
+
 export function getHostname(url: string): string {
   try {
     return new URL(url).hostname;

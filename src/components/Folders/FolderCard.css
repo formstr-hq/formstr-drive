@@ -73,6 +73,7 @@
   padding: 0;
   text-align: left;
   color: inherit;
+  position: relative;
 }
 
 .folder-tile:hover {
@@ -120,3 +121,41 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
 }
+
+.folder-tile-share-btn {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+  box-shadow: var(--shadow-sm);
+}
+
+.folder-tile:hover .folder-tile-share-btn {
+  opacity: 1;
+}
+
+.folder-tile-share-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.folder-row-actions {
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+
+.folder-row:hover .folder-row-actions {
+  opacity: 1;
+}
+
