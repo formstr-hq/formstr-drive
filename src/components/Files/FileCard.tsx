@@ -1,15 +1,14 @@
 import { useState, useEffect, useRef } from "react";
 import type { FileMetadata } from '../../types/metadata';
 import { useFileIndex } from '../../hooks/useFileContext';
-import { decryptFileWithKey } from '../../crypto';
-import { BlossomClient } from '../../blossom';
 import { FilePreviewModal } from "./FilePreviewModal";
-import { detectMimeTypeFromMagicBytes, getFileIcon, MAX_PREVIEW_SIZE } from '../../utils/fileTypeHelpers';
+import { getFileIcon, MAX_PREVIEW_SIZE } from '../../utils/fileTypeHelpers';
 import { useToast } from '../../hooks/useToast';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { formatSize, formatDate, getHostname } from '../../utils/format';
 import { PreviewEyeIcon } from '../icons/Icons';
 import { queueDownload } from "../../transfers/transferQueue";
+import { fetchFilePreview, getCachedPreview, type PreviewData } from "../../services/Preview/fetchPreview";
 
 interface FileCardProps {
   file: FileMetadata;
@@ -29,37 +28,6 @@ function ServerBadge({ server }: { server: string }) {
   );
 }
 
-interface PreviewData {
-  url: string;
-  type: string;
-}
-
-// Session-level preview cache: avoids re-fetching (and re-signing) when
-// navigating between folders. Keyed by previewHash → PreviewData.
-const previewCache = new Map<string, PreviewData>();
-
-async function getPreview(file: FileMetadata): Promise<PreviewData | null> {
-  if (!file.previewHash) return null;
-
-  const cached = previewCache.get(file.previewHash);
-  if (cached) return cached;
-
-  const client = new BlossomClient(file.server);
-  const uint8arr = await client.download(file.previewHash);
-  const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
-  const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
-  
-  const arr = new Uint8Array(decrypted as any);
-  const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
-
-  const blob = new Blob([decrypted as BlobPart], { type: mimeType });
-  const imageUrl = URL.createObjectURL(blob);
-  const data = { url: imageUrl, type: mimeType };
-
-  previewCache.set(file.previewHash, data);
-  return data;
-}
-
 export function FileCard({
   file,
   viewMode = "list",
@@ -76,26 +44,21 @@ export function FileCard({
 
   const [previewloaded, setPreviewloaded] = useState(false);
   const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [isHovering, setIsHovering] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  const handleTileMouseEnter = () => {
-    videoRef.current?.play().catch(() => {});
-  };
-
-  const handleTileMouseLeave = () => {
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
-  };
+  // GIF previews only animate while hovered — shows the static frame
+  // otherwise, matching the still-image behavior of every other file type.
+  const previewSrc =
+    preview?.type === "image/gif" && preview.staticUrl && !isHovering ? preview.staticUrl : preview?.url;
 
   useEffect(() => {
     let cancelled = false;
 
     // Check cache first — if cached, set immediately without async work
-    if (file.previewHash && previewCache.has(file.previewHash)) {
-      setPreview(previewCache.get(file.previewHash)!);
+    const cached = file.previewHash ? getCachedPreview(file.previewHash) : undefined;
+    if (cached) {
+      setPreview(cached);
       setPreviewloaded(true);
       return;
     }
@@ -103,7 +66,7 @@ export function FileCard({
     setPreviewloaded(false);
     setPreview(null);
 
-    getPreview(file)
+    fetchFilePreview(file)
       .then((data) => {
         if (cancelled) return;
         setPreview(data || null);
@@ -295,30 +258,19 @@ export function FileCard({
         )}
         <div
           className={`file-tile ${showMenu ? "menu-open" : ""} ${selected ? "selected" : ""}`}
-          onMouseEnter={handleTileMouseEnter}
-          onMouseLeave={handleTileMouseLeave}
           draggable
           onDragStart={(e) => {
             e.dataTransfer.setData(FILE_HASH_MIME, file.hash);
             e.dataTransfer.effectAllowed = "move";
           }}
+          onMouseEnter={() => setIsHovering(true)}
+          onMouseLeave={() => setIsHovering(false)}
         >
           {/* Preview area */}
           <div className={`file-tile-preview ${showMenu ? "menu-open" : ""}`}>
             {selectionControl}
             {hasPreview ? (
-              preview?.type.startsWith("video/") ? (
-                <video
-                  ref={videoRef}
-                  src={preview.url}
-                  className="file-tile-img"
-                  muted
-                  loop
-                  playsInline
-                />
-              ) : (
-                <img src={preview!.url} alt={file.name} className="file-tile-img" />
-              )
+              <img src={previewSrc} alt={file.name} className="file-tile-img" />
             ) : null}
             <div
               className="file-tile-icon-fallback"
@@ -388,28 +340,18 @@ export function FileCard({
       {showMenu && <div className="file-menu-backdrop" onClick={() => setShowMenu(false)} />}
       <div
         className={`file-card ${selected ? "selected" : ""}`}
-        onMouseEnter={handleTileMouseEnter}
-        onMouseLeave={handleTileMouseLeave}
         draggable
         onDragStart={(e) => {
           e.dataTransfer.setData(FILE_HASH_MIME, file.hash);
           e.dataTransfer.effectAllowed = "move";
         }}
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={() => setIsHovering(false)}
       >
         {selectionControl}
         {previewloaded && preview ? (
           <div className="file-icon" data-type={icon}>
-            {preview.type.startsWith("video/") ? (
-              <video
-                ref={videoRef}
-                src={preview.url}
-                muted
-                loop
-                playsInline
-              />
-            ) : (
-              <img src={preview.url} alt="" />
-            )}
+            <img src={previewSrc} alt="" />
           </div>
         ) : (
           <div className="file-icon" data-type={icon}>
