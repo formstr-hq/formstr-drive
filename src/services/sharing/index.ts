@@ -19,7 +19,9 @@ export type {
 } from "./types";
 
 export { parseShareHash } from "./link";
-export { ensureFileShare, ensureFolderShare } from "./create";
+// Folder sharing (ensureFolderShare) is set aside — not exported here. It
+// lives at "services/sharing/folder" if it's ever wired back into the UI.
+export { ensureFileShare } from "./create";
 export { resolveSharedLink } from "./resolve";
 export { loadSharedByMe, findActiveShare } from "./list";
 export { revokeShare } from "./revoke";

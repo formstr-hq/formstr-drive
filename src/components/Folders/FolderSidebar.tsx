@@ -9,13 +9,14 @@ interface FolderSidebarProps {
   onSelectFolder?: () => void;
 }
 
-import { isDirectChildFolder, getFolderName, ancestorsOf, getFolderItemCount, filesUnderFolder } from '../../utils/folder';
+import { isDirectChildFolder, getFolderName, ancestorsOf, getFolderItemCount } from '../../utils/folder';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { HomeIcon, FolderIcon, ChevronIcon, ShareIcon } from '../icons/Icons';
-import { ShareModal } from '../Files/ShareModal';
-import { useShares } from '../../context/SharesProvider';
 
-
+// Folder sharing is set aside for now (see services/sharing/folder) — this
+// sidebar no longer offers a "Share folder" entry point. It used to accept
+// onShare/isShared props to wire one; those are gone until folder sharing is
+// wired back into a UI entry point.
 interface FolderNodeProps {
   path: string;
   depth: number;
@@ -28,8 +29,6 @@ interface FolderNodeProps {
   dragOverFolder: string | null;
   onDropFiles: (path: string, hashes: string[]) => void;
   setDragOverFolder: (path: string | null) => void;
-  onShare: (path: string) => void;
-  isShared: (path: string) => boolean;
 }
 
 function FolderNode({
@@ -44,8 +43,6 @@ function FolderNode({
   dragOverFolder,
   onDropFiles,
   setDragOverFolder,
-  onShare,
-  isShared,
 }: FolderNodeProps) {
   const children = folders.filter((f) => isDirectChildFolder(path, f));
   const hasChildren = children.length > 0;
@@ -92,17 +89,6 @@ function FolderNode({
           <span className="folder-name">{getFolderName(path)}</span>
           <span className="folder-count">{getItemCount(path)}</span>
         </button>
-        <button
-          className={`folder-share-btn${isShared(path) ? " is-shared" : ""}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onShare(path);
-          }}
-          title={isShared(path) ? "Shared — click to manage" : "Share folder"}
-          aria-label={`Share ${getFolderName(path)}`}
-        >
-          <ShareIcon />
-        </button>
       </div>
 
       {hasChildren && isExpanded && (
@@ -123,8 +109,6 @@ function FolderNode({
                 dragOverFolder={dragOverFolder}
                 onDropFiles={onDropFiles}
                 setDragOverFolder={setDragOverFolder}
-                onShare={onShare}
-                isShared={isShared}
               />
             ))}
         </div>
@@ -142,7 +126,6 @@ export function FolderSidebar({
 }: FolderSidebarProps) {
   const { folders, currentFolder, setCurrentFolder, files, addCustomFolder, moveFiles } =
     useFileIndex();
-  const { isFolderShared } = useShares();
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -151,7 +134,6 @@ export function FolderSidebar({
   );
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [dragOverRoot, setDragOverRoot] = useState(false);
-  const [shareFolderPath, setShareFolderPath] = useState<string | null>(null);
 
   const topLevelFolders = useMemo(
     () => folders.filter((f) => isDirectChildFolder("/", f)),
@@ -203,16 +185,6 @@ export function FolderSidebar({
     if (hashes.length === 0) return;
     void moveFiles(hashes, folder);
   };
-
-  const shareTarget = useMemo(() => {
-    if (!shareFolderPath) return null;
-    return {
-      mode: "folder" as const,
-      folderName: getFolderName(shareFolderPath),
-      path: shareFolderPath,
-      files: filesUnderFolder(files, shareFolderPath),
-    };
-  }, [shareFolderPath, files]);
 
   return (
     <>
@@ -301,17 +273,6 @@ export function FolderSidebar({
                 <span className="folder-name">My Drive</span>
                 <span className="folder-count">{getItemCount("/")}</span>
               </button>
-              <button
-                className={`folder-share-btn${isFolderShared("/") ? " is-shared" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShareFolderPath("/");
-                }}
-                title={isFolderShared("/") ? "Shared — click to manage" : "Share My Drive"}
-                aria-label="Share My Drive"
-              >
-                <ShareIcon />
-              </button>
             </div>
 
             {topLevelFolders
@@ -330,8 +291,6 @@ export function FolderSidebar({
                   dragOverFolder={dragOverFolder}
                   onDropFiles={handleDropFiles}
                   setDragOverFolder={setDragOverFolder}
-                  onShare={setShareFolderPath}
-                  isShared={isFolderShared}
                 />
               ))}
           </nav>
@@ -359,9 +318,6 @@ export function FolderSidebar({
           </nav>
         </div>
       </aside>
-      {shareTarget && (
-        <ShareModal target={shareTarget} onClose={() => setShareFolderPath(null)} />
-      )}
     </>
   );
 }
