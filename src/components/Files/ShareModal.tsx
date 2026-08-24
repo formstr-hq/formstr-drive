@@ -1,17 +1,17 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { FileMetadata } from "../../types/metadata";
-import { ensureFileShare, ensureFolderShare, type ShareResult } from "../../services/sharing";
+import { ensureFileShare, type ShareResult } from "../../services/sharing";
 import { useToast } from "../../hooks/useToast";
 import { useShares } from "../../context/SharesProvider";
 import "./ShareModal.css";
 
-type ShareTarget =
-  | { mode: "file"; file: FileMetadata }
-  | { mode: "folder"; folderName: string; path: string; files: FileMetadata[] };
-
+// Folder sharing is set aside for now (see services/sharing/folder) — this
+// modal only ever handles a single file. It used to also accept a
+// `{ mode: "folder" }` target; that's gone until folder sharing is wired
+// back into a UI entry point.
 interface ShareModalProps {
-  target: ShareTarget;
+  target: { mode: "file"; file: FileMetadata };
   onClose: () => void;
 }
 
@@ -31,10 +31,8 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [memberProgress, setMemberProgress] = useState<{ done: number; total: number } | null>(null);
 
-  const label =
-    target.mode === "file" ? target.file.name : `"${target.folderName}" folder`;
+  const label = target.file.name;
 
   useEffect(() => {
     let cancelled = false;
@@ -48,21 +46,10 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
         // an ~8s-capped relay round trip on every Share click. Before that
         // first load finishes, an empty cache is indistinguishable from
         // "never shared" and would risk creating a duplicate, so fall back
-        // to the network lookup ensureFileShare/ensureFolderShare do on
-        // their own when knownEntries is omitted.
+        // to the network lookup ensureFileShare does on its own when
+        // knownEntries is omitted.
         const knownEntries = shares.loaded ? shares.entries : undefined;
-        const shareResult =
-          target.mode === "file"
-            ? await ensureFileShare(target.file, knownEntries)
-            : await ensureFolderShare(
-                target.folderName,
-                target.path,
-                target.files,
-                (done, total) => {
-                  if (!cancelled) setMemberProgress({ done, total });
-                },
-                knownEntries,
-              );
+        const shareResult = await ensureFileShare(target.file, knownEntries);
         if (!cancelled) {
           setResult(shareResult);
           shares.refresh();
@@ -114,11 +101,11 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
             <>
               {result.reused && (
                 <p className="share-modal-status share-modal-reused">
-                  This {target.mode} already has a share link — here it is.
+                  This file already has a share link — here it is.
                 </p>
               )}
               <p className="share-modal-hint">
-                Anyone with this link can view and download {target.mode === "file" ? "this file" : "these files"} —
+                Anyone with this link can view and download this file —
                 no account needed. You can revoke it later from "Shared by me", but anyone who
                 already opened it may retain access.
               </p>
@@ -134,24 +121,6 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              {target.mode === "folder" && memberProgress && memberProgress.done < memberProgress.total && (
-                <p className="share-modal-status share-modal-progress">
-                  Preparing files… {memberProgress.done} of {memberProgress.total}. The link
-                  works now; files appear as they're ready.
-                </p>
-              )}
-              {result.membersUnknown && (
-                <p className="share-modal-status share-modal-warning">
-                  This folder's link predates update tracking — files added since won't be
-                  included automatically.
-                </p>
-              )}
-              {typeof result.pending === "number" && result.pending > 0 && (
-                <p className="share-modal-status share-modal-warning">
-                  {result.pending} update{result.pending === 1 ? "" : "s"} couldn't be confirmed
-                  yet and will retry automatically.
-                </p>
-              )}
             </>
           )}
         </div>

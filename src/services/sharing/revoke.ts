@@ -1,35 +1,10 @@
-import { deriveConversationKeyFromHex, aesGcmDecrypt } from "../../crypto";
+import { deriveConversationKeyFromHex } from "../../crypto";
 import { getDriveKeyByPubkey } from "../driveKey";
 import { publishDeletionRequest } from "../deletionRequest";
-import { METADATA_KIND, parseCoordinate } from "./link";
-import { fetchEventByCoordinate } from "./relay";
+import { parseCoordinate } from "./link";
 import { publishSupersedingEvent, writeShareInfo } from "./shareInfo";
+import { resolveFolderMemberCoordinates, revokeFolderMembers } from "./folder/revoke";
 import type { RevokeResult, SharedByMeEntry } from "./types";
-
-/** Resolves a folder share's member coordinates, falling back to fetching
- *  and decrypting the container event for a v1 entry (whose info event
- *  never recorded members). Returns `complete: false` if that fallback
- *  fetch fails — callers must not treat that as a clean, fully-resolved
- *  revoke. */
-async function resolveMemberCoordinates(
-  entry: SharedByMeEntry,
-  conversationKey: Uint8Array,
-): Promise<{ members: string[]; complete: boolean }> {
-  if (entry.kind === "file") return { members: [], complete: true };
-  if (entry.members !== null) return { members: entry.members.map((m) => m.coordinate), complete: true };
-
-  const { pubkey, d } = parseCoordinate(entry.coordinate);
-  const event = await fetchEventByCoordinate(METADATA_KIND, pubkey, d);
-  if (!event) return { members: [], complete: false };
-
-  try {
-    const json = await aesGcmDecrypt(event.content, conversationKey);
-    const container = JSON.parse(json) as { files: [string, string, string?][] };
-    return { members: container.files.map(([, coordinate]) => coordinate), complete: true };
-  } catch {
-    return { members: [], complete: false };
-  }
-}
 
 /**
  * Revokes a share: supersedes its primary coordinate (the container for a
@@ -38,6 +13,10 @@ async function resolveMemberCoordinates(
  * Also fires a best-effort NIP-09 courtesy request. Does NOT and cannot
  * un-disclose anything the recipient already fetched — see the caller-facing
  * copy in ShareModal / SharedByMeView for the honest framing of that limit.
+ *
+ * Folder sharing is set aside from the UI (see ./folder/create.ts) — this
+ * still handles revoking a folder entry so anyone who already has one from
+ * before that change can still clean it up.
  */
 export async function revokeShare(entry: SharedByMeEntry): Promise<RevokeResult> {
   const { pubkey } = parseCoordinate(entry.coordinate);
@@ -51,12 +30,13 @@ export async function revokeShare(entry: SharedByMeEntry): Promise<RevokeResult>
   // Resolve members BEFORE superseding anything — supersede the container
   // first and a v1 folder's member list is gone forever, leaving orphaned
   // live shared-file copies with a disclosed key.
-  const { members, complete } = await resolveMemberCoordinates(entry, conversationKey);
+  const { members, complete } =
+    entry.kind === "folder"
+      ? await resolveFolderMemberCoordinates(entry, conversationKey)
+      : { members: [], complete: true };
   const membersUnknown = !complete;
 
   const at = Math.floor(Date.now() / 1000);
-  const revoked: string[] = [];
-  const pending: string[] = [];
 
   // 1. The primary coordinate — synchronous, throws on total failure, since
   //    this is what the link resolves first and once it lands the link is
@@ -68,25 +48,10 @@ export async function revokeShare(entry: SharedByMeEntry): Promise<RevokeResult>
     at,
     kind: entry.kind,
   });
-  revoked.push(entry.coordinate);
 
   // 2. Folder members, paced to avoid a revoke burst on a large folder.
-  for (let i = 0; i < members.length; i++) {
-    try {
-      await publishSupersedingEvent(key, members[i], "shared-file", conversationKey, {
-        v: 1,
-        revoked: true,
-        at,
-        kind: "file",
-      });
-      revoked.push(members[i]);
-    } catch {
-      pending.push(members[i]);
-    }
-    if (i < members.length - 1) {
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }
+  const { revoked: revokedMembers, pending } = await revokeFolderMembers(key, members, conversationKey, at);
+  const revoked = [entry.coordinate, ...revokedMembers];
 
   // 3. The info event itself, so the list reflects the revoke on reload.
   //    Reuse entry.members verbatim when we had it (preserves file-id
