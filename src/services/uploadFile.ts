@@ -16,6 +16,29 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
  */
 export const SEGMENT_SIZE = 65536;
 
+/** Read granularity for {@link computePlaintextHash} — independent of
+ *  SEGMENT_SIZE since this pass never encrypts, so there's no reason to tie
+ *  it to the segment framing; a larger read reduces the number of
+ *  `file.slice().arrayBuffer()` round trips for a plaintext-only pass. */
+const HASH_READ_SIZE = 4 * 1024 * 1024;
+
+/**
+ * Streaming plaintext-only hash — no encryption, no network I/O. Used ahead
+ * of the real upload to compute the NIP-FS `unencryptedFileHash` early
+ * enough to check for a client-level duplicate (see
+ * fileIndex.ts's findDuplicateByHash) before paying for a full encrypt+
+ * upload of content the drive already has.
+ */
+export async function computePlaintextHash(file: File, signal?: AbortSignal): Promise<string> {
+  const hasher = sha256.create();
+  for (let start = 0; start < file.size; start += HASH_READ_SIZE) {
+    throwIfAborted(signal);
+    const end = Math.min(start + HASH_READ_SIZE, file.size);
+    hasher.update(new Uint8Array(await file.slice(start, end).arrayBuffer()));
+  }
+  return bytesToHex(hasher.digest());
+}
+
 export interface UploadResult {
   /** sha256 hex of the single concatenated ciphertext blob (NIP-FS `blobHash`). */
   blobHash: string;

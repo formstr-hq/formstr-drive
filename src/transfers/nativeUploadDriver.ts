@@ -1,10 +1,15 @@
 import { generateSecretKey, type Event } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
-import { prepareUpload, SEGMENT_SIZE } from "../services/uploadFile";
+import { prepareUpload, SEGMENT_SIZE, computePlaintextHash } from "../services/uploadFile";
 import { segmentCount } from "../crypto";
 import { previewFile } from "../services/Preview/previewManager";
-import { buildSignedMetadataEvent, recordPublishedMetadata } from "../services/fileIndex";
+import {
+  buildSignedMetadataEvent,
+  recordPublishedMetadata,
+  saveFileMetadata,
+  findDuplicateByHash,
+} from "../services/fileIndex";
 import {
   dequeueMetadataEvent,
   publishAndDequeue,
@@ -68,6 +73,32 @@ export async function nativeUploadDriver(
     survivesAppClose?: boolean;
   }) => void,
 ): Promise<FileMetadata> {
+  // NIP-FS client-level dedup: the encrypted blobHash is unique per upload
+  // (fresh ephemeral key + nonces every time), so it can never catch a
+  // re-upload of identical content — only the plaintext hash can. Checked
+  // before the native foreground service (and its persistent notification)
+  // even starts, since a duplicate needs neither: there's nothing to
+  // encrypt, stage, or hand off, so it's published synchronously right here
+  // instead of going through the background-survivable upload machinery.
+  onProgress({ stage: "Checking for duplicates...", progress: 0 });
+  const dedupHash = await computePlaintextHash(file, signal);
+  const duplicate = findDuplicateByHash(dedupHash);
+  if (duplicate) {
+    const metadata: FileMetadata = {
+      ...duplicate,
+      id: generateFileId(),
+      name: file.name,
+      folder: targetFolder,
+      uploadedAt: Date.now(),
+    };
+    const publishResult = await saveFileMetadata(metadata);
+    if (publishResult.accepted < publishResult.total) {
+      console.warn(`[Upload] Metadata saved to ${publishResult.accepted}/${publishResult.total} relays`);
+    }
+    onProgress({ stage: "Upload complete", progress: 100 });
+    return metadata;
+  }
+
   const uploadId = crypto.randomUUID();
 
   await ensureNotificationPermission();

@@ -87,6 +87,18 @@ const fileIndexStore = (() => {
       entries.clear();
       emit();
     },
+    /** Same filter/shape as what subscribers are handed, but synchronous —
+     *  for a one-off lookup (see findDuplicateByHash) that doesn't want to
+     *  hold a live subscription open just to read the current snapshot. */
+    snapshot(): FileMetadata[] {
+      return Array.from(entries.values())
+        .filter(
+          (e): e is { created_at: number; metadata: FileMetadata } =>
+            e.metadata !== null && !e.metadata.deleted && !isLegacyFile(e.metadata),
+        )
+        .sort((a, b) => b.created_at - a.created_at)
+        .map((e) => e.metadata);
+    },
   };
 })();
 
@@ -108,6 +120,23 @@ export function clearFileIndexStore(): void {
  */
 export function recordPublishedMetadata(metadata: FileMetadata, createdAt: number): void {
   fileIndexStore.write(metadata.id, createdAt, metadata);
+}
+
+/**
+ * NIP-FS client-level dedup: "unencryptedFileHash is used to dedupe files at
+ * the client level since the hash generated after encryption will always be
+ * unique due to rotating nonce and encryption key." Two uploads of
+ * byte-identical content get different blobHash/encryptionKey every time
+ * (fresh ephemeral key, fresh nonces), so blob-level dedup can never catch
+ * them — only comparing the PLAINTEXT hash can.
+ *
+ * Best-effort against whatever the client currently has loaded (not a
+ * network round trip) — matches "client-level" in the spec's own phrasing.
+ * Returns the most recently uploaded match so re-uploading the same file
+ * repeatedly always points new copies at the latest still-live blob.
+ */
+export function findDuplicateByHash(unencryptedFileHash: string): FileMetadata | undefined {
+  return fileIndexStore.snapshot().find((f) => f.unencryptedFileHash === unencryptedFileHash);
 }
 
 /**
