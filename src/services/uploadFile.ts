@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "nostr-tools/utils";
-import { BlossomClient } from "../blossom";
+import { BlossomClient, BlossomError } from "../blossom";
 import { encryptSegment, deriveConversationKeyFromHex, encryptFileWithExistingKey, segmentCount } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { describeAllServersFailed, isPermanentFailure } from "./uploadErrors";
@@ -220,6 +220,23 @@ async function uploadBlobWithFallback(
     if (deadServers.has(server)) continue;
 
     const client = new BlossomClient(server);
+
+    // BUD-06 preflight: ask before sending. The single-blob format can mean
+    // one PUT of several hundred MB — discovering a size cap by streaming
+    // the whole thing into a gateway that silently drops it (502, no CORS
+    // headers on the error) burns minutes and reports a misleading network
+    // error. A server that doesn't implement BUD-06 returns { ok: true } here
+    // (see canAccept's doc comment) so this never blocks a compliant upload.
+    const precheck = await client.canAccept(blob.size, sha256Hash, blob.type, authHeader);
+    if (!precheck.ok) {
+      failures.push({
+        server,
+        error: new BlossomError(precheck.reason || "Server rejected this upload", { status: precheck.status }),
+      });
+      deadServers.add(server);
+      continue;
+    }
+
     let retries = 3;
 
     while (retries > 0) {
