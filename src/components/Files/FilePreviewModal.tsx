@@ -1,9 +1,35 @@
 import { useEffect, useState } from "react";
-import type { FileMetadata } from '../../types/metadata';
+import { isLegacyBlobFormat, type FileMetadata } from '../../types/metadata';
 import { resolvePreviewMode, MAX_PREVIEW_SIZE } from '../../utils/fileTypeHelpers';
 import { canOpenInNostrDocs, openInNostrDocs } from '../../utils/docsIntegrationHelpers';
 import { downloadAndDecryptFile } from '../../services/downloadFile';
+import { hasServiceWorkerSupport } from '../../services/swStreamDownload';
+import { openMediaSession, type MediaSession } from '../../services/swMediaStream';
+import { probeRangeSupport } from '../../services/rangeRead';
 import { useToast } from '../../hooks/useToast';
+
+/**
+ * Video/PDF are the only modes with a seekable streaming path (see
+ * swMediaStream.ts / rangeRead.ts) — any NIP-FS segment decrypts in
+ * isolation, so a Range request maps cleanly onto a plaintext byte range.
+ * Images and text stay on the whole-file path: they're rendered once, not
+ * scrubbed, so there's nothing seeking would buy them.
+ *
+ * Gated on `file.size > MAX_PREVIEW_SIZE`: a file the whole-file path can
+ * already handle in one clean fetch has nothing to gain from the streaming
+ * path, only extra cost — an SW handshake, a range-support probe request,
+ * and per-range decrypt calls instead of a single decrypt. The streaming
+ * path exists specifically to reach files that path CAN'T serve.
+ */
+function canStreamPreview(file: FileMetadata, mode: string): file is FileMetadata & { blobHash: string; chunkSize: number } {
+  return (
+    file.size > MAX_PREVIEW_SIZE &&
+    (mode === "video" || mode === "pdf") &&
+    !isLegacyBlobFormat(file) &&
+    file.chunkSize !== undefined &&
+    hasServiceWorkerSupport()
+  );
+}
 
 interface FilePreviewModalProps {
   file: FileMetadata;
@@ -30,6 +56,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   useEffect(() => {
     let cancelled = false;
     let createdUrl: string | null = null;
+    let mediaSession: MediaSession | null = null;
 
     const loadPreview = async () => {
       setLoading(true);
@@ -40,6 +67,29 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
       if (mode === "unsupported") {
         setLoading(false);
         return;
+      }
+
+      if (canStreamPreview(file, mode)) {
+        try {
+          // A server that ignores Range would only decode correctly from
+          // byte 0, then fail every subsequent seek — probe before
+          // committing to the streaming path rather than discovering that
+          // mid-playback.
+          const supportsRange = await probeRangeSupport(file);
+          if (supportsRange) {
+            const session = await openMediaSession(file);
+            if (cancelled) {
+              session.release();
+              return;
+            }
+            mediaSession = session;
+            setBlobUrl(session.url);
+            setLoading(false);
+            return;
+          }
+        } catch (e) {
+          console.warn("Seekable preview unavailable, falling back to full download:", e);
+        }
       }
 
       if (file.size > MAX_PREVIEW_SIZE) {
@@ -81,6 +131,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
       if (createdUrl) {
         URL.revokeObjectURL(createdUrl);
       }
+      mediaSession?.release();
     };
   }, [file, mode, toast]);
 
