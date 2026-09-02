@@ -398,6 +398,61 @@ export class BlossomClient {
   }
 
   /**
+   * Fetches byte range [start, end] (inclusive) of a stored blob via HTTP
+   * Range, for seekable previews of large NIP-FS single-blob files — any
+   * segment decrypts in isolation (see crypto.ts decryptSegment), so a
+   * contiguous slice of ciphertext maps to a contiguous slice of plaintext
+   * without touching the rest of the blob.
+   *
+   * `satisfied` reports whether the SERVER actually honored the Range header
+   * (status 206) as opposed to ignoring it and sending the whole blob back
+   * (status 200) — Range support is optional per BUD-01 and varies by
+   * server, so callers must check this rather than assume a 200 means
+   * success. Reading `Content-Range` isn't necessary for that check; the
+   * status code alone is sufficient and universally present.
+   */
+  async downloadRange(
+    sha256: string,
+    start: number,
+    end: number,
+    authHeader?: string,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; satisfied: boolean }> {
+    let res: Response;
+    try {
+      res = await withTimeout(
+        fetch(`${this.baseUrl}/${sha256}`, {
+          headers: {
+            ...(authHeader ? { Authorization: authHeader } : {}),
+            Range: `bytes=${start}-${end}`,
+          },
+          signal,
+        }),
+        30000,
+        "fetch-timeout",
+        `Blossom range request timed out after 30s for ${sha256}`,
+      );
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        throw e;
+      }
+      if (e instanceof TypeError) {
+        throw new BlossomError(
+          `Network error reaching ${this.baseUrl} — the connection was blocked or dropped. This can be a CORS misconfiguration, a network hiccup, or a temporary outage.`,
+          { isCorsError: true },
+        );
+      }
+      throw e;
+    }
+
+    if (!res.ok) {
+      throw new BlossomError(res.headers.get("X-Reason") || res.statusText, { status: res.status });
+    }
+
+    return { bytes: new Uint8Array(await res.arrayBuffer()), satisfied: res.status === 206 };
+  }
+
+  /**
    * Delete a blob from the server (Blossom BUD-02).
    * Returns true if the blob was deleted or was already gone (404).
    * Throws BlossomError on network or server errors so callers can retry.

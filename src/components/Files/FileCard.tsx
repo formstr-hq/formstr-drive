@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { type FileMetadata } from '../../types/metadata';
 import { useFileIndex } from '../../hooks/useFileContext';
 import { FilePreviewModal } from "./FilePreviewModal";
-import { getFileIcon, MAX_PREVIEW_SIZE } from '../../utils/fileTypeHelpers';
+import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode } from '../../utils/fileTypeHelpers';
+import { isLegacyBlobFormat } from '../../types/metadata';
 import { useToast } from '../../hooks/useToast';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { formatSize, formatDate, getHostname } from '../../utils/format';
@@ -110,10 +111,13 @@ export function FileCard({
 
   const handlePreviewClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    // Surface large-file (>5MB) previews as a per-card inline error instead of
-    // opening the modal. Mirrors MAX_PREVIEW_SIZE handling in FilePreviewModal,
-    // but kept here so the modal never opens just to show a one-line notice.
-    if (file.size > MAX_PREVIEW_SIZE) {
+    // Video/PDF on the new blob format can stream via Range requests
+    // (FilePreviewModal / swMediaStream.ts), so the 5MB gate only applies to
+    // modes without a seekable path — surfacing it here, before the modal
+    // opens, avoids the modal opening just to show a one-line notice.
+    const mode = resolvePreviewMode(file.type);
+    const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
+    if (!canStream && file.size > MAX_PREVIEW_SIZE) {
       toast.error("File is too large to preview (over 5 MB). Please download it.");
       return;
     }
