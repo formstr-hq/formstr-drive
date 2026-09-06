@@ -1,6 +1,14 @@
-export function canOpenInNostrDocs(file: { type: string; name: string; chunks?: unknown[] }): boolean {
+export function canOpenInNostrDocs(file: { type: string; name: string; chunks?: unknown[]; blobHash?: string }): boolean {
   if (file.chunks && file.chunks.length > 0) {
     return false; // chunked payloads are not supported by the current Nostr Docs app
+  }
+  if (file.blobHash) {
+    // NIP-FS single-blob files use a different segment cipher (crypto.ts's
+    // encryptSegment: computed counter+last-flag nonce, no version byte) than
+    // the legacy single-blob format Nostr Docs was verified against. Exclude
+    // until/unless that external app is confirmed to decrypt the new format,
+    // rather than send a payload it silently can't read.
+    return false;
   }
 
   const normalizedType = file.type.toLowerCase();
@@ -17,10 +25,16 @@ export function canOpenInNostrDocs(file: { type: string; name: string; chunks?: 
   return lowerName.endsWith(".docx") || lowerName.endsWith(".doc") || lowerName.endsWith(".odt");
 }
 
-export function openInNostrDocs(file: { server: string; hash: string; encryptionKey: string; type: string; name: string }) {
+export function openInNostrDocs(file: {
+  server: string;
+  chunks?: { hash: string }[];
+  encryptionKey: string;
+  type: string;
+  name: string;
+}) {
   const payload = {
     server: file.server,
-    hash: file.hash,
+    hash: file.chunks?.[0]?.hash ?? "",
     encryptionKey: file.encryptionKey,
     type: file.type,
     name: file.name,

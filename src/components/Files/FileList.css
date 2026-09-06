@@ -150,6 +150,25 @@
   color: var(--color-text-muted);
 }
 
+.empty-state.error-state p:first-child {
+  color: var(--color-danger-strong, var(--color-text-secondary));
+  font-weight: var(--font-weight-medium);
+}
+
+.empty-state-retry {
+  margin-top: var(--space-8);
+  padding: var(--space-6) var(--space-12);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.empty-state-retry:hover {
+  background: var(--color-bg-hover);
+}
+
 .loading-state {
   text-align: center;
   padding: var(--space-24);

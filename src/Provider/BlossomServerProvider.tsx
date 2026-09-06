@@ -11,16 +11,40 @@ import {
   setStoredItem,
   STORAGE_KEYS,
 } from "../utils/persistence";
+import { observeServerList, publishServerList } from "../services/blossomServerList";
+import { useProfileContext } from "../hooks/useProfileContext";
 
 const DEFAULT_SERVERS = [
   "https://nostr.download",
+  "https://blossom.data.haus",
   "https://blossom.primal.net",
   "https://blossom.oxtr.dev",
 ];
 
-interface ServerInfo {
+export interface ServerInfo {
   url: string;
   source: "default" | "relay" | "custom";
+}
+
+/**
+ * The candidate list for automatic upload fallback: the selected server
+ * first, then the user's other known DEFAULT/custom servers. Deliberately
+ * excludes relay-discovered ("relay" source) servers unless one is already
+ * the selection — those are arbitrary third-party URLs the user never
+ * reviewed, and while file content is end-to-end encrypted before upload, the
+ * BUD-02 auth event still exposes the identity pubkey, blob hash, and timing
+ * to whatever server receives it. Automatically fanning that out beyond the
+ * trusted (default + user-added) set isn't a call this function should make
+ * on its own.
+ */
+export function getUploadCandidateServers(
+  selectedServer: string,
+  servers: ServerInfo[],
+): string[] {
+  const rest = servers
+    .filter((s) => s.source !== "relay" && s.url !== selectedServer)
+    .map((s) => s.url);
+  return [selectedServer, ...rest];
 }
 
 export interface BlossomServerContextType {
@@ -48,6 +72,7 @@ function normalizeServerUrl(url: string) {
 }
 
 export function BlossomServerProvider({ children }: { children: ReactNode }) {
+  const { pubkey, restoring } = useProfileContext();
   const [servers, setServers] = useState<ServerInfo[]>(
     DEFAULT_SERVERS.map((url) => ({ url, source: "default" })),
   );
@@ -122,7 +147,9 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
             },
           },
         );
-        unobserve = () => handle.unobserve();
+        unobserve = () => {
+          handle.unobserve();
+        };
       } catch (e) {
         console.error("Failed to query relay servers:", e);
         if (!cancelled) {
@@ -140,6 +167,36 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // The user's own BUD-03 server list (kind 10063), so a server added on one
+  // device shows up on all of them. Kept in its own effect, gated on `pubkey`
+  // rather than read once via signerManager.getPubkey() at mount: the effect
+  // above runs before the signer has necessarily finished restoring a session
+  // (this provider mounts alongside ProfileProvider, not after it settles), so
+  // a synchronous read here would silently see `undefined` on most cold
+  // starts and never subscribe for the rest of the session. Depending on
+  // `pubkey` instead means this activates the moment it's actually known, and
+  // correctly re-subscribes under a switched account's own list.
+  useEffect(() => {
+    if (restoring || !pubkey) return;
+
+    const unobserveServerList = observeServerList(pubkey, (syncedUrls) => {
+      setServers((prev) => {
+        const known = new Set(prev.map((s) => s.url));
+        // Merged as "custom" because that's what it is — a server this user
+        // deliberately chose, not an arbitrary third-party URL discovered
+        // from the network — which also makes it eligible for upload
+        // fallback (see getUploadCandidateServers).
+        const additions = syncedUrls
+          .map(normalizeServerUrl)
+          .filter((url) => !known.has(url))
+          .map((url) => ({ url, source: "custom" as const }));
+        return additions.length > 0 ? [...prev, ...additions] : prev;
+      });
+    });
+
+    return unobserveServerList;
+  }, [pubkey, restoring]);
+
   const addCustomServer = useCallback((url: string) => {
     const normalizedUrl = normalizeServerUrl(url);
 
@@ -149,13 +206,26 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
       throw new Error(`"${url}" is not a valid server URL`);
     }
 
+    let nextCustomUrls: string[] = [];
     setServers((prev) => {
       if (prev.some((s) => s.url === normalizedUrl)) {
+        nextCustomUrls = prev.filter((s) => s.source === "custom").map((s) => s.url);
         return prev;
       }
-      return [...prev, { url: normalizedUrl, source: "custom" }];
+      const next: ServerInfo[] = [...prev, { url: normalizedUrl, source: "custom" }];
+      nextCustomUrls = next.filter((s) => s.source === "custom").map((s) => s.url);
+      return next;
     });
     setSelectedServer(normalizedUrl);
+
+    // Publish the updated list so other devices pick it up. Deliberately not
+    // awaited and never rethrown: the server is already usable locally, and a
+    // relay hiccup must not make "add server" appear to fail. The warning is
+    // the signal that cross-device sync specifically didn't happen.
+    void publishServerList([normalizedUrl, ...nextCustomUrls.filter((u) => u !== normalizedUrl)])
+      .catch((e) => {
+        console.warn("[BlossomServers] Could not sync server list to relays", e);
+      });
   }, []);
 
   useEffect(() => {

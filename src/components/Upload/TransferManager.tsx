@@ -1,6 +1,7 @@
 import { isAndroidPlatform } from '../../utils/platform';
 import { openDownloadedFile } from '../../native/driveManifest';
 import type { TransferItem } from '../../transfers/transferStore';
+import { canRetryTransfer } from '../../transfers/transferQueue';
 import "./UploadManager.css";
 
 export function TransferManager({
@@ -89,7 +90,9 @@ function TransferRow({
 
   const isTerminal =
     transfer.status === "completed" || transfer.status === "failed" || transfer.status === "cancelled";
-  const isRetryable = transfer.status === "failed" || transfer.status === "cancelled";
+  // Terminal *and* actually restartable — an adopted native row has no job
+  // behind it, so offering Retry there would be a button that does nothing.
+  const isRetryable = canRetryTransfer(transfer.id);
 
   // Upload runs two passes: hash/encrypt then upload. The first pass tops out
   // around 50%. Driven off progress rather than a fragile stage-string compare.

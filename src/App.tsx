@@ -4,6 +4,7 @@ import { FileIndexProvider } from "./Provider/FileIndexProvider";
 import { useProfileContext } from "./hooks/useProfileContext";
 import { ProfileProvider } from "./Provider/ProfileProvider";
 import { Header } from './components/Header/Header';
+import { DriveKeyWarningBanner } from './components/Header/DriveKeyWarningBanner';
 import { FolderSidebar } from './components/Folders/FolderSidebar';
 import { FileList } from './components/Files/FileList';
 import { SignIn } from "./components/SignIn/SignIn";
@@ -44,6 +45,7 @@ function DriveLayout() {
   return (
     <div className="drive-layout">
       <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
+      <DriveKeyWarningBanner />
       <div className="drive-content">
         <FolderSidebar
           isOpen={sidebarOpen}

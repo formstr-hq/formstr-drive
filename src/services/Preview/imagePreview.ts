@@ -1,4 +1,5 @@
 import heic2any from "heic2any"; // For converting HEIC to JPEG before passing into canva
+import { canvasToBlobWithFallback } from "../../utils/canvas";
 
 function isHeic(file: File): boolean {
   return (
@@ -44,8 +45,6 @@ export async function generateImagePreview(file: File): Promise<Uint8Array> {
   const ctx = canvas.getContext("2d")!;
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   URL.revokeObjectURL(img.src);  // clean up object URL
-  const blob: Blob = await new Promise((resolve) =>
-    canvas.toBlob((b) => resolve(b!), "image/webp", 0.7)
-  );
+  const blob = await canvasToBlobWithFallback(canvas, 0.7);
   return new Uint8Array(await blob.arrayBuffer());
 }

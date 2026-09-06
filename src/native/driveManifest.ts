@@ -1,10 +1,12 @@
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
-import { chunkHashes, type ChunkRef, type FileMetadata } from "../types/metadata";
+import { resolveChunks, type ChunkRef, type FileMetadata } from "../types/metadata";
 import { isAndroidPlatform } from "../utils/platform";
 
 export interface NativeDownloadStartedEvent {
   id: string;
-  hash: string;
+  /** Echoed back verbatim from the `downloadToDownloads` call that started
+   *  this download — see the correlation note above pendingDownloadsById. */
+  correlationId: string;
 }
 
 export interface NativeDownloadEvent {
@@ -20,6 +22,15 @@ export interface NativeUploadEvent {
   type: "progress" | "complete" | "error" | "cancelled";
   percent?: number;
   message?: string;
+  /** On `complete`: the Blossom server the blobs actually landed on, which may
+   *  be a fallback candidate rather than the primary. */
+  server?: string;
+  /** On `error`: the server's HTTP status, when the failure was an actual
+   *  rejection rather than a network-level or relay-publish failure. Lets
+   *  callers run the failure through the same classifyUploadFailure() the web
+   *  driver uses (src/services/uploadErrors.ts) instead of guessing from
+   *  message text — see DriveUploadWorker.Listener.onError on the native side. */
+  status?: number;
 }
 
 export interface NativeActiveDownload {
@@ -28,10 +39,33 @@ export interface NativeActiveDownload {
   percent: number;
 }
 
+export interface NativeActiveUpload {
+  id: string;
+  fileName: string;
+  percent: number;
+  /** True while JS is still encrypting/staging — such an upload cannot survive
+   *  the app being killed, so it is adopted as failed rather than running. */
+  preparing: boolean;
+}
+
 export interface NativeUploadBlob {
   path: string;
   hash: string;
   contentType?: string;
+  /** Best-effort blob (the preview): a failure skips it instead of failing the
+   *  upload or forcing a fallback to another server. */
+  optional?: boolean;
+}
+
+/**
+ * One pre-signed kind-34578 metadata event, paired with the Blossom server its
+ * `server` field names. The worker publishes exactly the event matching the
+ * server the blobs actually landed on — that's what lets a background upload
+ * fall back to another server without needing a signer to re-sign metadata.
+ */
+export interface NativeUploadMetadataEvent {
+  server: string;
+  eventJson: string;
 }
 
 type DriveFilesPlugin = {
@@ -50,9 +84,15 @@ type DriveFilesPlugin = {
   saveToDownloads(options: { base64: string; fileName: string; mimeType: string }): Promise<{ uri: string }>;
   downloadToDownloads(options: {
     server: string;
-    chunks?: string[];
-    hash: string;
+    /** NIP-FS single-blob file: present together, absent on legacy files
+     *  (which carry `chunks` instead — see types/metadata.ts's
+     *  isLegacyBlobFormat). */
+    blobHash?: string;
+    chunkSize?: number;
+    chunks?: ChunkRef[];
+    correlationId: string;
     encryptionKey: string;
+    unencryptedFileHash?: string;
     fileName: string;
     mimeType: string;
     size: number;
@@ -62,16 +102,22 @@ type DriveFilesPlugin = {
   openFile(options: { uri: string; mimeType: string }): Promise<void>;
   requestNotificationPermission(): Promise<{ granted: boolean }>;
   startUploadService(options: { uploadId: string; fileName: string }): Promise<void>;
-  stageUploadChunk(options: { uploadId: string; index: number; base64: string }): Promise<{ path: string }>;
+  stageUploadChunk(options: {
+    uploadId: string;
+    index: number;
+    base64: string;
+    append?: boolean;
+  }): Promise<{ path: string }>;
   startNativeUpload(options: {
     uploadId: string;
-    server: string;
+    servers: string[];
     fileName: string;
     authHeader: string;
-    metadataEventJson: string;
+    metadataEvents: NativeUploadMetadataEvent[];
     blobs: NativeUploadBlob[];
     relays: string[];
-  }): Promise<void>;
+  }): Promise<{ server: string }>;
+  getActiveUploads(): Promise<{ uploads: NativeActiveUpload[] }>;
   cancelNativeUpload(options: { uploadId: string }): Promise<void>;
   showUploadNotification(options: { id: string; fileName: string; percent: number }): Promise<void>;
   finishUploadNotification(options: { id: string; fileName: string; ok: boolean; message?: string }): Promise<void>;
@@ -103,7 +149,6 @@ export interface NativeDriveFolderEntry {
 
 export interface NativeDriveFileEntry {
   id: string;
-  hash: string;
   name: string;
   mimeType: string;
   size: number;
@@ -113,7 +158,13 @@ export interface NativeDriveFileEntry {
   server: string;
   encryptionKey: string;
   previewHash?: string;
-  chunks?: string[];
+  unencryptedFileHash?: string;
+  /** NIP-FS single-blob file: present together, absent on legacy files
+   *  (which carry `chunks` instead — see types/metadata.ts's
+   *  isLegacyBlobFormat). */
+  blobHash?: string;
+  chunkSize?: number;
+  chunks?: ChunkRef[];
 }
 
 export interface NativeDriveManifest {
@@ -139,6 +190,13 @@ const driveFilesPlugin = isAndroidPlatform
   : null;
 
 export function normalizeFolderPath(path: string): string {
+  // `folder: string` is only a TS-level promise (see FileMetadata's
+  // isLegacyFile comment) — a real decrypted event predating this field, or
+  // any malformed metadata, can pass `file.folder` through as undefined
+  // despite the type. Every caller here goes through this one function, so
+  // guarding here (rather than at each `normalizeFolderPath(file.folder)`
+  // call site) means the next caller inherits the same safety for free.
+  if (!path) return "/";
   const trimmed = path.trim();
   if (!trimmed || trimmed === "/") {
     return "/";
@@ -245,12 +303,17 @@ export function buildNativeDriveManifest(
     };
   });
 
+  // Chunks are published with their resolved server, so the native side
+  // (DriveFilesDocumentsProvider / DriveFileDownloader.java) fetches each one
+  // from wherever it actually landed. That's what lets every file — including
+  // ones whose chunks fell back to a different server mid-upload — appear in
+  // the Files app; they used to be excluded here because native could only
+  // address a single server per file.
   const driveFiles: NativeDriveFileEntry[] = files.map((file) => {
     const folderPath = normalizeFolderPath(file.folder);
 
     return {
-      id: toFileDocumentId(file.hash),
-      hash: file.hash,
+      id: toFileDocumentId(file.id),
       name: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
@@ -261,7 +324,11 @@ export function buildNativeDriveManifest(
       server: file.server,
       encryptionKey: file.encryptionKey,
       ...(file.previewHash ? { previewHash: file.previewHash } : {}),
-      ...(file.chunks ? { chunks: chunkHashes(file.chunks) } : {}),
+      ...(file.unencryptedFileHash ? { unencryptedFileHash: file.unencryptedFileHash } : {}),
+      ...(file.blobHash && file.chunkSize
+        ? { blobHash: file.blobHash, chunkSize: file.chunkSize }
+        : {}),
+      ...(file.chunks ? { chunks: resolveChunks(file.chunks, file.server) } : {}),
     };
   });
 
@@ -381,15 +448,16 @@ interface DownloadCallbacks {
   onStarted?: (cancel: () => void) => void;
   // The native download id (a random UUID) once `downloadStarted` has arrived.
   // Until then progress/cancel can't be routed, so the entry lives in
-  // `pendingDownloadsByHash` keyed by the file hash we do know up front.
+  // `pendingDownloadsByCorrelationId` under the token we minted up front.
   nativeId?: string;
 }
 
-// The native plugin generates a random UUID per download and reports progress
-// and completion under that id — NOT the file hash. So callbacks are registered
-// by hash first (pendingDownloadsByHash), then re-keyed to the native id when
-// the `downloadStarted` event delivers the correlation (event.hash -> event.id).
-const pendingDownloadsByHash = new Map<string, DownloadCallbacks>();
+// The native plugin generates its own random UUID per download and reports
+// progress and completion under that id, which the caller can't know at call
+// time. So each call mints a correlation token, registers its callbacks under
+// it, and the native side echoes the token back on `downloadStarted` alongside
+// the id it chose — at which point the entry is re-keyed to that id.
+const pendingDownloadsByCorrelationId = new Map<string, DownloadCallbacks>();
 const activeDownloadsById = new Map<string, DownloadCallbacks>();
 let nativeListenersInitialized = false;
 
@@ -398,9 +466,9 @@ async function ensureNativeListeners() {
   nativeListenersInitialized = true;
 
   await driveFilesPlugin.addListener("downloadStarted", (event) => {
-    const callbacks = pendingDownloadsByHash.get(event.hash);
+    const callbacks = pendingDownloadsByCorrelationId.get(event.correlationId);
     if (!callbacks) return;
-    pendingDownloadsByHash.delete(event.hash);
+    pendingDownloadsByCorrelationId.delete(event.correlationId);
     callbacks.nativeId = event.id;
     activeDownloadsById.set(event.id, callbacks);
     callbacks.onStarted?.(() => {
@@ -419,9 +487,12 @@ async function ensureNativeListeners() {
 export async function downloadFileToDownloads(
   file: {
     server: string;
+    /** NIP-FS single-blob file: present together, absent on legacy files. */
+    blobHash?: string;
+    chunkSize?: number;
     chunks?: ChunkRef[];
-    hash: string;
     encryptionKey: string;
+    unencryptedFileHash?: string;
     name: string;
     type?: string;
     size: number;
@@ -433,11 +504,15 @@ export async function downloadFileToDownloads(
     throw new Error("Native download is only available on Android");
   }
   const plugin = driveFilesPlugin;
+  // Correlates this call to the `downloadStarted` event the plugin fires with
+  // the id it generated. Per-call rather than per-file, so downloading the
+  // same file twice concurrently doesn't collide on one map key.
+  const correlationId = crypto.randomUUID();
 
   await ensureNativeListeners();
 
   const callbacks: DownloadCallbacks = { onProgress, onStarted };
-  pendingDownloadsByHash.set(file.hash, callbacks);
+  pendingDownloadsByCorrelationId.set(correlationId, callbacks);
 
   try {
     // No timeout here: downloadToDownloads resolves only when the *whole* file
@@ -445,9 +520,17 @@ export async function downloadFileToDownloads(
     // real download while the native foreground service kept running headless.
     return await plugin.downloadToDownloads({
       server: file.server,
-      chunks: chunkHashes(file.chunks),
-      hash: file.hash,
+      ...(file.blobHash && file.chunkSize
+        ? { blobHash: file.blobHash, chunkSize: file.chunkSize }
+        : {
+            // Resolved per-chunk servers, so a chunk that fell back during
+            // upload is fetched from where it actually lives (mirrors
+            // resolveChunks usage in services/downloadFile.ts).
+            chunks: resolveChunks(file.chunks, file.server),
+          }),
+      correlationId,
       encryptionKey: file.encryptionKey,
+      ...(file.unencryptedFileHash ? { unencryptedFileHash: file.unencryptedFileHash } : {}),
       fileName: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
@@ -458,7 +541,7 @@ export async function downloadFileToDownloads(
     }
     throw e;
   } finally {
-    pendingDownloadsByHash.delete(file.hash);
+    pendingDownloadsByCorrelationId.delete(correlationId);
     if (callbacks.nativeId) activeDownloadsById.delete(callbacks.nativeId);
   }
 }
@@ -504,51 +587,89 @@ export async function startNativeUploadService(uploadId: string, fileName: strin
   await driveFilesPlugin.startUploadService({ uploadId, fileName });
 }
 
+// Bridge messages are JSON strings, so a whole 50MB chunk would cross as a
+// ~67MB base64 string — enough to spike (or OOM) a low-end device. Slices are
+// sized to stay well under that while keeping the call count small; the slice
+// length is a multiple of 3 so each piece encodes to unpadded base64 and the
+// concatenation on the native side is byte-exact.
+const STAGE_SLICE_BYTES = 3 * 1024 * 1024;
+
 /**
- * Writes one pre-encrypted upload blob (a chunk or the preview) to
- * app-private storage so the native upload worker can PUT it without any
- * JS/crypto involvement. Called during the foreground prepare phase, one
- * chunk at a time, to keep peak memory bounded.
+ * Writes one pre-encrypted upload segment to app-private storage so the
+ * native upload worker can PUT it without any JS/crypto involvement. Called
+ * during the foreground prepare phase, one segment at a time, and streamed
+ * in slices so peak memory stays bounded.
+ *
+ * NIP-FS concatenates every segment into a single blob, so a whole file's
+ * worth of segments share one `index` (its destination) — the caller passes
+ * `appendToPrevious: true` for every segment after the first at that index,
+ * so each one's slices land after the previous segment's rather than
+ * truncating it. The preview, which is its own separate blob, uses a
+ * different `index` and the default `appendToPrevious: false`.
  */
 export async function stageNativeUploadChunk(
   uploadId: string,
   index: number,
   bytes: Uint8Array,
+  signal?: AbortSignal,
+  appendToPrevious = false,
 ): Promise<string> {
   if (!isAndroidPlatform || !driveFilesPlugin) {
     throw new Error("Native upload staging is only available on Android");
   }
-  const base64 = uint8ArrayToBase64(bytes);
-  const { path } = await driveFilesPlugin.stageUploadChunk({ uploadId, index, base64 });
+
+  let path = "";
+  // A zero-length blob still needs one call, to create the (empty) file.
+  for (let offset = 0; offset === 0 || offset < bytes.length; offset += STAGE_SLICE_BYTES) {
+    if (signal?.aborted) {
+      throw new DOMException("Upload aborted", "AbortError");
+    }
+    const slice = bytes.subarray(offset, Math.min(offset + STAGE_SLICE_BYTES, bytes.length));
+    const result = await driveFilesPlugin.stageUploadChunk({
+      uploadId,
+      index,
+      base64: uint8ArrayToBase64(slice),
+      // The very first slice of the very first segment at this index
+      // truncates, so a retry of the same upload never appends onto a
+      // partial file left by a previous attempt. Every other slice —
+      // whether continuing this segment or starting a later one at the same
+      // index — appends.
+      append: appendToPrevious || offset > 0,
+    });
+    path = result.path;
+  }
+
   return path;
 }
 
 /**
  * Hands a fully-prepared upload (staged ciphertext blobs, a pre-signed
- * Blossom auth header, and a pre-signed metadata event) off to the native
- * DriveUploadService, which PUTs the blobs and publishes the metadata event
- * with no signer/crypto involvement — so it can keep running after the app
- * is swiped away. Resolves when the native side reports completion, rejects
- * on error, and rejects with an AbortError-shaped DOMException on cancel.
+ * Blossom auth header, and one pre-signed metadata event per candidate server)
+ * off to the native DriveUploadService, which PUTs the blobs and publishes the
+ * matching metadata event with no signer/crypto involvement — so it can keep
+ * running after the app is swiped away. Resolves when the native side reports
+ * completion, rejects on error, and rejects with an AbortError-shaped
+ * DOMException on cancel.
  */
 export async function startNativeUpload(
   options: {
     uploadId: string;
-    server: string;
+    servers: string[];
     fileName: string;
     authHeader: string;
-    metadataEventJson: string;
+    metadataEvents: NativeUploadMetadataEvent[];
     blobs: NativeUploadBlob[];
     relays: string[];
   },
   onEvent?: (event: NativeUploadEvent) => void,
-): Promise<void> {
+): Promise<{ server: string }> {
   if (!isAndroidPlatform || !driveFilesPlugin) {
     throw new Error("Native upload is only available on Android");
   }
   const plugin = driveFilesPlugin;
 
   let listener: PluginListenerHandle | null = null;
+  trackedUploadIds.add(options.uploadId);
   try {
     if (onEvent) {
       listener = await plugin.addListener("uploadEvent", (event) => {
@@ -557,15 +678,28 @@ export async function startNativeUpload(
         }
       });
     }
-    await plugin.startNativeUpload(options);
+    return await plugin.startNativeUpload(options);
   } catch (e) {
     if ((e as { code?: string })?.code === "ABORT_ERR") {
       throw new DOMException("Upload cancelled", "AbortError");
     }
     throw e;
   } finally {
+    trackedUploadIds.delete(options.uploadId);
     await listener?.remove();
   }
+}
+
+// Uploads whose network phase this JS context is awaiting. Adoption consults
+// this so it never creates a duplicate row for an upload the queue already owns.
+const trackedUploadIds = new Set<string>();
+
+/**
+ * True if a native upload with this id is being driven by the current session's
+ * queue (via {@link startNativeUpload}).
+ */
+export function isNativeUploadTracked(uploadId: string): boolean {
+  return trackedUploadIds.has(uploadId);
 }
 
 export async function cancelNativeUpload(uploadId: string): Promise<void> {
@@ -606,20 +740,23 @@ export async function clearUploadNotification(id: string): Promise<void> {
 }
 
 /**
- * Subscribes to native upload events for one uploadId — used during the
- * PREPARING phase (before startNativeUpload runs) so a notification "Cancel"
- * tapped mid-staging can abort the JS encrypt/stage loop too. Returns null off
- * Android; caller must remove the handle when the prepare phase ends.
+ * Subscribes to native upload events, scoped to one uploadId or (with
+ * `undefined`) to every in-flight upload.
+ *
+ * The scoped form is used during the PREPARING phase, before startNativeUpload
+ * runs, so a notification "Cancel" tapped mid-staging can abort the JS
+ * encrypt/stage loop too. The unscoped form backs the adoption bridge. Returns
+ * null off Android; the caller must remove the handle.
  */
 export async function subscribeNativeUploadEvents(
-  uploadId: string,
+  uploadId: string | undefined,
   onEvent: (event: NativeUploadEvent) => void,
 ): Promise<PluginListenerHandle | null> {
   if (!isAndroidPlatform || !driveFilesPlugin) {
     return null;
   }
   return driveFilesPlugin.addListener("uploadEvent", (event) => {
-    if (event.id === uploadId) {
+    if (uploadId === undefined || event.id === uploadId) {
       onEvent(event);
     }
   });
@@ -636,6 +773,19 @@ export async function getActiveDownloads(): Promise<NativeActiveDownload[]> {
   }
   const { downloads } = await driveFilesPlugin.getActiveDownloads();
   return downloads;
+}
+
+/**
+ * Uploads still tracked by the native foreground service — the upload-side
+ * counterpart of {@link getActiveDownloads}, used to rehydrate in-app progress
+ * after the app is reopened mid-upload. Returns an empty list off Android.
+ */
+export async function getActiveUploads(): Promise<NativeActiveUpload[]> {
+  if (!isAndroidPlatform || !driveFilesPlugin) {
+    return [];
+  }
+  const { uploads } = await driveFilesPlugin.getActiveUploads();
+  return uploads;
 }
 
 /**

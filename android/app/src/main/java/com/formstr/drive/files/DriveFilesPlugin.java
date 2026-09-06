@@ -97,12 +97,21 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
     }
 
     @Override
-    public void onUploadEvent(String type, String id, @Nullable Integer percent, @Nullable String message) {
+    public void onUploadEvent(
+            String type,
+            String id,
+            @Nullable Integer percent,
+            @Nullable String message,
+            @Nullable String server,
+            @Nullable Integer status
+    ) {
         JSObject data = new JSObject();
         data.put("id", id);
         data.put("type", type);
         if (percent != null) data.put("percent", percent);
         if (message != null) data.put("message", message);
+        if (server != null) data.put("server", server);
+        if (status != null) data.put("status", status);
         notifyListeners("uploadEvent", data);
 
         PluginCall call = pendingUploadCalls.get(id);
@@ -112,10 +121,20 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
 
         if (DriveUploadService.EVENT_COMPLETE.equals(type)) {
             pendingUploadCalls.remove(id);
-            call.resolve();
+            // The resolved server tells JS which pre-signed metadata variant was
+            // published, so the file index records the right one.
+            JSObject response = new JSObject();
+            response.put("server", server);
+            call.resolve(response);
         } else if (DriveUploadService.EVENT_ERROR.equals(type)) {
             pendingUploadCalls.remove(id);
-            call.reject(message != null ? message : "Upload failed");
+            // The `code` carries the raw HTTP status (as a string) when this was
+            // an actual server rejection, so nativeUploadDriver.ts can run it
+            // through the same classifyUploadFailure() the web driver uses
+            // instead of guessing from message text. No status (network-level
+            // failure, relay-publish failure, exhausted candidates) leaves code
+            // null, same as today.
+            call.reject(message != null ? message : "Upload failed", status != null ? String.valueOf(status) : null);
         } else if (DriveUploadService.EVENT_CANCELLED.equals(type)) {
             pendingUploadCalls.remove(id);
             call.reject("Upload cancelled", "ABORT_ERR");
@@ -331,14 +350,14 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
     @PluginMethod
     public void downloadToDownloads(PluginCall call) {
         String server = call.getString("server");
-        String hash = call.getString("hash");
+        String correlationId = call.getString("correlationId");
         String encryptionKey = call.getString("encryptionKey");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType");
-        JSArray chunksArray = call.getArray("chunks");
 
-        if (server == null || hash == null || encryptionKey == null || fileName == null || mimeType == null) {
-            call.reject("server, hash, encryptionKey, fileName, and mimeType are required");
+        if (server == null || correlationId == null || encryptionKey == null
+                || fileName == null || mimeType == null) {
+            call.reject("server, correlationId, encryptionKey, fileName, and mimeType are required");
             return;
         }
 
@@ -347,24 +366,23 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
 
     private void startDownload(PluginCall call) {
         String server = call.getString("server");
-        String hash = call.getString("hash");
+        String correlationId = call.getString("correlationId");
         String encryptionKey = call.getString("encryptionKey");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType");
+        String unencryptedFileHash = call.getString("unencryptedFileHash");
+        String blobHash = call.getString("blobHash");
+        // getLong avoids getInt's 32-bit range, which a >2GB file's size
+        // could exceed.
+        long size = call.getLong("size", 0L);
+        int chunkSize = call.getInt("chunkSize", 0);
         JSArray chunksArray = call.getArray("chunks");
 
-        JSONArray chunksJson = null;
-        if (chunksArray != null) {
-            try {
-                chunksJson = new JSONArray();
-                for (int i = 0; i < chunksArray.length(); i++) {
-                    chunksJson.put(chunksArray.getString(i));
-                }
-            } catch (JSONException error) {
-                call.reject("Invalid chunks array", error);
-                return;
-            }
-        }
+        // Chunks arrive as `{ hash, server? }` objects so per-chunk routing
+        // survives the bridge; the array is forwarded verbatim and parsed by
+        // DriveFileDownloader.parseChunks, which also still accepts the legacy
+        // bare-string shape.
+        String chunksJson = chunksArray != null ? chunksArray.toString() : null;
 
         String downloadId = UUID.randomUUID().toString();
         pendingDownloadCalls.put(downloadId, call);
@@ -373,21 +391,30 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         Intent intent = new Intent(getContext(), DriveDownloadService.class);
         intent.putExtra(DriveDownloadService.EXTRA_ID, downloadId);
         intent.putExtra(DriveDownloadService.EXTRA_SERVER, server);
-        intent.putExtra(DriveDownloadService.EXTRA_HASH, hash);
         intent.putExtra(DriveDownloadService.EXTRA_ENCRYPTION_KEY, encryptionKey);
         intent.putExtra(DriveDownloadService.EXTRA_FILE_NAME, fileName);
         intent.putExtra(DriveDownloadService.EXTRA_MIME_TYPE, mimeType);
-        if (chunksJson != null) {
-            intent.putExtra(DriveDownloadService.EXTRA_CHUNKS_JSON, chunksJson.toString());
+        intent.putExtra(DriveDownloadService.EXTRA_SIZE, size);
+        if (unencryptedFileHash != null && !unencryptedFileHash.isEmpty()) {
+            intent.putExtra(DriveDownloadService.EXTRA_UNENCRYPTED_FILE_HASH, unencryptedFileHash);
+        }
+        if (blobHash != null && !blobHash.isEmpty()) {
+            // NIP-FS single-blob file — chunkSize travels alongside it;
+            // chunksJson is never sent for this shape.
+            intent.putExtra(DriveDownloadService.EXTRA_BLOB_HASH, blobHash);
+            intent.putExtra(DriveDownloadService.EXTRA_CHUNK_SIZE, chunkSize);
+        } else if (chunksJson != null) {
+            intent.putExtra(DriveDownloadService.EXTRA_CHUNKS_JSON, chunksJson);
         }
 
         ContextCompat.startForegroundService(getContext(), intent);
 
         JSObject started = new JSObject();
         started.put("id", downloadId);
-        // Include the file hash so the JS side can correlate this randomly-generated
-        // download id back to the transfer it started (progress/cancel are keyed by id).
-        started.put("hash", hash);
+        // Echo the caller's token back so the JS side can correlate this
+        // randomly-generated download id to the transfer it started
+        // (progress/cancel are keyed by id).
+        started.put("correlationId", correlationId);
         notifyListeners("downloadStarted", started);
     }
 
@@ -503,11 +530,19 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         call.resolve();
     }
 
+    /**
+     * Writes one slice of a staged upload blob to app-private storage. A 50MB
+     * chunk would cost ~67MB of base64 in a single bridge message, so the JS
+     * side streams it in small slices: the first call for an index writes
+     * (append=false, truncating any leftover from an earlier attempt) and the
+     * rest append. The file is only complete once JS stops appending.
+     */
     @PluginMethod
     public void stageUploadChunk(PluginCall call) {
         String uploadId = call.getString("uploadId");
         Integer index = call.getInt("index");
         String base64 = call.getString("base64");
+        boolean append = Boolean.TRUE.equals(call.getBoolean("append", Boolean.FALSE));
 
         if (uploadId == null || index == null || base64 == null) {
             call.reject("uploadId, index, and base64 are required");
@@ -517,11 +552,12 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         try {
             byte[] bytes = Base64.decode(base64, Base64.NO_WRAP);
             File dir = new File(new File(getContext().getFilesDir(), "uploads"), uploadId);
-            if (!dir.exists()) {
-                dir.mkdirs();
+            if (!dir.exists() && !dir.mkdirs()) {
+                call.reject("Failed to create staging directory");
+                return;
             }
             File chunkFile = new File(dir, "chunk-" + index + ".bin");
-            try (FileOutputStream out = new FileOutputStream(chunkFile)) {
+            try (FileOutputStream out = new FileOutputStream(chunkFile, append)) {
                 out.write(bytes);
             }
 
@@ -536,21 +572,21 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
     @PluginMethod
     public void startNativeUpload(PluginCall call) {
         String uploadId = call.getString("uploadId");
-        String server = call.getString("server");
         String fileName = call.getString("fileName", "file");
         String authHeader = call.getString("authHeader");
-        String metadataEventJson = call.getString("metadataEventJson");
+        JSArray serversArray = call.getArray("servers");
+        JSArray metadataEventsArray = call.getArray("metadataEvents");
         JSArray blobsArray = call.getArray("blobs");
         JSArray relaysArray = call.getArray("relays");
 
-        if (uploadId == null || server == null || authHeader == null || metadataEventJson == null
-                || blobsArray == null || relaysArray == null) {
-            call.reject("uploadId, server, authHeader, metadataEventJson, blobs, and relays are required");
+        if (uploadId == null || authHeader == null || serversArray == null
+                || metadataEventsArray == null || blobsArray == null || relaysArray == null) {
+            call.reject("uploadId, servers, authHeader, metadataEvents, blobs, and relays are required");
             return;
         }
 
         JSONArray blobsJson;
-        JSONArray relaysJson;
+        JSONArray metadataEventsJson;
         try {
             blobsJson = new JSONArray();
             for (int i = 0; i < blobsArray.length(); i++) {
@@ -559,15 +595,20 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
                 entry.put("path", blob.getString("path"));
                 entry.put("hash", blob.getString("hash"));
                 entry.put("contentType", blob.optString("contentType", "application/octet-stream"));
+                entry.put("optional", blob.optBoolean("optional", false));
                 blobsJson.put(entry);
             }
 
-            relaysJson = new JSONArray();
-            for (int i = 0; i < relaysArray.length(); i++) {
-                relaysJson.put(relaysArray.getString(i));
+            metadataEventsJson = new JSONArray();
+            for (int i = 0; i < metadataEventsArray.length(); i++) {
+                JSONObject variant = metadataEventsArray.getJSONObject(i);
+                JSONObject entry = new JSONObject();
+                entry.put("server", variant.getString("server"));
+                entry.put("eventJson", variant.getString("eventJson"));
+                metadataEventsJson.put(entry);
             }
         } catch (JSONException error) {
-            call.reject("Invalid blobs or relays array", error);
+            call.reject("Invalid blobs or metadataEvents array", error);
             return;
         }
 
@@ -577,14 +618,30 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         Intent intent = new Intent(getContext(), DriveUploadService.class);
         intent.setAction(DriveUploadService.ACTION_START);
         intent.putExtra(DriveUploadService.EXTRA_ID, uploadId);
-        intent.putExtra(DriveUploadService.EXTRA_SERVER, server);
+        intent.putExtra(DriveUploadService.EXTRA_SERVERS_JSON, serversArray.toString());
         intent.putExtra(DriveUploadService.EXTRA_FILE_NAME, fileName);
         intent.putExtra(DriveUploadService.EXTRA_AUTH_HEADER, authHeader);
-        intent.putExtra(DriveUploadService.EXTRA_METADATA_EVENT_JSON, metadataEventJson);
-        intent.putExtra(DriveUploadService.EXTRA_RELAYS_JSON, relaysJson.toString());
+        intent.putExtra(DriveUploadService.EXTRA_METADATA_EVENTS_JSON, metadataEventsJson.toString());
+        intent.putExtra(DriveUploadService.EXTRA_RELAYS_JSON, relaysArray.toString());
         intent.putExtra(DriveUploadService.EXTRA_BLOBS_JSON, blobsJson.toString());
 
         ContextCompat.startForegroundService(getContext(), intent);
+    }
+
+    @PluginMethod
+    public void getActiveUploads(PluginCall call) {
+        JSArray uploads = new JSArray();
+        for (DriveUploadService.ActiveUpload active : DriveUploadService.activeUploads()) {
+            JSObject item = new JSObject();
+            item.put("id", active.id);
+            item.put("fileName", active.fileName);
+            item.put("percent", active.percent);
+            item.put("preparing", active.preparing);
+            uploads.put(item);
+        }
+        JSObject response = new JSObject();
+        response.put("uploads", uploads);
+        call.resolve(response);
     }
 
     @PluginMethod

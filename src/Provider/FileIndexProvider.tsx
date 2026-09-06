@@ -4,42 +4,74 @@ import {
   useEffect,
   useCallback,
   useMemo,
-  useRef,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
-import { BlossomClient } from "../blossom";
-import { createAuthEvent } from "../auth";
+import { type FileMetadata } from "../types/metadata";
 import {
   observeFileIndex,
-  saveFileMetadata,
-  deleteFileMetadata,
   extractFolders,
-  autoMigrateLegacyFiles,
+  clearFileIndexStore,
 } from "../services/fileIndex";
 import {
   getRelayRefresh,
   subscribeRelayRefresh,
 } from "../dataLayer/relayRefresh";
-import { MigrationPromptModal } from "../components/Dialogs/MigrationPromptModal";
 import { useProfileContext } from "../hooks/useProfileContext";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
-import {
-  clearNativeDriveManifest,
-  listPendingNativeImports,
-  readPendingNativeImport,
-  removePendingNativeImport,
-  syncNativeDriveManifest,
-} from "../native/driveManifest";
 import { useBlossomServer } from "../hooks/useBlossomServer";
-import { isAndroidPlatform } from "../utils/platform";
-import { queueUpload } from "../transfers/transferQueue";
-import { getTransfers } from "../transfers/transferStore";
-import { adoptActiveNativeDownloads, startNativeEventBridge } from "../transfers/nativeAdoption";
+import { useFileMutations } from "../hooks/useFileMutations";
+import { useMetadataOutboxDrain } from "../hooks/useMetadataOutboxDrain";
+import { useNativeManifestSync } from "../hooks/useNativeManifestSync";
+import { useNativeTransferAdoption } from "../hooks/useNativeTransferAdoption";
+import { usePendingNativeImports } from "../hooks/usePendingNativeImports";
+import { useTransferExitWarning } from "../hooks/useTransferExitWarning";
 
 // Re-export type if needed anywhere else
 export type { FileMetadata };
+
+/**
+ * Replaces three independent booleans (`loading`, `hasHydratedIndex`,
+ * `keyReady`) that used to have to be combined in the right order to reach a
+ * correct conclusion — nothing enforced that order, and the wrong one is
+ * exactly what let a failed Drive Key resolution silently read as "confirmed
+ * empty drive" (see the WARNING doc below). This union makes the two
+ * findings the DriveState below reflects unrepresentable by mistake:
+ *
+ *  - "resolving": not enough is known yet to render either files or an
+ *    empty-drive conclusion. The UI should show a loading state, full stop.
+ *  - "degraded": we have SOME information (`files` may be non-empty from a
+ *    partial replay) but cannot currently vouch for completeness — see
+ *    `DriveIndexDegradedReason`. An EMPTY `files` here must never be shown
+ *    as "no files exist"; it means "couldn't confirm".
+ *  - "ready": `files` is the confirmed, complete current list. An empty
+ *    array here is a genuine, trustworthy empty drive.
+ */
+export type DriveIndexStatus = "resolving" | "degraded" | "ready";
+
+/**
+ * Why `status` is "degraded" — always paired with `status`, never read alone.
+ *  - "keys-unavailable": the Drive Key keyring failed to resolve, or
+ *    resolved to zero usable keys. Previously this was silently swallowed
+ *    into an empty keyring (`getDriveConversationKeys().catch(() => [])`
+ *    in fileIndex.ts), which then produced an empty — and entirely
+ *    believable — file list. This is the exact gap the mint-hazard
+ *    incident exposed.
+ *  - "undecryptable": the keyring resolved with keys, replay finished, but
+ *    at least one file-index event failed to decrypt under it while the
+ *    file list came back empty — the signature of the WRONG (but
+ *    successfully-resolved) key being active, not of an empty drive.
+ *
+ * Deliberately NOT included: "identity has no prior history" as a reason to
+ * distrust an empty list. That signal (identityHistory.ts) answers "should
+ * we ever mint a replacement key" correctly, but it is too coarse for this
+ * decision — an identity that has published a Drive Key event but never
+ * uploaded a single file is `existing` by that check and STILL has a
+ * genuinely, correctly empty drive. Using it here would flag every
+ * brand-new user's real empty state as suspicious the moment their own
+ * key-creation event round-trips back to them.
+ */
+export type DriveIndexDegradedReason = "keys-unavailable" | "undecryptable";
 
 export interface FileIndexContextType {
   files: FileMetadata[];
@@ -48,8 +80,9 @@ export interface FileIndexContextType {
   addCustomFolder: (path: string) => void;
   currentFolder: string;
   setCurrentFolder: (folder: string) => void;
-  loading: boolean;
-  hasHydratedIndex: boolean;
+  driveStatus: DriveIndexStatus;
+  /** Non-null exactly when `driveStatus === "degraded"`. */
+  degradedReason: DriveIndexDegradedReason | null;
   error: string | null;
   deleteFile: (hash: string) => Promise<void>;
   deleteFiles: (hashes: string[]) => Promise<void>;
@@ -63,18 +96,52 @@ export const FileIndexContext = createContext<FileIndexContextType | null>(null)
 
 export function FileIndexProvider({ children }: { children: ReactNode }) {
   const { isSignedIn, pubkey, restoring } = useProfileContext();
-  const { selectedServer } = useBlossomServer();
+  const { selectedServer, servers } = useBlossomServer();
 
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [currentFolder, setCurrentFolder] = useState("/");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [hasHydratedIndex, setHasHydratedIndex] = useState(false);
-  const [legacyFiles, setLegacyFiles] = useState<FileMetadata[]>([]);
+
+  // The three raw signals driveStatus is computed from. None of these is
+  // meaningful read alone — that was the problem with the flags they
+  // replace — so nothing outside the useMemo below should read them
+  // directly; everything downstream consumes `driveStatus`/`degradedReason`.
+  //
+  // null = "the keyring attempt has not settled yet" (distinct from `false`,
+  // which is a confirmed empty/failed resolution — see onKeyStatus below).
+  const [hasKeys, setHasKeys] = useState<boolean | null>(null);
+  // True once at least one EOSE has been received for the current
+  // subscription — the local relay's cache-or-network replay is done.
+  const [hydrated, setHydrated] = useState(false);
+  // True once at least one file-index event under the current keyring
+  // failed to decrypt. Reset per subscription (sign-in / relay refresh /
+  // manual refresh), not per-file, since it is evidence about the KEYRING,
+  // not about any specific file.
+  const [hadDecryptFailures, setHadDecryptFailures] = useState(false);
+
   const [manualRefreshCount, setManualRefreshCount] = useState(0);
-  const processingPendingImportsRef = useRef(false);
+
+  // The single source of truth every consumer must use instead of combining
+  // the three raw signals above by hand — see DriveIndexStatus's doc comment
+  // for what each branch means and why identityHistory is deliberately NOT
+  // consulted here (it is the right signal for driveKey.ts's mint decision,
+  // and the wrong one for this: an existing identity's genuinely-empty
+  // drive must never be flagged as suspicious just because that identity
+  // has published something, anything, before).
+  const { driveStatus, degradedReason } = useMemo<{
+    driveStatus: DriveIndexStatus;
+    degradedReason: DriveIndexDegradedReason | null;
+  }>(() => {
+    if (hasKeys === null) return { driveStatus: "resolving", degradedReason: null };
+    if (!hasKeys) return { driveStatus: "degraded", degradedReason: "keys-unavailable" };
+    if (!hydrated) return { driveStatus: "resolving", degradedReason: null };
+    if (files.length === 0 && hadDecryptFailures) {
+      return { driveStatus: "degraded", degradedReason: "undecryptable" };
+    }
+    return { driveStatus: "ready", degradedReason: null };
+  }, [hasKeys, hydrated, hadDecryptFailures, files.length]);
 
   // Bumps when the relay worker can newly serve cached data it couldn't a
   // moment ago (IndexedDB hydration finished, or the worker restarted after a
@@ -91,27 +158,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     const foldersFromFiles = extractFolders(files);
     return Array.from(new Set([...foldersFromFiles, ...customFolders])).sort();
   }, [files, customFolders]);
-
-  // Warn before the tab/window closes while transfers are still in flight and
-  // would be lost. A native download runs in a foreground service and survives,
-  // so it needs no warning; a native upload runs in the webview (background
-  // upload is disabled) and DOES die — so the rule is: warn unless every active
-  // transfer is a native download. On web nothing survives a close, so any
-  // active transfer warns.
-  useEffect(() => {
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      const active = getTransfers().filter(
-        (t) => t.status === "running" || t.status === "pending",
-      );
-      if (active.length === 0) return;
-      const allSurvive = active.every((t) => t.type === "download" && isAndroidPlatform);
-      if (allSurvive) return;
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
 
   useEffect(() => {
     const loadCustomFolders = async () => {
@@ -131,42 +177,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     void setStoredItem(STORAGE_KEYS.CUSTOM_FOLDERS, customFolders);
   }, [customFolders, settingsLoaded]);
 
-  useEffect(() => {
-    if (restoring) {
-      return;
-    }
-
-    if (!isSignedIn || !pubkey) {
-      void clearNativeDriveManifest().catch((manifestError) => {
-        console.error("Failed to clear Android Drive manifest", manifestError);
-      });
-    }
-  }, [isSignedIn, pubkey, restoring]);
-
-  // Android only: re-adopt native downloads that outlived the JS context (app
-  // killed/relaunched mid-download) so they reappear as cancellable rows, and
-  // keep a single app-lifetime listener routing their progress/completion.
-  useEffect(() => {
-    if (!isAndroidPlatform) return;
-
-    let teardown: (() => void) | undefined;
-    void startNativeEventBridge().then((fn) => {
-      teardown = fn;
-    });
-    void adoptActiveNativeDownloads();
-
-    const onVisible = () => {
-      if (document.visibilityState === "visible") {
-        void adoptActiveNativeDownloads();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisible);
-      teardown?.();
-    };
-  }, []);
-
   const addCustomFolder = useCallback((path: string) => {
     setCustomFolders((prev) => {
       if (prev.includes(path)) return prev;
@@ -181,21 +191,29 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (restoring) return;
     if (!isSignedIn || !pubkey) {
+      // Drop the shared store's state too — otherwise a subsequent sign-in
+      // (possibly a different account) would see the previous account's
+      // files replayed immediately on subscribe.
+      clearFileIndexStore();
       setFiles([]);
-      setHasHydratedIndex(false);
+      setHasKeys(null);
+      setHydrated(false);
+      setHadDecryptFailures(false);
       return;
     }
 
-    setLoading(true);
+    // Fresh subscription: none of the three raw signals from a previous
+    // identity/subscription is valid evidence about this one.
+    setHasKeys(null);
+    setHydrated(false);
+    setHadDecryptFailures(false);
     setError(null);
 
     const unobserve = observeFileIndex(pubkey, {
       onFiles: setFiles,
-      onReady: () => {
-        setHasHydratedIndex(true);
-        setLoading(false);
-      },
-      onLegacyFilesFound: setLegacyFiles,
+      onKeyStatus: setHasKeys,
+      onReady: () => setHydrated(true),
+      onDecryptFailures: () => setHadDecryptFailures(true),
     });
 
     return unobserve;
@@ -208,283 +226,31 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     setManualRefreshCount((n) => n + 1);
   }, [isSignedIn, pubkey]);
 
-  useEffect(() => {
-    if (
-      restoring ||
-      !settingsLoaded ||
-      !isSignedIn ||
-      !pubkey ||
-      loading ||
-      !hasHydratedIndex
-    ) {
-      return;
-    }
+  const { deleteFile, deleteFiles, moveFile, moveFiles, renameFile } =
+    useFileMutations(files);
 
-    void syncNativeDriveManifest(files, customFolders).catch((manifestError) => {
-      console.error("Failed to sync Android Drive manifest", manifestError);
-    });
-  }, [
-    customFolders,
+  useTransferExitWarning();
+  useNativeTransferAdoption();
+  useMetadataOutboxDrain({ isSignedIn, pubkey, restoring, relayRefresh });
+  useNativeManifestSync({
     files,
+    customFolders,
     isSignedIn,
-    loading,
     pubkey,
     restoring,
     settingsLoaded,
-    hasHydratedIndex,
-  ]);
-
-
-
-  const deleteRemoteBlobs = useCallback(async (file: FileMetadata) => {
-    // Chunked files store one blob per chunk; legacy files store a single
-    // blob under file.hash.
-    const blobHashes = chunkHashes(file.chunks);
-    if (blobHashes.length === 0) {
-      blobHashes.push(file.hash);
-    }
-
-    // One auth event covering every blob (chunks + preview), so the user
-    // signs only once per file.
-    const allHashes = file.previewHash
-      ? [...blobHashes, file.previewHash]
-      : blobHashes;
-    // Generous expiration: large chunked files need one DELETE per chunk and
-    // the whole sequence must finish before the auth event expires.
-    const auth = await createAuthEvent(
-      "delete",
-      `Delete ${file.name}`,
-      allHashes,
-      600,
-    );
-
-    const clients = new Map<string, BlossomClient>();
-    const clientFor = (server: string) => {
-      let client = clients.get(server);
-      if (!client) {
-        client = new BlossomClient(server);
-        clients.set(server, client);
-      }
-      return client;
-    };
-
-    // Each blob is deleted independently and best-effort: one failed chunk
-    // must not block the rest, and a blob orphaned on the server is a better
-    // outcome than a partially-deleted file stuck in the index forever.
-    for (let i = 0; i < blobHashes.length; i++) {
-      // Legacy metadata may carry chunks as bare hash strings; only the
-      // object form can override the file's primary server.
-      const chunk = file.chunks?.[i];
-      const server =
-        (typeof chunk === "object" ? chunk.server : undefined) ?? file.server;
-      try {
-        await clientFor(server).delete(blobHashes[i], auth);
-      } catch (e) {
-        console.warn(`Failed to delete blob ${blobHashes[i]} from ${server}`, e);
-      }
-    }
-
-    if (file.previewHash) {
-      try {
-        await clientFor(file.server).delete(file.previewHash, auth);
-      } catch {
-        // Preview deletion failures are non-fatal: the primary blobs are gone
-        // and the preview is unreferenced once the index event is updated.
-      }
-    }
-  }, []);
-
-  const deleteFile = useCallback(
-    async (hash: string) => {
-      const file = files.find((f) => f.hash === hash);
-      if (!file) return;
-
-      await deleteRemoteBlobs(file);
-      await deleteFileMetadata(hash, file);
-      setFiles((prev) => prev.filter((f) => f.hash !== hash));
-    },
-    [files, deleteRemoteBlobs]
-  );
-
-  const deleteFiles = useCallback(
-    async (hashes: string[]) => {
-      const hashSet = new Set(hashes);
-      const targetFiles = files.filter((file) => hashSet.has(file.hash));
-      const deletedHashes = new Set<string>();
-
-      for (const file of targetFiles) {
-        try {
-          await deleteRemoteBlobs(file);
-          await deleteFileMetadata(file.hash, file);
-          deletedHashes.add(file.hash);
-        } catch (e) {
-          // Stop on first failure so the user can see and retry; files
-          // already deleted in this batch stay deleted.
-          setFiles((prev) => prev.filter((f) => !deletedHashes.has(f.hash)));
-          throw e;
-        }
-      }
-
-      setFiles((prev) => prev.filter((file) => !hashSet.has(file.hash)));
-    },
-    [files, deleteRemoteBlobs]
-  );
-
-  const moveFile = useCallback(
-    async (hash: string, newFolder: string) => {
-      const file = files.find((f) => f.hash === hash);
-      if (!file) return;
-
-      const updated: FileMetadata = { ...file, folder: newFolder };
-      await saveFileMetadata(updated);
-      setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
-    },
-    [files]
-  );
-
-  const moveFiles = useCallback(
-    async (hashes: string[], newFolder: string) => {
-      const hashSet = new Set(hashes);
-      const targetFiles = files.filter((file) => hashSet.has(file.hash));
-
-      for (const file of targetFiles) {
-        const updated: FileMetadata = { ...file, folder: newFolder };
-        await saveFileMetadata(updated);
-      }
-
-      setFiles((prev) =>
-        prev.map((file) =>
-          hashSet.has(file.hash) ? { ...file, folder: newFolder } : file
-        )
-      );
-    },
-    [files]
-  );
-
-  const renameFile = useCallback(
-    async (hash: string, newName: string) => {
-      const file = files.find((f) => f.hash === hash);
-      if (!file) return;
-
-      const updated: FileMetadata = { ...file, name: newName };
-      await saveFileMetadata(updated);
-      setFiles((prev) => prev.map((f) => (f.hash === hash ? updated : f)));
-    },
-    [files]
-  );
-
-  const processPendingImports = useCallback(async () => {
-    if (!isSignedIn || !pubkey || loading || !hasHydratedIndex) {
-      return;
-    }
-
-    if (processingPendingImportsRef.current) {
-      return;
-    }
-
-    processingPendingImportsRef.current = true;
-    try {
-      const pendingImports = await listPendingNativeImports();
-      if (pendingImports.length === 0) {
-        return;
-      }
-
-      for (const pendingImport of pendingImports) {
-        const importPayload = await readPendingNativeImport(pendingImport.id);
-        if (!importPayload) {
-          continue;
-        }
-
-        try {
-          const importedFileBuffer = importPayload.bytes.buffer.slice(
-            importPayload.bytes.byteOffset,
-            importPayload.bytes.byteOffset + importPayload.bytes.byteLength,
-          ) as ArrayBuffer;
-
-          const importedFile = new File([importedFileBuffer], importPayload.name, {
-            type: importPayload.mimeType || "application/octet-stream",
-          });
-
-          // Delete the on-device pending import ONLY after the upload confirms
-          // success. If the upload fails, is cancelled, or the app is killed
-          // before it finishes, the import is retained and retried on the next
-          // launch (at-least-once) rather than being lost. A still-running
-          // upload with the same id dedupes, so re-scanning is safe.
-          queueUpload(importedFile, selectedServer, importPayload.folderPath, {
-            onComplete: () => {
-              void removePendingNativeImport(importPayload.id);
-            },
-          });
-        } catch (pendingError) {
-          console.error("Failed to process pending Android Files import", pendingError);
-          setError(
-            pendingError instanceof Error
-              ? pendingError.message
-              : "Failed to import file saved from Android Files",
-          );
-          continue;
-        }
-      }
-    } finally {
-      processingPendingImportsRef.current = false;
-    }
-  }, [
-    hasHydratedIndex,
+    indexReady: driveStatus === "ready",
+  });
+  usePendingNativeImports({
     isSignedIn,
-    loading,
     pubkey,
+    restoring,
+    settingsLoaded,
+    indexReady: driveStatus === "ready",
     selectedServer,
-  ]);
-
-  useEffect(() => {
-    if (
-      restoring ||
-      !settingsLoaded ||
-      !isSignedIn ||
-      !pubkey ||
-      loading ||
-      !hasHydratedIndex
-    ) {
-      return;
-    }
-
-    void processPendingImports();
-  }, [
-    hasHydratedIndex,
-    isSignedIn,
-    loading,
-    processPendingImports,
-    pubkey,
-    restoring,
-    settingsLoaded,
-  ]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (
-        document.visibilityState === "visible" &&
-        isSignedIn &&
-        !restoring &&
-        hasHydratedIndex
-      ) {
-        void processPendingImports();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [hasHydratedIndex, isSignedIn, processPendingImports, restoring]);
-
-  const handleAcceptMigration = async () => {
-    await autoMigrateLegacyFiles(legacyFiles);
-    setLegacyFiles([]);
-  };
-
-  const handleDismissMigration = () => {
-    setLegacyFiles([]);
-  };
+    servers,
+    onError: setError,
+  });
 
   // Memoized so the context value's identity only changes when something in
   // it actually changed — otherwise every re-render of this provider (for
@@ -498,8 +264,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       addCustomFolder,
       currentFolder,
       setCurrentFolder,
-      loading,
-      hasHydratedIndex,
+      driveStatus,
+      degradedReason,
       error,
       deleteFile,
       deleteFiles,
@@ -514,8 +280,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       customFolders,
       addCustomFolder,
       currentFolder,
-      loading,
-      hasHydratedIndex,
+      driveStatus,
+      degradedReason,
       error,
       deleteFile,
       deleteFiles,
@@ -528,11 +294,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
   return (
     <FileIndexContext.Provider value={value}>
-      <MigrationPromptModal
-        files={legacyFiles}
-        onAccept={handleAcceptMigration}
-        onDismiss={handleDismissMigration}
-      />
       {children}
     </FileIndexContext.Provider>
   );
