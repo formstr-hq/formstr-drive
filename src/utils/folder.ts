@@ -28,6 +28,14 @@ export function getFolderItemCount(
   return directFileCount + directFolderCount;
 }
 
+/** Files directly in `path`, plus every file in any subfolder beneath it —
+ *  what "share this folder" means to a user, since virtual folders have no
+ *  separate identity of their own (see extractFolders in services/fileIndex.ts). */
+export function filesUnderFolder<T extends { folder: string }>(files: T[], path: string): T[] {
+  if (path === "/") return files;
+  return files.filter((f) => f.folder === path || f.folder.startsWith(`${path}/`));
+}
+
 export function ancestorsOf(path: string): string[] {
   const parts = path.split("/").filter(Boolean);
   const chain: string[] = [];

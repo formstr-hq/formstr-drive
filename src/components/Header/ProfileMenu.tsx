@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { NostrAvatar } from "./NostrAvatar";
 import { AddAccountModal } from "./AddAccountModal";
+import { DriveKeyModal } from "./DriveKeyModal";
 import { useProfileContext } from "../../hooks/useProfileContext";
 import { useTheme } from "../../hooks/useTheme";
 import { useBlossomServer } from "../../hooks/useBlossomServer";
@@ -88,6 +89,7 @@ export function ProfileMenu() {
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
   const [open, setOpen] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showDriveKey, setShowDriveKey] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [customServerError, setCustomServerError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -269,10 +271,23 @@ export function ProfileMenu() {
               <p className="profile-menu-error">{customServerError}</p>
             )}
           </div>
+
+          <div className="profile-menu-section">
+            <button
+              className="profile-menu-row-btn"
+              onClick={() => {
+                setShowDriveKey(true);
+                setOpen(false);
+              }}
+            >
+              Drive Key (backup / import)
+            </button>
+          </div>
         </div>
       )}
 
       {showAddAccount && <AddAccountModal onClose={() => setShowAddAccount(false)} />}
+      {showDriveKey && <DriveKeyModal onClose={() => setShowDriveKey(false)} />}
     </div>
   );
 }

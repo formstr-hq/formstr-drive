@@ -1,0 +1,27 @@
+.drive-key-warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  padding: var(--space-6) var(--space-12);
+  background: var(--color-danger-subtle);
+  border-bottom: 1px solid var(--color-danger-border);
+  color: var(--color-danger-strong);
+  font-size: var(--font-size-sm);
+}
+
+.drive-key-warning-banner button {
+  flex-shrink: 0;
+  padding: var(--space-4) var(--space-10);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-danger-strong);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.drive-key-warning-banner button:hover {
+  background: var(--color-bg-hover);
+}

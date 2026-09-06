@@ -1,11 +1,12 @@
 import { useState, useCallback, useRef } from "react";
 import { useFileIndex } from '../../hooks/useFileContext';
 import { useBlossomServer } from '../../hooks/useBlossomServer';
+import { getUploadCandidateServers } from '../../Provider/BlossomServerProvider';
 import { queueUpload } from '../../transfers/transferQueue';
 
 export function UploadZone() {
   const { currentFolder } = useFileIndex();
-  const { selectedServer } = useBlossomServer();
+  const { selectedServer, servers } = useBlossomServer();
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -13,11 +14,12 @@ export function UploadZone() {
     (files: FileList) => {
       // Enqueue every file; the queue serializes uploads (concurrency 1) and the
       // transfer panel is the source of truth for progress, errors and retry.
+      const candidateServers = getUploadCandidateServers(selectedServer, servers);
       for (const file of Array.from(files)) {
-        queueUpload(file, selectedServer, currentFolder);
+        queueUpload(file, selectedServer, currentFolder, candidateServers);
       }
     },
-    [selectedServer, currentFolder]
+    [selectedServer, servers, currentFolder]
   );
 
   const handleDrop = useCallback(

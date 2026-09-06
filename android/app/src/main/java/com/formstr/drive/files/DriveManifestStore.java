@@ -37,7 +37,6 @@ public final class DriveManifestStore {
     private static final String PENDING_IMPORTS_FILE_NAME = "pending-imports.json";
     private static final String PENDING_IMPORT_FILES_DIRECTORY_NAME = "files";
     private static final String FOLDER_DOCUMENT_PREFIX = "folder:";
-    private static final String FILE_DOCUMENT_PREFIX = "file:";
     private static final String PENDING_FILE_DOCUMENT_PREFIX = "pending:";
 
     private DriveManifestStore() {}
@@ -220,10 +219,6 @@ public final class DriveManifestStore {
 
     public static String folderDocumentId(String path) {
         return FOLDER_DOCUMENT_PREFIX + normalizePath(path);
-    }
-
-    public static String fileDocumentId(String hash) {
-        return FILE_DOCUMENT_PREFIX + hash;
     }
 
     public static String pendingFileDocumentId(String pendingId) {
@@ -523,7 +518,6 @@ public final class DriveManifestStore {
 
     public static final class FileEntry {
         public final String id;
-        public final String hash;
         public final String name;
         public final String mimeType;
         public final long size;
@@ -533,14 +527,21 @@ public final class DriveManifestStore {
         public final String server;
         public final String encryptionKey;
         @Nullable public final String previewHash;
-        @Nullable public final List<String> chunks;
+        /** SHA-256 of the plaintext, when the publishing client recorded one. */
+        @Nullable public final String unencryptedFileHash;
+        /** NIP-FS single-blob file: present together, absent on legacy files
+         *  (which populate `chunks` instead — see isLegacyBlobFormat in
+         *  src/types/metadata.ts). */
+        @Nullable public final String blobHash;
+        public final int chunkSize;
+        /** Chunks with their resolved per-chunk server (see DriveFileDownloader.Chunk). */
+        @Nullable public final List<DriveFileDownloader.Chunk> chunks;
         public final boolean isPendingImport;
         @Nullable public final String pendingImportId;
         @Nullable public final String localPath;
 
         private FileEntry(
                 String id,
-                String hash,
                 String name,
                 String mimeType,
                 long size,
@@ -550,13 +551,15 @@ public final class DriveManifestStore {
                 String server,
                 String encryptionKey,
                 @Nullable String previewHash,
-                @Nullable List<String> chunks,
+                @Nullable String unencryptedFileHash,
+                @Nullable String blobHash,
+                int chunkSize,
+                @Nullable List<DriveFileDownloader.Chunk> chunks,
                 boolean isPendingImport,
                 @Nullable String pendingImportId,
                 @Nullable String localPath
         ) {
             this.id = id;
-            this.hash = hash;
             this.name = name;
             this.mimeType = mimeType;
             this.size = size;
@@ -566,6 +569,9 @@ public final class DriveManifestStore {
             this.server = server;
             this.encryptionKey = encryptionKey;
             this.previewHash = previewHash;
+            this.unencryptedFileHash = unencryptedFileHash;
+            this.blobHash = blobHash;
+            this.chunkSize = chunkSize;
             this.chunks = chunks;
             this.isPendingImport = isPendingImport;
             this.pendingImportId = pendingImportId;
@@ -573,9 +579,8 @@ public final class DriveManifestStore {
         }
 
         static FileEntry fromJson(JSONObject jsonObject) {
-            String hash = jsonObject.optString("hash");
-            String id = jsonObject.optString("id", fileDocumentId(hash));
-            String name = jsonObject.optString("name", hash);
+            String id = jsonObject.optString("id");
+            String name = jsonObject.optString("name");
             String mimeType = jsonObject.optString("mimeType", "application/octet-stream");
             long size = jsonObject.optLong("size", 0L);
             String folderPath = normalizePath(jsonObject.optString("folderPath", "/"));
@@ -587,21 +592,22 @@ public final class DriveManifestStore {
             String server = jsonObject.optString("server");
             String encryptionKey = jsonObject.optString("encryptionKey");
             String previewHash = jsonObject.has("previewHash") ? jsonObject.optString("previewHash") : null;
-            
-            List<String> chunks = null;
-            if (jsonObject.has("chunks")) {
-                JSONArray chunksJson = jsonObject.optJSONArray("chunks");
-                if (chunksJson != null) {
-                    chunks = new ArrayList<>();
-                    for (int i = 0; i < chunksJson.length(); i++) {
-                        chunks.add(chunksJson.optString(i));
-                    }
-                }
-            }
+            String unencryptedFileHash = jsonObject.has("unencryptedFileHash")
+                    ? jsonObject.optString("unencryptedFileHash")
+                    : null;
+            // NIP-FS single-blob file: present together, absent on legacy
+            // files (which populate `chunks` below instead).
+            String blobHash = jsonObject.has("blobHash") ? jsonObject.optString("blobHash") : null;
+            int chunkSize = jsonObject.optInt("chunkSize", 0);
+
+            // Accepts both the current `[{hash, server?}]` shape and the legacy
+            // bare-string array; entries without their own server resolve to the
+            // file's primary.
+            List<DriveFileDownloader.Chunk> chunks =
+                    DriveFileDownloader.parseChunks(jsonObject.optJSONArray("chunks"), server);
 
             return new FileEntry(
                     id,
-                    hash,
                     name,
                     mimeType,
                     size,
@@ -611,6 +617,9 @@ public final class DriveManifestStore {
                     server,
                     encryptionKey,
                     previewHash,
+                    unencryptedFileHash,
+                    blobHash,
+                    chunkSize,
                     chunks,
                     false,
                     null,
@@ -621,7 +630,6 @@ public final class DriveManifestStore {
         static FileEntry fromPendingImport(PendingImportEntry entry) {
             return new FileEntry(
                     pendingFileDocumentId(entry.id),
-                    entry.id,
                     entry.name,
                     entry.mimeType,
                     entry.size,
@@ -631,6 +639,9 @@ public final class DriveManifestStore {
                     "",
                     "",
                     null,
+                    null,
+                    null,
+                    0,
                     null,
                     true,
                     entry.id,

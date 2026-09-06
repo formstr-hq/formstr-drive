@@ -1,0 +1,79 @@
+.drive-key-modal {
+  max-width: 520px;
+}
+
+.drive-key-modal-body {
+  gap: var(--space-10);
+}
+
+.drive-key-modal-warning {
+  margin: 0;
+  padding: var(--space-8) var(--space-10);
+  background: var(--color-danger-subtle);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--font-size-sm);
+}
+
+.drive-key-modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.drive-key-modal-label {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.drive-key-modal-hint {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.drive-key-modal-field {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.drive-key-modal-field input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+}
+
+.drive-key-modal-field button {
+  padding: var(--space-6) var(--space-10);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
+
+.drive-key-modal-field button:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.drive-key-modal-field button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.drive-key-modal-error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+}

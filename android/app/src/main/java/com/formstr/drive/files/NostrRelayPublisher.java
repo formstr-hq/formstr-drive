@@ -6,8 +6,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -53,13 +57,51 @@ public final class NostrRelayPublisher {
         return false;
     }
 
+    /**
+     * Publishes to EVERY relay in the list concurrently, on every attempt —
+     * not just until the first one ACKs. A single successful relay is enough
+     * to make the event globally discoverable in theory, but which relay
+     * that ends up being depends entirely on which one this device's network
+     * happens to reach fastest (e.g. a phone's carrier network vs. a
+     * developer's machine can have completely different per-relay
+     * reachability). Trying only the first reachable relay, as this used to
+     * do, meant a file uploaded from one device could land on a relay a
+     * *different* device querying the same drive never manages to connect
+     * to — the event exists, just not anywhere that reader is looking.
+     * Fanning out to the whole list every time matches how the web upload
+     * path already publishes (DataLayer.publishEvent reports one outcome per
+     * relay, not "stop at first success") and maximizes the chance any given
+     * reader's relay set overlaps with where this actually landed.
+     */
     private static boolean publishToAny(List<String> relays, @Nullable String eventId, String eventJson) {
-        for (String relay : relays) {
-            if (publishToOne(relay, eventId, eventJson)) {
-                return true;
-            }
+        if (relays.isEmpty()) {
+            return false;
         }
-        return false;
+
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(relays.size(), 8));
+        try {
+            List<Future<Boolean>> futures = new ArrayList<>(relays.size());
+            for (String relay : relays) {
+                futures.add(executor.submit(() -> publishToOne(relay, eventId, eventJson)));
+            }
+
+            boolean anySucceeded = false;
+            for (Future<Boolean> future : futures) {
+                try {
+                    // Generous outer bound — publishToOne already bounds itself via
+                    // CONNECT_TIMEOUT_MS/OK_TIMEOUT_MS internally, this just protects
+                    // against get() blocking forever if a socket callback never fires.
+                    if (Boolean.TRUE.equals(future.get(CONNECT_TIMEOUT_MS + OK_TIMEOUT_MS, TimeUnit.MILLISECONDS))) {
+                        anySucceeded = true;
+                    }
+                } catch (Exception e) {
+                    // This relay's attempt failed or timed out — keep collecting the rest.
+                }
+            }
+            return anySucceeded;
+        } finally {
+            executor.shutdown();
+        }
     }
 
     private static boolean publishToOne(String relayUrl, @Nullable String eventId, String eventJson) {

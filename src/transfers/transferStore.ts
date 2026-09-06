@@ -20,6 +20,13 @@ export interface TransferItem {
   // Native (Android) downloads: content:// uri of the finished file, for a
   // "View" action on the completed row.
   resultUri?: string;
+  /**
+   * True once this transfer is owned by a native foreground service and will
+   * keep running if the app is closed. An Android upload only earns this after
+   * its foreground prepare phase hands off; before that it still dies with the
+   * WebView, which is what the close warning needs to distinguish.
+   */
+  survivesAppClose?: boolean;
 }
 
 const transfers = new Map<string, TransferItem>();
