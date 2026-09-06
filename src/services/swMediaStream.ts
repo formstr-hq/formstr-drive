@@ -1,7 +1,7 @@
 import { deriveConversationKeyFromHex } from "../crypto";
 import { readPlaintextRange } from "./rangeRead";
 import type { FileMetadata } from "../types/metadata";
-import { withTimeout } from "../transfers/withTimeout";
+import { waitForServiceWorkerController } from "./swController";
 
 export interface MediaSession {
   /** Feed this straight into a <video src> or <iframe src> — every Range
@@ -21,39 +21,18 @@ export interface MediaSession {
  * it only relays "give me plaintext bytes [start, end]" requests, which
  * this module answers locally via {@link readPlaintextRange}.
  *
- * Mirrors the controller-readiness handshake in swStreamDownload.ts's
- * attemptDownloadViaServiceWorker, but without that function's iframe/pull
- * machinery — media fetches are ordinary request/response, not a long-lived
- * backpressured stream.
+ * Uses the same controller-readiness wait as swStreamDownload.ts's
+ * attemptDownloadViaServiceWorker (see swController.ts), but without that
+ * function's iframe/pull machinery — media fetches are ordinary
+ * request/response, not a long-lived backpressured stream.
  */
 export async function openMediaSession(
   file: FileMetadata & { blobHash: string; chunkSize: number },
 ): Promise<MediaSession> {
-  await withTimeout(
-    navigator.serviceWorker.ready,
-    3000,
-    "sw-unavailable",
+  const controller = await waitForServiceWorkerController(
     "Preview service worker is unavailable.",
+    "Preview service worker is not active yet. Please reload the page and try again.",
   );
-
-  let controller = navigator.serviceWorker.controller;
-  if (!controller) {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Preview service worker is not active yet. Please reload the page and try again.")),
-        5000,
-      );
-      const onControllerChange = () => {
-        controller = navigator.serviceWorker.controller;
-        if (controller) {
-          clearTimeout(timeout);
-          navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-          resolve();
-        }
-      };
-      navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-    });
-  }
 
   const id = crypto.randomUUID();
   const channel = new MessageChannel();
@@ -105,7 +84,7 @@ export async function openMediaSession(
     };
     port.addEventListener("message", onReady);
     port.start();
-    controller!.postMessage(
+    controller.postMessage(
       { type: "media-start", id, size: file.size, mimeType: file.type || "application/octet-stream" },
       [channel.port2],
     );
