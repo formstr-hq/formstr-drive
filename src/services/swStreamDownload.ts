@@ -4,7 +4,8 @@ import { BlossomClient } from "../blossom";
 import { resolveChunks, isLegacyBlobFormat, type FileMetadata } from "../types/metadata";
 import { aesGcmDecryptBytes, deriveConversationKeyFromHex, segmentCount } from "../crypto";
 import { streamDecryptedSegments, type DownloadProgressInfo } from "./downloadFile";
-import { withTimeout, TransferFailure } from "../transfers/withTimeout";
+import { TransferFailure } from "../transfers/withTimeout";
+import { waitForServiceWorkerController } from "./swController";
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -44,34 +45,14 @@ async function attemptDownloadViaServiceWorker(
   onProgress?: (info: DownloadProgressInfo) => void,
   signal?: AbortSignal,
 ): Promise<{ uri: null }> {
-  // `serviceWorker.ready` never resolves AND never rejects when no registration
-  // exists (e.g. /sw.js failed to load in production). Without a timeout the
-  // whole download hangs at 0% forever and the FSA/blob fallbacks in
-  // downloadFileStreaming are never reached. Reject instead so it falls through.
-  await withTimeout(
-    navigator.serviceWorker.ready,
-    3000,
-    "sw-unavailable",
+  // Without a timeout, an unregistered/inactive SW would hang the download
+  // at 0% forever instead of falling through to the FSA/blob fallbacks in
+  // downloadFileStreaming — see swController.ts for why this two-stage wait
+  // (ready, then actually controlling) is needed at all.
+  const controller = await waitForServiceWorkerController(
     "Download service worker is unavailable.",
+    "Download service worker is not active yet. Please reload the page and try again.",
   );
-  let controller = navigator.serviceWorker.controller;
-  if (!controller) {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error("Download service worker is not active yet. Please reload the page and try again.")),
-        5000,
-      );
-      const onControllerChange = () => {
-        controller = navigator.serviceWorker.controller;
-        if (controller) {
-          clearTimeout(timeout);
-          navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-          resolve();
-        }
-      };
-      navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-    });
-  }
 
   const id = crypto.randomUUID();
   const channel = new MessageChannel();
@@ -160,7 +141,7 @@ async function attemptDownloadViaServiceWorker(
 
     await new Promise<void>((resolve, reject) => {
       readyResolver = resolve;
-      controller!.postMessage(
+      controller.postMessage(
         {
           type: "start",
           id,
