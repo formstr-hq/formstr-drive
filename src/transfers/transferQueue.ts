@@ -265,7 +265,7 @@ export function dismissTransfer(id: string) {
 /** Enqueue a download. Returns true if it was accepted, false if an identical
  *  transfer is already active (deduped). */
 export function queueDownload(file: FileMetadata): boolean {
-  const id = file.hash;
+  const id = file.id;
   if (!resetIfTerminal(id)) return false;
 
   jobs.set(id, { kind: "download", file });
@@ -274,7 +274,7 @@ export function queueDownload(file: FileMetadata): boolean {
     type: "download",
     status: "pending",
     progress: 0,
-    fileDetails: { name: file.name, size: file.size, hash: file.hash, server: file.server },
+    fileDetails: { name: file.name, size: file.size, hash: file.id, server: file.server },
     abortController: new AbortController(),
   });
   triggerQueueProcessing();

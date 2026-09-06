@@ -4,7 +4,9 @@ import { isAndroidPlatform } from "../utils/platform";
 
 export interface NativeDownloadStartedEvent {
   id: string;
-  hash: string;
+  /** Echoed back verbatim from the `downloadToDownloads` call that started
+   *  this download — see the correlation note above pendingDownloadsById. */
+  correlationId: string;
 }
 
 export interface NativeDownloadEvent {
@@ -51,7 +53,7 @@ type DriveFilesPlugin = {
   downloadToDownloads(options: {
     server: string;
     chunks?: string[];
-    hash: string;
+    correlationId: string;
     encryptionKey: string;
     fileName: string;
     mimeType: string;
@@ -103,7 +105,6 @@ export interface NativeDriveFolderEntry {
 
 export interface NativeDriveFileEntry {
   id: string;
-  hash: string;
   name: string;
   mimeType: string;
   size: number;
@@ -139,6 +140,13 @@ const driveFilesPlugin = isAndroidPlatform
   : null;
 
 export function normalizeFolderPath(path: string): string {
+  // `folder: string` is only a TS-level promise (see FileMetadata's
+  // isLegacyFile comment) — a real decrypted event predating this field, or
+  // any malformed metadata, can pass `file.folder` through as undefined
+  // despite the type. Every caller here goes through this one function, so
+  // guarding here (rather than at each `normalizeFolderPath(file.folder)`
+  // call site) means the next caller inherits the same safety for free.
+  if (!path) return "/";
   const trimmed = path.trim();
   if (!trimmed || trimmed === "/") {
     return "/";
@@ -249,8 +257,7 @@ export function buildNativeDriveManifest(
     const folderPath = normalizeFolderPath(file.folder);
 
     return {
-      id: toFileDocumentId(file.hash),
-      hash: file.hash,
+      id: toFileDocumentId(file.id),
       name: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
@@ -381,15 +388,16 @@ interface DownloadCallbacks {
   onStarted?: (cancel: () => void) => void;
   // The native download id (a random UUID) once `downloadStarted` has arrived.
   // Until then progress/cancel can't be routed, so the entry lives in
-  // `pendingDownloadsByHash` keyed by the file hash we do know up front.
+  // `pendingDownloadsByCorrelationId` under the token we minted up front.
   nativeId?: string;
 }
 
-// The native plugin generates a random UUID per download and reports progress
-// and completion under that id — NOT the file hash. So callbacks are registered
-// by hash first (pendingDownloadsByHash), then re-keyed to the native id when
-// the `downloadStarted` event delivers the correlation (event.hash -> event.id).
-const pendingDownloadsByHash = new Map<string, DownloadCallbacks>();
+// The native plugin generates its own random UUID per download and reports
+// progress and completion under that id, which the caller can't know at call
+// time. So each call mints a correlation token, registers its callbacks under
+// it, and the native side echoes the token back on `downloadStarted` alongside
+// the id it chose — at which point the entry is re-keyed to that id.
+const pendingDownloadsByCorrelationId = new Map<string, DownloadCallbacks>();
 const activeDownloadsById = new Map<string, DownloadCallbacks>();
 let nativeListenersInitialized = false;
 
@@ -398,9 +406,9 @@ async function ensureNativeListeners() {
   nativeListenersInitialized = true;
 
   await driveFilesPlugin.addListener("downloadStarted", (event) => {
-    const callbacks = pendingDownloadsByHash.get(event.hash);
+    const callbacks = pendingDownloadsByCorrelationId.get(event.correlationId);
     if (!callbacks) return;
-    pendingDownloadsByHash.delete(event.hash);
+    pendingDownloadsByCorrelationId.delete(event.correlationId);
     callbacks.nativeId = event.id;
     activeDownloadsById.set(event.id, callbacks);
     callbacks.onStarted?.(() => {
@@ -420,7 +428,6 @@ export async function downloadFileToDownloads(
   file: {
     server: string;
     chunks?: ChunkRef[];
-    hash: string;
     encryptionKey: string;
     name: string;
     type?: string;
@@ -433,11 +440,15 @@ export async function downloadFileToDownloads(
     throw new Error("Native download is only available on Android");
   }
   const plugin = driveFilesPlugin;
+  // Correlates this call to the `downloadStarted` event the plugin fires with
+  // the id it generated. Per-call rather than per-file, so downloading the
+  // same file twice concurrently doesn't collide on one map key.
+  const correlationId = crypto.randomUUID();
 
   await ensureNativeListeners();
 
   const callbacks: DownloadCallbacks = { onProgress, onStarted };
-  pendingDownloadsByHash.set(file.hash, callbacks);
+  pendingDownloadsByCorrelationId.set(correlationId, callbacks);
 
   try {
     // No timeout here: downloadToDownloads resolves only when the *whole* file
@@ -446,7 +457,7 @@ export async function downloadFileToDownloads(
     return await plugin.downloadToDownloads({
       server: file.server,
       chunks: chunkHashes(file.chunks),
-      hash: file.hash,
+      correlationId,
       encryptionKey: file.encryptionKey,
       fileName: file.name,
       mimeType: file.type || "application/octet-stream",
@@ -458,7 +469,7 @@ export async function downloadFileToDownloads(
     }
     throw e;
   } finally {
-    pendingDownloadsByHash.delete(file.hash);
+    pendingDownloadsByCorrelationId.delete(correlationId);
     if (callbacks.nativeId) activeDownloadsById.delete(callbacks.nativeId);
   }
 }

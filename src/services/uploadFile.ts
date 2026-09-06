@@ -117,7 +117,7 @@ export async function prepareUpload(
     const start = i * CHUNK_SIZE;
     const end = Math.min(start + CHUNK_SIZE, totalSize);
     const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-    const encBytes = await aesGcmEncryptBytes(bytes, convKey, i);
+    const encBytes = await aesGcmEncryptBytes(bytes, convKey);
 
     const hashBuffer = await crypto.subtle.digest("SHA-256", encBytes as unknown as BufferSource);
     chunkHashes.push(toHexHash(hashBuffer));
@@ -256,7 +256,7 @@ export async function uploadFile(
     throwIfAborted(signal);
     onProgress?.({ stage: "Encrypting file...", progress: 0, currentChunk: 1, totalChunks: 1 });
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const encBytes = await aesGcmEncryptBytes(bytes, convKey, 0);
+    const encBytes = await aesGcmEncryptBytes(bytes, convKey);
     const hash = toHexHash(await crypto.subtle.digest("SHA-256", encBytes as unknown as BufferSource));
     throwIfAborted(signal);
     onProgress?.({ stage: "Waiting for signature approval...", progress: 20, currentChunk: 1, totalChunks: 1 });
@@ -288,7 +288,7 @@ export async function uploadFile(
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, totalSize);
         const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-        const encBytes = await aesGcmEncryptBytes(bytes, convKey, i);
+        const encBytes = await aesGcmEncryptBytes(bytes, convKey);
 
         const hashBuffer = await crypto.subtle.digest("SHA-256", encBytes as unknown as BufferSource);
         hashes.push(toHexHash(hashBuffer));
@@ -352,7 +352,7 @@ export async function uploadFile(
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, totalSize);
       const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-      const encBytes = await aesGcmEncryptBytes(bytes, convKey, i);
+      const encBytes = await aesGcmEncryptBytes(bytes, convKey);
 
       const hashBuffer = await crypto.subtle.digest("SHA-256", encBytes as unknown as BufferSource);
       hashes.push(toHexHash(hashBuffer));
@@ -381,7 +381,7 @@ export async function uploadFile(
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, totalSize);
       const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-      const encBytes = await aesGcmEncryptBytes(bytes, convKey, i);
+      const encBytes = await aesGcmEncryptBytes(bytes, convKey);
 
       await uploadChunkWithRetry(
         client, encBytes, authHeader, i, numChunks, startProgress, chunkWeight, onProgress, signal

@@ -18,7 +18,7 @@ import {
   type Event,
 } from "@formstr/local-relay";
 import { signerManager } from "../signer/manager";
-import { APP_RELAYS, defaultRelays } from "../utils/common";
+import { APP_RELAYS, defaultRelays, mergeRelayLists } from "../utils/common";
 import { notifyRelayRefresh } from "./relayRefresh";
 
 let started = false;
@@ -74,7 +74,7 @@ export function bootstrapDataLayer(): DataLayer {
   // Drive's app relays carry the kind-34578 file index; the wider default set
   // backs profile (kind 0) and Blossom server (kind 36363) discovery, which the
   // old per-component pools queried against defaultRelays.
-  client.setUserRelays(Array.from(new Set([...APP_RELAYS, ...defaultRelays])));
+  client.setUserRelays(mergeRelayLists(APP_RELAYS, defaultRelays));
 
   // Active account → worker scope. setActiveAccount does NOT rehydrate the
   // shared store; decryption is per-account and the keyring code already

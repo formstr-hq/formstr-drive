@@ -37,7 +37,6 @@ public final class DriveManifestStore {
     private static final String PENDING_IMPORTS_FILE_NAME = "pending-imports.json";
     private static final String PENDING_IMPORT_FILES_DIRECTORY_NAME = "files";
     private static final String FOLDER_DOCUMENT_PREFIX = "folder:";
-    private static final String FILE_DOCUMENT_PREFIX = "file:";
     private static final String PENDING_FILE_DOCUMENT_PREFIX = "pending:";
 
     private DriveManifestStore() {}
@@ -220,10 +219,6 @@ public final class DriveManifestStore {
 
     public static String folderDocumentId(String path) {
         return FOLDER_DOCUMENT_PREFIX + normalizePath(path);
-    }
-
-    public static String fileDocumentId(String hash) {
-        return FILE_DOCUMENT_PREFIX + hash;
     }
 
     public static String pendingFileDocumentId(String pendingId) {
@@ -523,7 +518,6 @@ public final class DriveManifestStore {
 
     public static final class FileEntry {
         public final String id;
-        public final String hash;
         public final String name;
         public final String mimeType;
         public final long size;
@@ -540,7 +534,6 @@ public final class DriveManifestStore {
 
         private FileEntry(
                 String id,
-                String hash,
                 String name,
                 String mimeType,
                 long size,
@@ -556,7 +549,6 @@ public final class DriveManifestStore {
                 @Nullable String localPath
         ) {
             this.id = id;
-            this.hash = hash;
             this.name = name;
             this.mimeType = mimeType;
             this.size = size;
@@ -573,9 +565,8 @@ public final class DriveManifestStore {
         }
 
         static FileEntry fromJson(JSONObject jsonObject) {
-            String hash = jsonObject.optString("hash");
-            String id = jsonObject.optString("id", fileDocumentId(hash));
-            String name = jsonObject.optString("name", hash);
+            String id = jsonObject.optString("id");
+            String name = jsonObject.optString("name");
             String mimeType = jsonObject.optString("mimeType", "application/octet-stream");
             long size = jsonObject.optLong("size", 0L);
             String folderPath = normalizePath(jsonObject.optString("folderPath", "/"));
@@ -601,7 +592,6 @@ public final class DriveManifestStore {
 
             return new FileEntry(
                     id,
-                    hash,
                     name,
                     mimeType,
                     size,
@@ -621,7 +611,6 @@ public final class DriveManifestStore {
         static FileEntry fromPendingImport(PendingImportEntry entry) {
             return new FileEntry(
                     pendingFileDocumentId(entry.id),
-                    entry.id,
                     entry.name,
                     entry.mimeType,
                     entry.size,

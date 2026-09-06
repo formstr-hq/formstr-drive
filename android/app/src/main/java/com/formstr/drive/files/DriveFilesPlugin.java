@@ -331,14 +331,15 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
     @PluginMethod
     public void downloadToDownloads(PluginCall call) {
         String server = call.getString("server");
-        String hash = call.getString("hash");
+        String correlationId = call.getString("correlationId");
         String encryptionKey = call.getString("encryptionKey");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType");
         JSArray chunksArray = call.getArray("chunks");
 
-        if (server == null || hash == null || encryptionKey == null || fileName == null || mimeType == null) {
-            call.reject("server, hash, encryptionKey, fileName, and mimeType are required");
+        if (server == null || correlationId == null || encryptionKey == null
+                || fileName == null || mimeType == null) {
+            call.reject("server, correlationId, encryptionKey, fileName, and mimeType are required");
             return;
         }
 
@@ -347,7 +348,7 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
 
     private void startDownload(PluginCall call) {
         String server = call.getString("server");
-        String hash = call.getString("hash");
+        String correlationId = call.getString("correlationId");
         String encryptionKey = call.getString("encryptionKey");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType");
@@ -373,7 +374,6 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         Intent intent = new Intent(getContext(), DriveDownloadService.class);
         intent.putExtra(DriveDownloadService.EXTRA_ID, downloadId);
         intent.putExtra(DriveDownloadService.EXTRA_SERVER, server);
-        intent.putExtra(DriveDownloadService.EXTRA_HASH, hash);
         intent.putExtra(DriveDownloadService.EXTRA_ENCRYPTION_KEY, encryptionKey);
         intent.putExtra(DriveDownloadService.EXTRA_FILE_NAME, fileName);
         intent.putExtra(DriveDownloadService.EXTRA_MIME_TYPE, mimeType);
@@ -385,9 +385,10 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
 
         JSObject started = new JSObject();
         started.put("id", downloadId);
-        // Include the file hash so the JS side can correlate this randomly-generated
-        // download id back to the transfer it started (progress/cancel are keyed by id).
-        started.put("hash", hash);
+        // Echo the caller's token back so the JS side can correlate this
+        // randomly-generated download id to the transfer it started
+        // (progress/cancel are keyed by id).
+        started.put("correlationId", correlationId);
         notifyListeners("downloadStarted", started);
     }
 

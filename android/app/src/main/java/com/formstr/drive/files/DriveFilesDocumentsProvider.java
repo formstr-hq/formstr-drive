@@ -414,7 +414,13 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
     ) throws IOException {
         Context context = ensureContext();
         File exportDirectory = DriveManifestStore.getExportsDirectory(context);
-        File exportFile = new File(exportDirectory, file.hash + ".bin");
+        // Keyed by the file's document id, which is its stable per-file identity
+        // (the metadata event's `d` tag). Blob hashes are no longer carried in
+        // the manifest, and would have been the wrong key anyway — a rename or
+        // move leaves the blobs untouched. The id is prefixed ("file:…"), so
+        // strip the separator rather than put a colon in a filename.
+        String cacheKey = file.id.replace(':', '_');
+        File exportFile = new File(exportDirectory, cacheKey + ".bin");
 
         if (exportFile.exists() && exportFile.length() > 0) {
             return exportFile;
@@ -445,12 +451,11 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
         }
 
         try {
-            File tempFile = new File(exportDirectory, file.hash + ".tmp");
+            File tempFile = new File(exportDirectory, cacheKey + ".tmp");
             try (FileOutputStream outputStream = new FileOutputStream(tempFile, false)) {
                 DriveFileDownloader.downloadAndDecryptToStream(
                         file.server,
                         file.chunks,
-                        file.hash,
                         file.encryptionKey,
                         outputStream,
                         finalOnProgress,

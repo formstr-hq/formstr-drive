@@ -17,10 +17,16 @@ export function canOpenInNostrDocs(file: { type: string; name: string; chunks?: 
   return lowerName.endsWith(".docx") || lowerName.endsWith(".doc") || lowerName.endsWith(".odt");
 }
 
-export function openInNostrDocs(file: { server: string; hash: string; encryptionKey: string; type: string; name: string }) {
+export function openInNostrDocs(file: {
+  server: string;
+  chunks?: { hash: string }[];
+  encryptionKey: string;
+  type: string;
+  name: string;
+}) {
   const payload = {
     server: file.server,
-    hash: file.hash,
+    hash: file.chunks?.[0]?.hash ?? "",
     encryptionKey: file.encryptionKey,
     type: file.type,
     name: file.name,

@@ -55,48 +55,45 @@ public final class DriveFileDownloader {
     }
 
     /**
-     * Streams chunk-by-chunk (or a single legacy blob) from the Blossom server,
-     * decrypts each piece, and writes it straight to outputStream — nothing is
-     * buffered beyond a single chunk.
+     * Streams chunk-by-chunk from the Blossom server, decrypts each piece, and
+     * writes it straight to outputStream — nothing is buffered beyond a single
+     * chunk.
      */
     public static void downloadAndDecryptToStream(
             String server,
             @Nullable List<String> chunks,
-            String hash,
             String encryptionKey,
             OutputStream outputStream,
             @Nullable ProgressCallback onProgress,
             @Nullable CancellationSignal signal
     ) throws IOException {
-        if (chunks != null && !chunks.isEmpty()) {
-            int totalChunks = chunks.size();
-            for (int i = 0; i < totalChunks; i++) {
-                String chunkHash = chunks.get(i);
-                int currentChunk = i;
-                ProgressCallback chunkProgress = null;
-                if (onProgress != null) {
-                    chunkProgress = (percent) -> {
-                        int overallPercent = (currentChunk * 100 + percent) / totalChunks;
-                        onProgress.onProgress(overallPercent);
-                    };
-                }
+        // Every file the app publishes carries at least one chunk. A chunk-less
+        // entry could only come from a client predating chunked uploads, whose
+        // blobs this build can no longer decrypt anyway — such files are dropped
+        // before they ever reach the manifest (fileIndexStore.emit), so reaching
+        // here means the manifest is malformed rather than merely old.
+        if (chunks == null || chunks.isEmpty()) {
+            throw new IOException("Drive file has no chunks to download");
+        }
 
-                byte[] encryptedBlob = downloadEncryptedBlob(server, chunkHash, signal, chunkProgress);
-                byte[] decryptedBytes;
-                try {
-                    decryptedBytes = DriveFilesCrypto.decryptChunkBlob(encryptedBlob, encryptionKey, i);
-                } catch (Exception error) {
-                    throw new IOException("Failed to decrypt chunk " + i, error);
-                }
-                outputStream.write(decryptedBytes);
+        int totalChunks = chunks.size();
+        for (int i = 0; i < totalChunks; i++) {
+            String chunkHash = chunks.get(i);
+            int currentChunk = i;
+            ProgressCallback chunkProgress = null;
+            if (onProgress != null) {
+                chunkProgress = (percent) -> {
+                    int overallPercent = (currentChunk * 100 + percent) / totalChunks;
+                    onProgress.onProgress(overallPercent);
+                };
             }
-        } else {
-            byte[] encryptedBlob = downloadEncryptedBlob(server, hash, signal, onProgress);
+
+            byte[] encryptedBlob = downloadEncryptedBlob(server, chunkHash, signal, chunkProgress);
             byte[] decryptedBytes;
             try {
-                decryptedBytes = DriveFilesCrypto.decryptEncryptedBlob(encryptedBlob, encryptionKey);
+                decryptedBytes = DriveFilesCrypto.decryptChunkBlob(encryptedBlob, encryptionKey, i);
             } catch (Exception error) {
-                throw new IOException("Failed to decrypt Drive file", error);
+                throw new IOException("Failed to decrypt chunk " + i, error);
             }
             outputStream.write(decryptedBytes);
         }

@@ -176,6 +176,37 @@ export class BlossomClient {
   }
 
   /**
+   * Checks whether a blob is actually stored on this server (BUD-01 `HEAD`).
+   * Returns `true`/`false` only for a definitive answer (2xx / 404) — any
+   * other outcome (network failure, unexpected status) throws, since callers
+   * that use this to decide whether to trust a pending write must never treat
+   * "couldn't check" the same as "confirmed absent".
+   */
+  async exists(sha256: string): Promise<boolean> {
+    let res: Response;
+    try {
+      res = await withTimeout(
+        fetch(`${this.baseUrl}/${sha256}`, { method: "HEAD" }),
+        15000,
+        "fetch-timeout",
+        `Blossom existence check timed out after 15s for ${sha256}`,
+      );
+    } catch (e) {
+      if (e instanceof TypeError) {
+        throw new BlossomError(
+          `Network error: Unable to reach ${this.baseUrl}. This may be a CORS issue.`,
+          { isCorsError: true },
+        );
+      }
+      throw e;
+    }
+
+    if (res.status === 404) return false;
+    if (res.ok) return true;
+    throw new BlossomError(res.headers.get("X-Reason") || res.statusText);
+  }
+
+  /**
    * Delete a blob from the server (Blossom BUD-02).
    * Returns true if the blob was deleted or was already gone (404).
    * Throws BlossomError on network or server errors so callers can retry.

@@ -1,6 +1,6 @@
 import { generateSecretKey } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
-import type { FileMetadata } from "../types/metadata";
+import { generateFileId, type FileMetadata } from "../types/metadata";
 import { uploadFile as chunkedUploadFile } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
 import { saveFileMetadata } from "../services/fileIndex";
@@ -59,7 +59,7 @@ export async function uploadDriver(
     onProgress({ stage: "Saving metadata...", progress: 98 });
     const metadata: FileMetadata = {
       name: file.name,
-      hash: hashes[0],
+      id: generateFileId(),
       size: file.size,
       type: file.type || "application/octet-stream",
       folder: targetFolder,

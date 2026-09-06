@@ -8,6 +8,7 @@ import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon } from '../icons/Ico
 import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../utils/folder';
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
+import { refreshDriveKeyring } from '../../services/driveKey';
 
 export function FileList() {
   const {
@@ -15,10 +16,11 @@ export function FileList() {
     folders,
     currentFolder,
     setCurrentFolder,
-    loading,
-    hasHydratedIndex,
+    driveStatus,
+    degradedReason,
     deleteFiles,
     moveFiles,
+    refresh,
   } = useFileIndex();
   const toast = useToast();
   const [searchQuery, setSearchQuery] = useState("");
@@ -62,11 +64,11 @@ export function FileList() {
     });
   }, [files, currentFolder, normalizedQuery, sortKey]);
   const currentFileHashes = useMemo(
-    () => new Set(currentFiles.map((file) => file.hash)),
+    () => new Set(currentFiles.map((file) => file.id)),
     [currentFiles]
   );
   const selectedFiles = useMemo(
-    () => currentFiles.filter((file) => selectedFileHashes.has(file.hash)),
+    () => currentFiles.filter((file) => selectedFileHashes.has(file.id)),
     [currentFiles, selectedFileHashes]
   );
   const selectedCount = selectedFiles.length;
@@ -112,7 +114,7 @@ export function FileList() {
       if (allVisibleSelected) {
         return new Set();
       }
-      return new Set(currentFiles.map((file) => file.hash));
+      return new Set(currentFiles.map((file) => file.id));
     });
   };
 
@@ -132,7 +134,7 @@ export function FileList() {
     setBulkAction("delete");
 
     try {
-      await deleteFiles(selectedFiles.map((file) => file.hash));
+      await deleteFiles(selectedFiles.map((file) => file.id));
       setSelectedFileHashes(new Set());
       setShowDeleteDialog(false);
     } catch (e) {
@@ -156,7 +158,7 @@ export function FileList() {
     setBulkAction("move");
 
     try {
-      await moveFiles(selectedFiles.map((file) => file.hash), folder);
+      await moveFiles(selectedFiles.map((file) => file.id), folder);
       setSelectedFileHashes(new Set());
       setShowMoveDialog(false);
     } catch (e) {
@@ -225,7 +227,7 @@ export function FileList() {
           </p>
           <ul className="bulk-delete-list">
             {selectedFiles.map((file) => (
-              <li key={file.hash} className="bulk-delete-list-item">
+              <li key={file.id} className="bulk-delete-list-item">
                 <span className="bulk-delete-file-name" title={file.name}>
                   {file.name}
                 </span>
@@ -255,7 +257,12 @@ export function FileList() {
     </div>
   );
 
-  if (loading || !hasHydratedIndex) {
+  // "resolving" covers both "keyring not settled yet" and "settled, but the
+  // relay replay hasn't EOSE'd" — on a warm cache the latter fires almost
+  // instantly, so this stays as responsive as the old keyRead-only gate did
+  // in the common case, while never rendering content ahead of having
+  // enough information to know whether it's complete.
+  if (driveStatus === "resolving") {
     return (
       <div className="loading-container">
         <div className="loading-state">Hold tight while we are fetching your files...</div>
@@ -323,10 +330,48 @@ export function FileList() {
         </div>
 
         {!hasItems ? (
-          <div className="empty-state">
-            <p>{normalizedQuery ? "No files or folders match your search" : "No files or folders in this folder"}</p>
-            <p className="empty-hint">{!normalizedQuery && "Drop files above to upload"}</p>
-          </div>
+          // driveStatus is "resolving" only before the early return above, so
+          // this only ever sees "degraded" or "ready" — an empty list is safe
+          // to call genuinely empty ONLY under "ready". Under "degraded", an
+          // empty `files` means "couldn't confirm", never "confirmed empty"
+          // (see DriveIndexStatus's doc comment in FileIndexProvider.tsx) —
+          // showing the upload-hint empty state here is exactly the bug that
+          // made a real drive-key/decrypt failure look like ordinary data loss.
+          degradedReason && !normalizedQuery ? (
+            <div className="empty-state error-state">
+              <p>
+                {degradedReason === "keys-unavailable"
+                  ? "Couldn't load your Drive Key, so this may not be your complete file list."
+                  : "Some of your files couldn't be decrypted under the current Drive Key — this may " +
+                    "not be your complete file list."}
+              </p>
+              <p className="empty-hint">
+                Check your connection and retry, or use Import Drive Key from the account menu if you
+                have an existing key.
+              </p>
+              <button
+                className="empty-state-retry"
+                onClick={() => {
+                  // refresh() alone only re-declares the file-index interest —
+                  // it does nothing for the more common cause of "degraded",
+                  // which is the Drive Key resolution itself being stuck (see
+                  // refreshDriveKeyring's doc comment: once resolved, nothing
+                  // otherwise ever rechecks relays for the rest of the tab's
+                  // life). Both together cover "the key was the problem" and
+                  // "the file-index subscription was the problem".
+                  void refreshDriveKeyring();
+                  void refresh();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>{normalizedQuery ? "No files or folders match your search" : "No files or folders in this folder"}</p>
+              <p className="empty-hint">{!normalizedQuery && "Drop files above to upload"}</p>
+            </div>
+          )
         ) : (
           <div className={isGridView ? "file-grid" : "file-list-view"}>
             {currentFolders.map((folderPath) => {
@@ -382,12 +427,17 @@ export function FileList() {
               );
             })}
 
-            {currentFiles.map((file) => (
+            {currentFiles.map((file, index) => (
               <FileCard
-                key={file.hash}
+                // Legacy files (pre-dating the random id) all have id === undefined —
+                // falling back to `file.id` alone would give every such row the exact
+                // same React key, which is invalid and can destabilize reconciliation
+                // for the whole list (React warns and may reuse DOM nodes across
+                // unrelated rows when siblings share a key).
+                key={file.id ?? `legacy-${index}`}
                 file={file}
                 viewMode={viewMode}
-                selected={selectedFileHashes.has(file.hash)}
+                selected={selectedFileHashes.has(file.id)}
                 onToggleSelection={toggleFileSelection}
               />
             ))}
