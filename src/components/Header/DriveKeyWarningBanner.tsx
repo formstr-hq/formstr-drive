@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useProfileContext } from "../../hooks/useProfileContext";
 import { findOrphanedDrivePubkeys, onDriveKeysChanged } from "../../services/driveKey";
-import { DriveKeyModal } from "./DriveKeyModal";
 import "./DriveKeyWarningBanner.css";
 
 /**
@@ -16,7 +15,6 @@ import "./DriveKeyWarningBanner.css";
 export function DriveKeyWarningBanner() {
   const { pubkey, isSignedIn } = useProfileContext();
   const [orphaned, setOrphaned] = useState<string[]>([]);
-  const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     if (!isSignedIn || !pubkey) {
@@ -60,8 +58,6 @@ export function DriveKeyWarningBanner() {
         A previous Drive Key for this account is missing ({orphaned.length} key
         {orphaned.length === 1 ? "" : "s"}) — files under it may be hidden until it's restored.
       </span>
-      <button onClick={() => setShowModal(true)}>Import Drive Key</button>
-      {showModal && <DriveKeyModal onClose={() => setShowModal(false)} />}
     </div>
   );
 }
