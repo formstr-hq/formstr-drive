@@ -294,21 +294,22 @@ async function uploadBlobWithFallback(
 }
 
 /**
- * Retries the preview blob against the PRIMARY server only (servers[0]) — no
- * cross-server fallback. FileMetadata has no per-preview server field, so a
- * preview that fell back to a different server would upload successfully but
- * become permanently undownloadable (every reader assumes previewHash lives
- * at file.server). Previews are best-effort already, so retrying-then-
- * skipping is the correct tradeoff here, not expanding the metadata schema
- * for a thumbnail.
+ * Retries the preview blob against ONE server — the caller must pass whichever
+ * server the file's own blob actually landed on (usedServer ?? servers[0]),
+ * never unconditionally servers[0]. FileMetadata has no per-preview server
+ * field, so previewHash is always looked up at file.server; uploading the
+ * preview anywhere else would make it upload successfully but become
+ * permanently undownloadable. No cross-server fallback beyond that: previews
+ * are best-effort already, so retrying-then-skipping the one right server is
+ * the correct tradeoff, not expanding the metadata schema for a thumbnail.
  */
 async function uploadPreviewWithRetry(
-  primaryServer: string,
+  targetServer: string,
   blob: Uint8Array,
   authHeader: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  const client = new BlossomClient(primaryServer);
+  const client = new BlossomClient(targetServer);
   const hash = toHexHash(await crypto.subtle.digest("SHA-256", blob as unknown as BufferSource));
   const previewBlob = new Blob([blob as BlobPart]);
   let retries = 3;
@@ -429,7 +430,17 @@ export async function uploadFile(
   let previewUploaded = false;
   if (encryptedPreview) {
     onProgress?.({ stage: "Uploading preview...", progress: 99 });
-    previewUploaded = await uploadPreviewWithRetry(servers[0], encryptedPreview, authHeader, signal);
+    // Must follow the blob to whichever server it actually landed on, not
+    // always servers[0]: every reader (fetchPreview.ts) fetches the preview
+    // from file.server, which the caller sets to usedServer ?? servers[0] —
+    // uploading to servers[0] unconditionally would strand the preview on a
+    // different server than file.server whenever the primary failed over.
+    previewUploaded = await uploadPreviewWithRetry(
+      usedServer ?? servers[0],
+      encryptedPreview,
+      authHeader,
+      signal,
+    );
   }
 
   onProgress?.({ stage: "Upload complete", progress: 100, currentChunk: totalSegments, totalChunks: totalSegments });

@@ -9,6 +9,7 @@ import {
   recordPublishedMetadata,
   saveFileMetadata,
   findDuplicateByHash,
+  duplicateBlobIsLive,
 } from "../services/fileIndex";
 import {
   dequeueMetadataEvent,
@@ -82,7 +83,12 @@ export async function nativeUploadDriver(
   // instead of going through the background-survivable upload machinery.
   onProgress({ stage: "Checking for duplicates...", progress: 0 });
   const dedupHash = await computePlaintextHash(file, signal);
-  const duplicate = findDuplicateByHash(dedupHash);
+  const dedupCandidate = findDuplicateByHash(dedupHash);
+  // findDuplicateByHash is a pure local-index lookup — confirm the blob it
+  // points at is actually still on the server before reusing it. See
+  // uploadDriver.ts's identical check / fileIndex.ts's doc comment.
+  const duplicate =
+    dedupCandidate && (await duplicateBlobIsLive(dedupCandidate)) ? dedupCandidate : undefined;
   if (duplicate) {
     const metadata: FileMetadata = {
       ...duplicate,
