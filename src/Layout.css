@@ -1,9 +1,19 @@
 /* Layout */
+/* height, not min-height: everything below (.drive-content/.drive-main's
+   overflow:hidden + min-height:0, .file-list-scroll's overflow-y:auto,
+   .folder-sidebar's overflow-y:auto) only clips/scrolls internally if this
+   root is pinned to exactly the viewport. A min-height floor lets the whole
+   page grow past the viewport instead of clipping, which both defeats every
+   internal scroll container below it AND stretches the sidebar (a flex row
+   item with default align-items:stretch) to match whatever oversized height
+   the main content reached — pushing footer items like "Shared by me" out
+   past the fold instead of staying pinned to the visible bottom of the
+   sidebar. */
 .drive-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   background: var(--color-bg-canvas);
   color: var(--color-text-primary);
 }
