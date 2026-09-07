@@ -45,3 +45,10 @@ input {
   width: auto;
   flex-shrink: 0;
 }
+
+.app-mark {
+  display: block;
+  height: 40px;
+  width: 40px;
+  flex-shrink: 0;
+}
