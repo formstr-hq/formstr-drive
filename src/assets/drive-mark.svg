@@ -1,8 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
-  <!-- Form* Drive mark — ink plate, folder in a bold ember gradient with an ink outline for
-       definition, Form* asterisk hovering clear above the folder's rounded corner (kept off
-       the curve so the star silhouette stays clean at small sizes). -->
-  <rect width="96" height="96" rx="20" fill="#0B0B0C"/>
+  <!-- Form* Drive mark, in-app — transparent bg, ink outline for contrast on any surface,
+       folder in a bold ember gradient, Form* asterisk hovering clear above the folder's
+       rounded corner (kept off the curve so the star silhouette stays clean at small sizes). -->
   <path d="M21,24 L38,24 Q42,24 44.4,27.2 L45.9,29.2 Q48,32 51.5,32 L75,32 Q80,32 80,37 L80,69 Q80,74 75,74 L21,74 Q16,74 16,69 L16,29 Q16,24 21,24 Z"
         fill="url(#folder-grad)" stroke="#0B0B0C" stroke-width="3" stroke-linejoin="round"/>
   <line x1="82" y1="10" x2="82" y2="28" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
