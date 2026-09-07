@@ -98,17 +98,30 @@ function TransferRow({
   // around 50%. Driven off progress rather than a fragile stage-string compare.
   const isHashingPass = isUpload && transfer.status === "running" && percent < 50;
 
-  const chunkClass = (index: number): string => {
-    const idx = index + 1;
+  // A large file can be thousands of segments (64KB each by default) —
+  // rendering one dot per segment would mean thousands of DOM nodes for one
+  // transfer row. Group them into bands of 100 real chunks per displayed dot
+  // instead; the band's status follows whichever of its chunks is furthest
+  // along, so the grid still reads left-to-right as progress.
+  const CHUNKS_PER_DOT = 100;
+  const dotCount = Math.ceil(totalChunks / CHUNKS_PER_DOT);
+  const dotClass = (dotIndex: number): string => {
+    const bandStart = dotIndex * CHUNKS_PER_DOT + 1; // 1-based, inclusive
+    const bandEnd = Math.min((dotIndex + 1) * CHUNKS_PER_DOT, totalChunks); // 1-based, inclusive
     if (transfer.status === "completed") return "done";
     if (isHashingPass) {
-      if (idx < currentChunk) return "hashing-done";
-      if (idx === currentChunk) return "hashing";
+      if (currentChunk > bandEnd) return "hashing-done";
+      if (currentChunk >= bandStart) return "hashing";
       return "pending";
     }
-    if (idx < currentChunk) return "done";
-    if (idx === currentChunk) return "uploading";
+    if (currentChunk > bandEnd) return "done";
+    if (currentChunk >= bandStart) return "uploading";
     return "pending";
+  };
+  const dotTitle = (dotIndex: number): string => {
+    const bandStart = dotIndex * CHUNKS_PER_DOT + 1;
+    const bandEnd = Math.min((dotIndex + 1) * CHUNKS_PER_DOT, totalChunks);
+    return bandStart === bandEnd ? `Chunk ${bandStart}` : `Chunks ${bandStart}-${bandEnd}`;
   };
 
   const stageText =
@@ -145,10 +158,10 @@ function TransferRow({
           {stageText}
         </span>
 
-        {totalChunks > 1 && !isTerminal && (
+        {dotCount > 1 && !isTerminal && (
           <div className="chunk-grid">
-            {Array.from({ length: totalChunks }).map((_, i) => (
-              <div key={i} className={`chunk-indicator ${chunkClass(i)}`} title={`Chunk ${i + 1}`} />
+            {Array.from({ length: dotCount }).map((_, i) => (
+              <div key={i} className={`chunk-indicator ${dotClass(i)}`} title={dotTitle(i)} />
             ))}
           </div>
         )}
