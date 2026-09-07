@@ -1,7 +1,8 @@
 import { nip44, finalizeEvent, type Event } from "nostr-tools";
 import { hexToBytes } from "nostr-tools/utils";
 import { dataLayer, type PublishResult } from "@formstr/local-relay";
-import { isLegacyFile, type FileMetadata } from "../types/metadata";
+import { chunkHashes, isLegacyBlobFormat, isLegacyFile, type FileMetadata } from "../types/metadata";
+import { BlossomClient } from "../blossom";
 import {
   getActiveDriveKey,
   getDriveConversationKeys,
@@ -137,6 +138,80 @@ export function recordPublishedMetadata(metadata: FileMetadata, createdAt: numbe
  */
 export function findDuplicateByHash(unencryptedFileHash: string): FileMetadata | undefined {
   return fileIndexStore.snapshot().find((f) => f.unencryptedFileHash === unencryptedFileHash);
+}
+
+/**
+ * Whether a dedup match found by {@link findDuplicateByHash} is safe to reuse
+ * — i.e. its blob is still actually on the server, not merely present in this
+ * device's (possibly stale) local index.
+ *
+ * findDuplicateByHash is a pure in-memory snapshot lookup with zero network
+ * calls, so a match can point at a blob that's since been deleted (see
+ * fileOperations.ts's deleteRemoteBlobs — dedup is exactly what makes deletion
+ * a shared-ownership problem in the first place) or otherwise GC'd upstream.
+ * Reusing it unchecked would mint a new metadata entry that's broken from the
+ * moment it's created, failing only later at download with a 404.
+ *
+ * `BlossomClient.exists()` deliberately throws (rather than returning false)
+ * when it can't get a definitive answer — a thrown result is treated as
+ * "uncertain", the same stance the metadataOutbox drain takes on the identical
+ * check, and callers should fall through to a real upload rather than gamble.
+ */
+export async function duplicateBlobIsLive(duplicate: FileMetadata): Promise<boolean> {
+  const hash = isLegacyBlobFormat(duplicate)
+    ? chunkHashes(duplicate.chunks)[0]
+    : duplicate.blobHash;
+  if (!hash) return false;
+
+  try {
+    return await new BlossomClient(duplicate.server).exists(hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which Blossom hashes belonging to `files` are STILL referenced by some file
+ * outside that set — i.e. must not be deleted from the server.
+ *
+ * Dedup (see findDuplicateByHash) makes a re-upload of identical bytes reuse
+ * the original's blob verbatim: N metadata entries fan into ONE blobHash (and
+ * one previewHash). Deletion, which is per-file, therefore cannot assume it
+ * owns the bytes it's about to remove — deleting one copy would otherwise
+ * destroy every other copy's data, which keeps listing normally and only
+ * fails later, at download, as a 404 from the server the blob correctly
+ * landed on.
+ *
+ * Takes the whole delete SET rather than one file so a bulk delete gets one
+ * consistent answer: evaluated per-file mid-loop, the result would flip
+ * depending on how far the tombstones had propagated.
+ *
+ * Best-effort in the safe direction only. The snapshot is just what this
+ * device has synced, so "nothing else references this" can be wrong — and the
+ * cost of being wrong is unrecoverable data loss, versus a leaked blob for the
+ * opposite error. Callers must treat a hash's ABSENCE here as "no evidence",
+ * not as permission (see deleteRemoteBlobs).
+ */
+export function findHashesStillReferenced(files: FileMetadata[]): Set<string> {
+  const deletingIds = new Set(files.map((f) => f.id));
+  const stillReferenced = new Set<string>();
+
+  for (const other of fileIndexStore.snapshot()) {
+    if (deletingIds.has(other.id)) continue;
+    if (other.blobHash) stillReferenced.add(other.blobHash);
+    if (other.previewHash) stillReferenced.add(other.previewHash);
+    for (const hash of chunkHashes(other.chunks)) stillReferenced.add(hash);
+  }
+
+  return stillReferenced;
+}
+
+/** Whether the index has enough loaded to trust {@link findHashesStillReferenced}.
+ *  An empty store means "nothing synced yet", never "nothing else exists" — a
+ *  distinction deletion must respect, since acting on the latter reading
+ *  destroys data. */
+export function isFileIndexPopulated(): boolean {
+  return fileIndexStore.snapshot().length > 0;
 }
 
 /**

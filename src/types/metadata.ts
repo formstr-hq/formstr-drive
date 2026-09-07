@@ -38,12 +38,17 @@ export interface FileMetadata {
   deleted?: boolean;
   previewHash?: string;
   /**
-   * NIP-FS server list (new format only): the servers a fallback upload
-   * tried, in the order tried, with `servers[0] === server` always the one
-   * the blob actually landed on first. This is fallback HISTORY, not a
-   * mirror-to-all-of-them instruction — the blob lives on exactly one of
-   * these, not all of them. Absent on legacy (`chunks`-based) files, which
-   * predate this field and use the single `server` instead.
+   * NIP-FS server list (new format only). In practice this is ALWAYS a
+   * one-element array equal to `[server]` — no upload path (web or native)
+   * has ever written more than one entry, and there is no BUD-04 mirroring
+   * anywhere in this app that would put the blob on a second server. Do not
+   * read this as "other candidates worth trying on a 404": there is nothing
+   * to fall back to. `file.server` being unreachable for a blob means the
+   * blob is gone, not that it's sitting on `servers[1]` instead — see
+   * fileOperations.ts's deleteRemoteBlobs for the actual reason a blob can go
+   * missing (dedup makes blobs shared; deleting one file can delete another
+   * file's bytes). Absent on legacy (`chunks`-based) files, which predate
+   * this field and use the single `server` instead.
    */
   servers?: string[];
   /**

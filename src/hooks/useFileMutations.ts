@@ -40,7 +40,12 @@ export function useFileMutations(files: FileMetadata[]): FileMutations {
       for (const file of targetFiles) {
         // On failure, files already deleted this batch stay deleted — the
         // store reflects that without help from here.
-        await deleteRemoteBlobs(file);
+        //
+        // Pass the whole batch as alsoDeleting so two deduped copies being
+        // deleted together get one consistent "still referenced?" answer,
+        // rather than the first iteration deleting the shared blob out from
+        // under the second.
+        await deleteRemoteBlobs(file, targetFiles);
         await deleteFileMetadata(file.id, file);
       }
     },
