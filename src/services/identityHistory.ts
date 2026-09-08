@@ -1,4 +1,5 @@
 import { dataLayer, type Event, type Filter } from "@formstr/local-relay";
+import { APP_RELAYS, defaultRelays, mergeRelayLists, normalizeRelayUrl } from "../utils/common";
 
 /**
  * Whether a Nostr identity has ever published anything, established
@@ -32,20 +33,67 @@ const EXISTENCE_KINDS = [0, 3, 10002, 34578];
 // resolve it.
 const cache = new Map<string, IdentityHistory>();
 
+// The relay set fetchDriveKeyEvents' query actually fans out to (bootstrap.ts
+// sets exactly this as setUserRelays) — proof must cover THIS set, since
+// these are the relays whose silence we're about to treat as "no key exists".
+const CONFIGURED_RELAYS = mergeRelayLists(APP_RELAYS, defaultRelays).map(normalizeRelayUrl);
+
 /**
- * Same-shape network-reachability check `driveKey.ts`'s mint guard already
- * used (connectedCount >= 2 AND the data layer's own online() judgment) —
- * reused here rather than duplicated so both callers agree on what "the
- * network looked reachable" means.
+ * Positive, per-relay proof that the configured relay set actually answered a
+ * query just now — replaces the old connectedCount>=2 heuristic, which is
+ * connection-level (a socket being OPEN) rather than query-level (that relay
+ * having actually returned data). A relay stuck mid-handshake (the Android
+ * failure this whole mechanism exists to catch: two relays connected fine
+ * while the one holding the real Drive Key sat in a dead TCP connect) passes
+ * the old check and fails this one.
+ *
+ * Deliberately NOT scoped to this identity's pubkey — a genuinely new user has
+ * no events under any kind, so an author-scoped control query would always
+ * come back empty and prove nothing about whether relays are even listening.
+ * `limit` is small since this only needs SOME event per relay, not a
+ * meaningful result.
+ *
+ * `seenOn` is what makes this possible: it is the only way to learn which
+ * relays actually delivered a given event — `observe()` itself never
+ * surfaces per-relay EOSE to the main thread (upstream EOSE tracking exists
+ * inside RelayPool but is private/unwired).
+ *
+ * Threshold is deliberately full coverage, not a quorum: two relays
+ * answering "we have nothing" does not prove the THIRD, non-answering relay
+ * (the one that might actually hold the key) has nothing — that is exactly
+ * the failure this replaces. A relay unaccounted for means the verdict stays
+ * "uncertain", never "proven empty".
  */
-async function networkLooksReachable(): Promise<boolean> {
+async function proveRelayCoverage(): Promise<{ fullyCovered: boolean; answeredBy: Set<string> }> {
+  const answeredBy = new Set<string>();
+
   try {
-    const health = await dataLayer.relayHealth();
-    const connectedCount = health.filter((r) => r.connected).length;
-    return connectedCount >= 2 && (await dataLayer.online());
+    const controlEvents = await new Promise<Event[]>((resolve) => {
+      const found: Event[] = [];
+      const handle = dataLayer.observe(
+        [{ kinds: [1, 0, 3, 10002], limit: 5 }],
+        {
+          onEvent: (event: Event) => found.push(event),
+          onEose: () => resolve(found),
+        },
+      );
+      setTimeout(() => {
+        handle.unobserve();
+        resolve(found);
+      }, 5000);
+    });
+
+    for (const event of controlEvents) {
+      const relays = await dataLayer.seenOn(event.id).catch(() => [] as string[]);
+      for (const relay of relays) answeredBy.add(normalizeRelayUrl(relay));
+    }
   } catch {
-    return false;
+    // Fall through with whatever (possibly nothing) was collected — an
+    // incomplete answeredBy set correctly yields fullyCovered: false below.
   }
+
+  const fullyCovered = CONFIGURED_RELAYS.every((relay) => answeredBy.has(relay));
+  return { fullyCovered, answeredBy };
 }
 
 /**
@@ -93,7 +141,8 @@ export async function establishIdentityHistory(identityPubkey: string): Promise<
           return;
         }
 
-        resolve((await networkLooksReachable()) ? "new" : "unknown");
+        const { fullyCovered } = await proveRelayCoverage();
+        resolve(fullyCovered ? "new" : "unknown");
       })();
     }, 20000);
   });
