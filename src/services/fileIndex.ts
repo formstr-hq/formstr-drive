@@ -5,10 +5,11 @@ import { chunkHashes, isLegacyBlobFormat, isLegacyFile, type FileMetadata } from
 import { BlossomClient } from "../blossom";
 import {
   getActiveDriveKey,
-  getDriveConversationKeys,
+  getDriveKeyStatus,
   getDriveKeyPubkeys,
   getCachedDrivePubkeys,
   onDriveKeysChanged,
+  type DriveKeyStatus,
 } from "./driveKey";
 import { enqueueMetadataEvent, publishAndDequeue } from "./metadataOutbox";
 import { publishDeletionRequest } from "./deletionRequest";
@@ -42,6 +43,13 @@ const CLIENT_TAG = "formstr-drive";
  */
 const fileIndexStore = (() => {
   const entries = new Map<string, { created_at: number; metadata: FileMetadata | null }>();
+  // Raw events that failed to decrypt, kept ONLY so a later-arriving Drive Key
+  // can be retried against them without a reload. Previously a failed decrypt
+  // discarded the ciphertext/id/author entirely — the null written to `entries`
+  // was a permanent tombstone, since write()'s monotonicity guard rejected the
+  // SAME event replayed later even after it decrypted successfully (equal
+  // created_at). See write()'s upgrade path below and retryFailed().
+  const failedEvents = new Map<string, Event>();
   let onFiles: ((files: FileMetadata[]) => void) | null = null;
 
   function emit(): void {
@@ -66,14 +74,36 @@ const fileIndexStore = (() => {
         if (onFiles === handler) onFiles = null;
       };
     },
-    /** The one guarded write: applied only if strictly newer than what's
-     *  already held for this id (ties are treated as "already have it" —
-     *  the same rule the committed code always used for relay events). */
-    write(id: string, createdAt: number, metadata: FileMetadata | null): void {
+    /**
+     * The one guarded write: strictly newer than what's already held for this
+     * id always applies. An EQUAL timestamp is also allowed through, but ONLY
+     * to upgrade a previously-failed (`metadata: null`) entry into a real one
+     * — the same event, now decryptable under a key that arrived later. A
+     * real entry is never displaced by anything at an equal-or-older
+     * timestamp, and a null never overwrites a real entry.
+     *
+     * `rawEvent` is retained (keyed by id) whenever a decrypt fails, so
+     * {@link retryFailed} has something to retry — and dropped the moment
+     * this id ever succeeds, since it's no longer needed.
+     */
+    write(id: string, createdAt: number, metadata: FileMetadata | null, rawEvent?: Event): void {
       const existing = entries.get(id);
-      if (existing && existing.created_at >= createdAt) return;
+      if (existing) {
+        if (existing.created_at > createdAt) return;
+        if (existing.created_at === createdAt && existing.metadata !== null) return;
+      }
       entries.set(id, { created_at: createdAt, metadata });
-      if (metadata) emit();
+      if (metadata) {
+        failedEvents.delete(id);
+        emit();
+      } else if (rawEvent) {
+        failedEvents.set(id, rawEvent);
+      }
+    },
+    /** Snapshot of every currently-retained failed event, for a caller (a
+     *  newly-arrived Drive Key) to retry decrypting. */
+    getFailedEvents(): Event[] {
+      return Array.from(failedEvents.values());
     },
     /** Re-emits the current state unconditionally — used after a replay
      *  (EOSE) completes even if every replayed event turned out to be one
@@ -86,6 +116,7 @@ const fileIndexStore = (() => {
      *  previous one's files. */
     clear(): void {
       entries.clear();
+      failedEvents.clear();
       emit();
     },
     /** Same filter/shape as what subscribers are handed, but synchronous —
@@ -248,20 +279,18 @@ export interface FileIndexStreamHandlers {
    */
   onReady?: () => void;
   /**
-   * Fires once the Drive Key keyring attempt settles — success or failure,
-   * we're no longer blocked on it — reporting whether it actually produced
-   * at least one usable key. `hasKeys: false` covers BOTH a genuine failure
-   * and a keyring that resolved successfully but empty; either way there is
-   * no key to decrypt with, so a subsequently-empty `onFiles` result must
-   * NOT be read as "confirmed empty" — see identityHistory.ts for how a
-   * caller should tell a genuinely new identity apart from one whose key
-   * just couldn't be resolved this time. (Previously this fired unconditionally
-   * once the promise settled either way, with no way to tell which case
-   * happened — the keyring's own `.catch` silently turned a failure into an
-   * empty array, so "resolved to nothing" and "resolved with real keys" were
-   * indistinguishable to every caller.)
+   * Fires once the Drive Key resolution attempt settles — success or
+   * failure, we're no longer blocked on it — with the FULL verdict, not just
+   * a boolean. `kind !== "ready"` covers both a proven-empty drive (safe,
+   * `"empty-confirmed"`) and a genuinely unresolved one (`"unresolved"`,
+   * with a `reason` — unreachable network, or a found-but-unusable event);
+   * either way there is no key to decrypt with, so a subsequently-empty
+   * `onFiles` result must NOT be read as "confirmed empty" unless the
+   * verdict itself is "empty-confirmed". (Previously this reported only a
+   * boolean, collapsing driveKey.ts's five distinct, actionable messages
+   * into one generic "keys unavailable" the UI couldn't act on.)
    */
-  onKeyStatus?: (hasKeys: boolean) => void;
+  onKeyStatus?: (status: DriveKeyStatus) => void;
   /**
    * Fires (at most once per EOSE) when at least one event under the
    * currently-subscribed authors failed to decrypt. An empty file list
@@ -287,19 +316,20 @@ export function observeFileIndex(
   identityPubkey: string,
   handlers: FileIndexStreamHandlers,
 ): () => void {
-  const driveKeysPromise: Promise<Uint8Array[]> = getDriveConversationKeys().catch(
-    (e) => {
-      console.warn("[FileIndex] Could not obtain Drive Key keyring", e);
-      return [];
-    },
+  const statusPromise: Promise<DriveKeyStatus> = getDriveKeyStatus().catch((e) => {
+    console.warn("[FileIndex] Could not obtain Drive Key status", e);
+    return { kind: "unresolved", reason: "Couldn't check your Drive Key." } as DriveKeyStatus;
+  });
+  const driveKeysPromise: Promise<Uint8Array[]> = statusPromise.then((status) =>
+    status.kind === "ready" ? status.keyring.map((entry) => entry.conversationKey) : [],
   );
-  // Report the moment the keyring settles — success or failure, we're no
-  // longer blocked on it — but unlike before, report WHETHER it actually
-  // resolved to usable keys rather than firing unconditionally. Not gated on
-  // `stopped`: callers may want to know the key resolved even if the
-  // component unmounted a moment later, and firing this has no side effect
-  // beyond the callback itself.
-  void driveKeysPromise.then((keys) => handlers.onKeyStatus?.(keys.length > 0));
+  // Report the moment resolution settles — success or failure, we're no
+  // longer blocked on it — with the full verdict so the UI can distinguish
+  // a proven-empty drive from a genuinely unresolved one. Not gated on
+  // `stopped`: callers may want to know the status even if the component
+  // unmounted a moment later, and firing this has no side effect beyond the
+  // callback itself.
+  void statusPromise.then((status) => handlers.onKeyStatus?.(status));
 
   let stopped = false;
 
@@ -344,7 +374,9 @@ export function observeFileIndex(
     // Record even failed decrypts so an older, decryptable version of the
     // same id can't resurrect a file the newest event superseded — the store
     // itself enforces the created_at monotonicity, regardless of `stopped`.
-    fileIndexStore.write(id, event.created_at, metadata);
+    // The raw event is retained on failure so a key arriving later (see the
+    // onDriveKeysChanged retry below) can revisit it without a reload.
+    fileIndexStore.write(id, event.created_at, metadata, event);
   };
 
   // Serialize event processing: decryption awaits the keyring, so a simple
@@ -435,8 +467,46 @@ export function observeFileIndex(
   //    clean and just never asked about the right author. subscribeAuthors is
   //    additive and self-dedupes, so calling it again here is always safe.
   const unsubscribeDriveKeysChanged = onDriveKeysChanged(() => {
+    if (stopped) return;
     void getDriveKeyPubkeys().then(subscribeAuthors).catch((e) => {
       console.warn("[FileIndex] Could not resolve updated Drive Key pubkeys", e);
+    });
+
+    // A key that arrives AFTER an event already failed to decrypt under it —
+    // the exact case this whole listener exists for: getting subscribeAuthors
+    // to re-declare interest above does nothing for events that already
+    // streamed through and failed, since a standing observe never replays
+    // what it's already delivered. Re-decrypt every retained failure against
+    // the now-current keyring; fileIndexStore.write's equal-timestamp upgrade
+    // path is what lets a success here actually replace the earlier null.
+    void enqueue(async () => {
+      const failed = fileIndexStore.getFailedEvents();
+      if (failed.length === 0) return;
+
+      const status = await getDriveKeyStatus().catch(() => null);
+      if (!status || status.kind !== "ready") return;
+      const freshKeys = status.keyring.map((entry) => entry.conversationKey);
+
+      let recovered = 0;
+      for (const event of failed) {
+        if (stopped) return;
+        const dTag = event.tags.find((t: string[]) => t[0] === "d");
+        const id = dTag?.[1];
+        if (!id) continue;
+        try {
+          const metadata = decryptMetadataWithDriveKey(event.content, freshKeys);
+          fileIndexStore.write(id, event.created_at, metadata, event);
+          recovered++;
+        } catch {
+          // Still can't read it under the new key set either — leave it
+          // retained for the next onDriveKeysChanged.
+        }
+      }
+      if (recovered > 0) {
+        // Each successful write() above already called emit() itself —
+        // nothing further to do here besides the log.
+        console.log(`[FileIndex] Recovered ${recovered} previously-undecryptable file(s) under a newly-arrived Drive Key`);
+      }
     });
   });
 

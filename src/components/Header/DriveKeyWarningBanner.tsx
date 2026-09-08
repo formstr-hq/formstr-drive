@@ -36,12 +36,14 @@ export function DriveKeyWarningBanner() {
     };
 
     check();
-    // Re-run whenever the keyring's pubkey set changes — either a successful
-    // Import Drive Key, or refreshDriveKeyring's background top-up silently
-    // finding the missing key on its own (see its doc comment: a tab that
-    // already resolved a keyring otherwise never rechecks relays again).
-    // Without this the banner only ever reflected the state at mount, so it
-    // wouldn't clear itself even after the underlying problem was fixed.
+    // Re-run whenever the keyring's pubkey set changes — there is no manual
+    // import path any more, so this fires only from automatic recovery:
+    // refreshDriveKeyring's background top-up finding the missing key on its
+    // own (see its doc comment: a tab that already resolved a keyring
+    // otherwise never rechecks relays again), or another device's self-heal
+    // publish (driveKey.ts's syncWithRelays) landing here. Without this the
+    // banner only ever reflected the state at mount, so it wouldn't clear
+    // itself even after the underlying problem resolved on its own.
     const unsubscribe = onDriveKeysChanged(check);
 
     return () => {

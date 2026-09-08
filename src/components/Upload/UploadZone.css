@@ -29,6 +29,18 @@
   background: var(--color-bg-hover);
 }
 
+.upload-zone--disabled {
+  cursor: not-allowed;
+  border-color: var(--color-border);
+  background: var(--color-bg-sunken);
+  opacity: 0.7;
+}
+
+.upload-zone--disabled:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-sunken);
+}
+
 .upload-prompt {
   color: var(--color-text-secondary);
   font-size: var(--font-size-md);

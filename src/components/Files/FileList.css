@@ -175,6 +175,12 @@
   color: var(--color-text-secondary);
 }
 
+.file-list-syncing-hint {
+  padding: var(--space-6) var(--space-12);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
 @media (max-width: 768px) {
   .bulk-action-bar {
     right: var(--space-8);

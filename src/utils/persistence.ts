@@ -15,6 +15,11 @@ export const STORAGE_KEYS = {
   NSEC: "formstr-drive-nsec",
   DRIVE_KEY_CACHE: "formstr-drive-drive-key-cache",
   DRIVE_PUBKEY_CACHE: "formstr-drive-drive-pubkey-cache",
+  // Per-identity "this device has already minted a Drive Key for this pubkey"
+  // marker — see driveKey.ts's ensureDriveKeyMinted. Guards against ever
+  // minting twice for one identity, independent of and in addition to the
+  // in-memory per-session guard, since a reload must not re-attempt it.
+  DRIVE_KEY_MINTED_MARKER: "formstr-drive-drive-key-minted",
   METADATA_OUTBOX: "formstr-drive-metadata-outbox",
   PROFILE_CACHE: "formstr-drive-profile-cache",
 } as const;
