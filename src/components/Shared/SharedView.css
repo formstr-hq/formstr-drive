@@ -151,6 +151,12 @@
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.shared-file-icon:hover {
+  outline: 2px solid var(--color-accent-border);
+  outline-offset: -2px;
 }
 
 .shared-file-icon[data-type="img"] {

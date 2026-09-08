@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { parseShareHash, resolveSharedLink } from "../../services/sharing";
 import { downloadFileStreaming, type DownloadProgressInfo } from "../../services/downloadFile";
-import type { FileMetadata } from "../../types/metadata";
+import { isLegacyBlobFormat, type FileMetadata } from "../../types/metadata";
 import { formatSize, formatUnixSeconds } from "../../utils/format";
-import { getFileIcon } from "../../utils/fileTypeHelpers";
+import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode } from "../../utils/fileTypeHelpers";
 import { fetchFilePreview, getCachedPreview, type PreviewData } from "../../services/Preview/fetchPreview";
+import { FilePreviewModal } from "../Files/FilePreviewModal";
+import { useToast } from "../../hooks/useToast";
 import "../ui/Loader.css";
 import "./SharedView.css";
 
@@ -16,8 +18,15 @@ import "./SharedView.css";
  * No signer or identity needed: fetchFilePreview only needs the file's own
  * (already-decrypted) `encryptionKey`, matching resolveSharedLink's own
  * "no signer required" guarantee.
+ *
+ * Clickable, like FileCard's own thumbnail — opens the same full
+ * FilePreviewModal a signed-in user gets (image/video/PDF/text, including the
+ * seekable Range-request streaming path for large video/PDF), matching how
+ * Google Drive lets a shared-link recipient view a file inline before
+ * deciding to download it, rather than only ever offering a thumbnail plus a
+ * Download button.
  */
-function SharedFileThumbnail({ file }: { file: FileMetadata }) {
+function SharedFileThumbnail({ file, onOpen }: { file: FileMetadata; onOpen: () => void }) {
   const [preview, setPreview] = useState<PreviewData | null>(
     file.previewHash ? getCachedPreview(file.previewHash) ?? null : null,
   );
@@ -38,17 +47,39 @@ function SharedFileThumbnail({ file }: { file: FileMetadata }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.previewHash]);
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onOpen();
+    }
+  };
+
   const icon = getFileIcon(file.type);
   if (!preview) {
     return (
-      <div className="shared-file-icon" data-type={icon}>
+      <div
+        className="shared-file-icon"
+        data-type={icon}
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={handleKeyDown}
+        title="Preview"
+      >
         {icon.toUpperCase()}
       </div>
     );
   }
 
   return (
-    <div className="shared-file-icon shared-file-thumbnail">
+    <div
+      className="shared-file-icon shared-file-thumbnail"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={handleKeyDown}
+      title="Preview"
+    >
       <img src={preview.staticUrl ?? preview.url} alt="" />
     </div>
   );
@@ -69,10 +100,27 @@ type ResolvedState =
  * uploads/deletes require a signed auth event).
  */
 export function SharedView() {
+  const toast = useToast();
   const [state, setState] = useState<ResolvedState>({ status: "loading" });
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgressInfo | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<FileMetadata | null>(null);
+
+  const handleOpenPreview = (file: FileMetadata) => {
+    // Mirrors FileCard's own gate: video/PDF on the new blob format can
+    // stream via Range requests (FilePreviewModal / swMediaStream.ts), so the
+    // size cap only applies to modes without that seekable path — checked
+    // here, before the modal opens, so it doesn't open just to show a
+    // one-line "too large" notice.
+    const mode = resolvePreviewMode(file.type);
+    const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
+    if (!canStream && file.size > MAX_PREVIEW_SIZE) {
+      toast.error("File is too large to preview (over 5 MB). Please download it.");
+      return;
+    }
+    setPreviewFile(file);
+  };
 
   // App.tsx only tracks whether the hash is *a* share link (a boolean), so
   // this component is never remounted when the hash changes from one share
@@ -164,7 +212,7 @@ export function SharedView() {
   const fileRow = (file: FileMetadata) => {
     return (
       <div className="shared-file-row" key={file.id}>
-        <SharedFileThumbnail file={file} />
+        <SharedFileThumbnail file={file} onOpen={() => handleOpenPreview(file)} />
         <div className="shared-file-info">
           <span className="shared-file-name">{file.name}</span>
           <span className="shared-file-meta">
@@ -255,6 +303,10 @@ export function SharedView() {
           <p className="shared-view-status shared-view-error">{downloadError}</p>
         )}
       </div>
+
+      {previewFile && (
+        <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
+      )}
     </div>
   );
 }
