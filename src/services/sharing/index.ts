@@ -10,15 +10,13 @@ export type {
   SharedByMeEntry,
   ShareResult,
   ShareLinkPayload,
-  SharedFilePayload,
-  SharedFolderPayload,
   SharedFolderResult,
   ResolvedShare,
   RevokeResult,
   RevokedSharePayload,
 } from "./types";
 
-export { parseShareHash } from "./link";
+export { decodeShareLink } from "./link";
 // Folder sharing (ensureFolderShare) is set aside — not exported here. It
 // lives at "services/sharing/folder" if it's ever wired back into the UI.
 export { ensureFileShare } from "./create";

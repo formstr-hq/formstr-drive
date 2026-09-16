@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { parseShareHash, resolveSharedLink } from "../../services/sharing";
+import { decodeShareLink, resolveSharedLink } from "../../services/sharing";
 import { downloadFileStreaming, type DownloadProgressInfo } from "../../services/downloadFile";
 import { isLegacyBlobFormat, type FileMetadata } from "../../types/metadata";
 import { formatSize, formatUnixSeconds } from "../../utils/format";
@@ -140,7 +140,7 @@ export function SharedView() {
     setState({ status: "loading" });
 
     async function run() {
-      const payload = parseShareHash(hash);
+      const payload = decodeShareLink(hash);
       if (!payload) {
         setState({ status: "error", message: "This link is not a valid share link." });
         return;
