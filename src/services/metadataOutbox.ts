@@ -230,16 +230,22 @@ export async function publishAndDequeue(event: Event): Promise<PublishResult> {
 export async function publishQueuedPaced(
   events: Event[],
   opts?: { intervalMs?: number; onProgress?: (done: number, total: number) => void },
-): Promise<{ published: number; failed: number }> {
+): Promise<{ published: number; failed: number; results: (PublishResult | null)[] }> {
   const intervalMs = opts?.intervalMs ?? 1000;
   let published = 0;
   let failed = 0;
+  // Same index as `events`; null where that event's publish threw (no
+  // PublishResult to report — see services/sharing/hints.ts's
+  // relaysFromPublish for the one caller that reads this per-item, to build
+  // per-member relay hints for a folder share's container).
+  const results: (PublishResult | null)[] = [];
 
   for (let i = 0; i < events.length; i++) {
     try {
-      await publishAndDequeue(events[i]);
+      results.push(await publishAndDequeue(events[i]));
       published++;
     } catch (e) {
+      results.push(null);
       failed++;
       console.warn("[MetadataOutbox] Paced publish failed, left queued for background drain", e);
     }
@@ -250,7 +256,7 @@ export async function publishQueuedPaced(
     }
   }
 
-  return { published, failed };
+  return { published, failed, results };
 }
 
 /** Best-effort drain of every queued entry, paced to avoid the rate limiting

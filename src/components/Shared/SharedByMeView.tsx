@@ -64,9 +64,7 @@ export const SharedByMeView: React.FC<SharedByMeViewProps> = ({ onBack }) => {
     setRevoking(entry.infoD);
     try {
       const result = await revokeShare(entry);
-      if (result.membersUnknown) {
-        toast.info(`"${entry.name}" revoked, but some older files couldn't be confirmed removed.`);
-      } else if (result.pending.length > 0) {
+      if (result.pending.length > 0) {
         toast.info(`"${entry.name}" revoked — ${result.pending.length} file(s) still retrying.`);
       } else {
         toast.success(`"${entry.name}" is no longer shared.`);

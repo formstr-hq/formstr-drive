@@ -4,24 +4,20 @@ import type { FileMetadata } from "../../types/metadata";
  *  how the app already avoids putting sensitive data in query strings. */
 export const SHARE_HASH_PREFIX = "#shared=";
 
-export interface SharedFilePayload {
-  v: 1;
-  kind: "file";
-  /** Addressable coordinate of the shared-file event: "34578:<pubkey>:<d>". */
-  a: string;
-  /** Hex secret of the ephemeral encryption key (S-EC per NIP-FS). */
+/**
+ * A share link, decoded. `naddr` is the standard NIP-19 pointer (kind,
+ * pubkey, `d` identifier, optional relay hints) to the `shared-file` or
+ * `container` event; `k` is the hex secret of the ephemeral encryption key
+ * (S-EC per NIP-FS). There is deliberately no `kind: "file"|"folder"` field
+ * here — which subtype a link points at is read off the fetched event's own
+ * `t` tag once resolved, not asserted twice in two places that could
+ * disagree. `naddr` has no TLV for a secret, so it isn't inside the naddr
+ * itself: the link is `#shared=<naddr>&k=<hex>`, two parts joined by `&`.
+ */
+export interface ShareLinkPayload {
+  naddr: string;
   k: string;
 }
-
-export interface SharedFolderPayload {
-  v: 1;
-  kind: "folder";
-  /** Addressable coordinate of the Shared Container event. */
-  a: string;
-  k: string;
-}
-
-export type ShareLinkPayload = SharedFilePayload | SharedFolderPayload;
 
 export interface SharedFolderResult {
   name: string;
@@ -50,31 +46,33 @@ export type ShareSource =
   | { type: "folder"; path: string };
 
 /** An entry in the user's "Shared by me" list, derived from the
- *  `share-info` bookkeeping events encrypted to their own Drive Key. */
+ *  `shared-container`-tagged bookkeeping events encrypted to their own
+ *  Drive Key (NIP-FS's "Shared container Information subtype"). */
 export interface SharedByMeEntry {
   kind: "file" | "folder";
   name: string;
-  /** What this share points at in the drive. Null for a share created
-   *  before this field existed (v1) — such a share can still be listed and
-   *  revoked, just not found by `findActiveShare` or drift-updated. */
-  source: ShareSource | null;
+  source: ShareSource;
   /** Unix SECONDS — this is the raw event created_at, not milliseconds. */
   sharedAtSeconds: number;
-  /** The full share URL (reconstructed from the stored payload). */
+  /** The full share URL, reconstructed from the stored payload — carries
+   *  the same relay hints the original share published with, so "copy link
+   *  again" from this list stays resolvable the same way the first copy
+   *  was. */
   url: string;
-  /** `d` tag of the `share-info` event itself — needed to supersede it. */
+  /** `d` tag of the bookkeeping event itself — needed to supersede it. */
   infoD: string;
   /** Full coordinate of the info event, for the NIP-09 courtesy request. */
   infoCoordinate: string;
   /** Coordinate the link resolves to: the container (folder) or the
    *  shared-file event (file). */
   coordinate: string;
+  /** Relays the primary coordinate's event actually landed on, at last
+   *  publish — the source for `url`'s hints and for revoking it. */
+  relays: string[];
   /** S-EC hex. */
   encryptionKey: string;
-  /** Null means "unknown, this is a v1 record" — the member list has to be
-   *  resolved lazily (see resolveMemberCoordinates) before it can be revoked
-   *  or drift-updated. [] for a file share (the member IS `coordinate`). */
-  members: ShareMember[] | null;
+  /** [] for a file share (the member IS `coordinate`). */
+  members: ShareMember[];
   /** Set once the share has been revoked; the entry stays in the list. */
   revokedAt?: number;
 }
@@ -87,9 +85,6 @@ export interface ShareResult {
   /** Set if some part of a folder update (new members, or the update itself)
    *  couldn't be confirmed and is queued for retry. */
   pending?: number;
-  /** Set on a v1 folder share whose member list can't be diffed — new files
-   *  added to the folder since won't be added to this link automatically. */
-  membersUnknown?: boolean;
 }
 
 export interface RevokedSharePayload {
@@ -120,7 +115,4 @@ export interface RevokeResult {
   /** True once the coordinate the link itself resolves to is dead — the
    *  practical thing a user cares about. */
   primaryRevoked: boolean;
-  /** True if this was a v1 folder share whose member list couldn't be
-   *  resolved, so some individual file copies may still be live. */
-  membersUnknown: boolean;
 }

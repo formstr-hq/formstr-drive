@@ -5,4 +5,4 @@
 // scratch — see create.ts for the fuller explanation.
 export { ensureFolderShare } from "./create";
 export { resolveFolderShare } from "./resolve";
-export { resolveFolderMemberCoordinates, revokeFolderMembers } from "./revoke";
+export { revokeFolderMembers } from "./revoke";
