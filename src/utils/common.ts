@@ -1,4 +1,5 @@
 export const defaultRelays = [
+  "wss://relay.formstr.app",
   "wss://relay.damus.io/",
   "wss://relay.primal.net/",
   "wss://nos.lol",
@@ -11,6 +12,7 @@ export const defaultRelays = [
 
 // Core relays used for file metadata publishing and Blossom server discovery
 export const APP_RELAYS = [
+  "wss://relay.formstr.app",
   "wss://relay.damus.io",
   "wss://relay.nostr.band",
   "wss://nos.lol",
