@@ -1,18 +1,26 @@
 import { BlossomClient } from "../blossom";
 import { createAuthEvent } from "../auth";
-import { chunkHashes, type FileMetadata } from "../types/metadata";
+import { chunkHashes, isLegacyBlobFormat, type FileMetadata } from "../types/metadata";
 
 /**
- * Deletes every Blossom blob backing a file — one per chunk, plus the preview.
+ * Deletes every Blossom blob backing a file, plus the preview.
  *
- * Best-effort by design: each blob is deleted independently so one failed chunk
- * can't block the rest, and a blob left orphaned on a server is a better outcome
- * than a partially-deleted file stuck in the index forever. Callers should
- * proceed to the metadata tombstone regardless of what happens here.
+ * NIP-FS single-blob files have exactly one blob (`blobHash`) to delete;
+ * legacy chunk-per-blob files have one per chunk (`chunkHashes(file.chunks)`)
+ * — get this branch wrong for a new-format file and nothing but the preview
+ * gets deleted, permanently orphaning the real blob on the server.
+ *
+ * Best-effort by design: each blob is deleted independently so one failure
+ * can't block the rest, and a blob left orphaned on a server is a better
+ * outcome than a partially-deleted file stuck in the index forever. Callers
+ * should proceed to the metadata tombstone regardless of what happens here.
  */
 export async function deleteRemoteBlobs(file: FileMetadata): Promise<void> {
-  // One Blossom blob per chunk.
-  const blobHashes = chunkHashes(file.chunks);
+  const blobHashes = isLegacyBlobFormat(file)
+    ? chunkHashes(file.chunks)
+    : file.blobHash
+      ? [file.blobHash]
+      : [];
 
   // One auth event covering every blob (chunks + preview), so the user
   // signs only once per file.

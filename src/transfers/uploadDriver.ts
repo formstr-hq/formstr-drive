@@ -1,9 +1,9 @@
 import { generateSecretKey } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
-import { uploadFile as chunkedUploadFile } from "../services/uploadFile";
+import { uploadFile as chunkedUploadFile, computePlaintextHash } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
-import { saveFileMetadata } from "../services/fileIndex";
+import { saveFileMetadata, findDuplicateByHash } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
 import {
@@ -20,10 +20,6 @@ export async function uploadDriver(
   signal: AbortSignal,
   onProgress: (info: any) => void
 ): Promise<FileMetadata> {
-  // The primary/display server — what shows up as `metadata.server`. The rest
-  // of `servers` are fallback candidates only used if a chunk's PUT fails on
-  // this one after retries (see uploadFile.ts's uploadChunkWithRetry).
-  const server = servers[0];
   const uploadNotifId = crypto.randomUUID();
   let lastNotifPercent = -1;
 
@@ -33,6 +29,41 @@ export async function uploadDriver(
 
   try {
     onProgress({ stage: "Reading file...", progress: 0 });
+
+    // NIP-FS client-level dedup: the encrypted blobHash is unique per upload
+    // (fresh ephemeral key + nonces every time), so it can never catch a
+    // re-upload of identical content — only the plaintext hash can. Checked
+    // before kicking off preview generation so a duplicate never pays for
+    // work whose result gets thrown away.
+    onProgress({ stage: "Checking for duplicates...", progress: 0 });
+    const plaintextHash = await computePlaintextHash(file, signal);
+    const duplicate = findDuplicateByHash(plaintextHash);
+
+    if (duplicate) {
+      onProgress({ stage: "Saving metadata...", progress: 90 });
+      // Reuses every storage field verbatim (blobHash/chunkSize or legacy
+      // chunks, server(s), encryptionKey, previewHash) — it's the exact same
+      // underlying blob, so nothing needs re-uploading, only a fresh
+      // metadata event under this upload's own id/name/folder.
+      const metadata: FileMetadata = {
+        ...duplicate,
+        id: generateFileId(),
+        name: file.name,
+        folder: targetFolder,
+        uploadedAt: Date.now(),
+      };
+
+      const publishResult = await saveFileMetadata(metadata);
+      if (publishResult.accepted < publishResult.total) {
+        console.warn(`[Upload] Metadata saved to ${publishResult.accepted}/${publishResult.total} relays`);
+      }
+
+      onProgress({ stage: "Upload complete", progress: 100 });
+      if (isAndroidPlatform) {
+        void finishUploadNotification(uploadNotifId, file.name, true);
+      }
+      return metadata;
+    }
 
     const previewPromise = previewFile(file).catch((e: any) => {
       console.warn("Background preview generation failed", e);
@@ -48,7 +79,7 @@ export async function uploadDriver(
     onProgress({ stage: "Encrypting...", progress: 0 });
     const privateKeyHex = bytesToHex(generateSecretKey());
 
-    const { hashes, previewHash, chunkServers, unencryptedFileHash } = await chunkedUploadFile(
+    const { blobHash, chunkSize, previewHash, usedServer, unencryptedFileHash } = await chunkedUploadFile(
       file,
       servers,
       privateKeyHex,
@@ -67,6 +98,9 @@ export async function uploadDriver(
     );
 
     onProgress({ stage: "Saving metadata...", progress: 98 });
+    // The server the blob actually landed on — the primary (servers[0])
+    // unless it failed and a fallback candidate succeeded instead.
+    const landedServer = usedServer ?? servers[0];
     const metadata: FileMetadata = {
       name: file.name,
       id: generateFileId(),
@@ -75,14 +109,11 @@ export async function uploadDriver(
       type: file.type || "application/octet-stream",
       folder: targetFolder,
       uploadedAt: Date.now(),
-      server,
+      server: landedServer,
+      servers: [landedServer],
       ...(previewHash ? { previewHash } : {}),
-      // A fallback server is recorded per chunk only when that chunk actually
-      // landed somewhere other than the primary — the common case keeps the
-      // original `{ hash }`-only shape.
-      chunks: hashes.map((h: string, i: number) =>
-        chunkServers?.[i] ? { hash: h, server: chunkServers[i] } : { hash: h },
-      ),
+      blobHash,
+      chunkSize,
       encryptionKey: privateKeyHex,
       encryptionAlgorithm: "aes-gcm",
     };

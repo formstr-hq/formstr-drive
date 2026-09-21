@@ -44,8 +44,9 @@ interface UploadJob {
   file: File;
   server: string;
   // Fallback candidates, primary first — always includes at least `server`.
-  // See uploadFile.ts's uploadChunkWithRetry for how a chunk falls through
-  // the list if the primary server's PUT fails after same-server retries.
+  // See uploadFile.ts's uploadBlobWithFallback for how the blob falls
+  // through the list if the primary server's PUT fails after same-server
+  // retries.
   candidateServers: string[];
   targetFolder: string;
   callbacks?: UploadCallbacks;
