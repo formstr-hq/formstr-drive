@@ -47,6 +47,7 @@ signerManager.onChange((pubkey) => {
     cachedKeyring = null;
     cachedPubkey = null;
     cachedStatus = null;
+    cachedStatusAt = null;
     activeSecretKeyHex = null;
     void removeStoredItem(STORAGE_KEYS.DRIVE_KEY_CACHE);
     void removeStoredItem(STORAGE_KEYS.DRIVE_PUBKEY_CACHE);
@@ -401,6 +402,19 @@ export type DriveKeyStatus =
 // of this module already reads directly (self-heal, refreshDriveKeyring). Kept
 // in sync with cachedKeyring/cachedPubkey at every write site below.
 let cachedStatus: DriveKeyStatus | null = null;
+// When cachedStatus was last set — what makes "empty-confirmed" a bounded-
+// freshness cache entry rather than a permanent one. See the TTL check in
+// resolveDriveKeyStatusCached below for why.
+let cachedStatusAt: number | null = null;
+// "empty-confirmed" is a proof about a moment ("every configured relay
+// answered just now and none carried a key"), not about the identity — the
+// same KIND of statement "unresolved" already isn't allowed to be cached
+// unboundedly for. A relay that's briefly unreachable and later recovers can
+// make this verdict stale, and acting on a stale one is the actual mint
+// hazard: ensureDriveKeyMinted would publish a new key over one that exists
+// but wasn't reachable at the moment this was resolved, destroying it on
+// every relay that accepts the publish.
+const EMPTY_CONFIRMED_TTL_MS = 30_000;
 
 // In-flight keyring resolution, so concurrent callers on a cold in-memory
 // cache share one resolution instead of each running its own full decrypt.
@@ -416,18 +430,25 @@ let inFlightResolve: { pubkey: string | undefined; promise: Promise<DriveKeyStat
 
 async function resolveDriveKeyStatusCached(): Promise<DriveKeyStatus> {
   // Fast path: in-memory cache, but only for the SAME user still signed in,
-  // and only for a STABLE conclusion. "ready" and "empty-confirmed" are both
-  // proven and don't need re-checking. "unresolved" must NOT be cached here —
-  // it's a statement about right-now connectivity, not about the identity
+  // and only for a STABLE conclusion. "ready" doesn't need re-checking — a
+  // keyring that resolved once stays valid (keys are only ever added, never
+  // silently removed, by anything this module does). "empty-confirmed" is
+  // proven at the moment it's resolved, but only usable for EMPTY_CONFIRMED_TTL_MS
+  // after that — see the constant's own comment for why an unbounded cache
+  // of it is the mint hazard. "unresolved" must NOT be cached at all — it's
+  // a statement about right-now connectivity, not about the identity
   // (identityHistory.ts's own "never cache unknown" rule, which this mirrors)
   // — caching it would mean a relay that was unreachable at the first call
   // stays "unresolved" forever for the rest of the page's life, even after it
   // recovers, since nothing would ever re-run the actual check again.
   if (
     cachedStatus &&
-    cachedStatus.kind !== "unresolved" &&
     cachedPubkey &&
-    cachedPubkey === signerManager.getPubkey()
+    cachedPubkey === signerManager.getPubkey() &&
+    (cachedStatus.kind === "ready" ||
+      (cachedStatus.kind === "empty-confirmed" &&
+        cachedStatusAt !== null &&
+        Date.now() - cachedStatusAt < EMPTY_CONFIRMED_TTL_MS))
   ) {
     return cachedStatus;
   }
@@ -786,6 +807,7 @@ async function resolveDriveKeyStatus(): Promise<DriveKeyStatus> {
       ? { kind: "ready", keyring }
       : emptyVerdict ?? { kind: "unresolved", reason: "Still checking for your Drive Key…" };
   cachedStatus = status;
+  cachedStatusAt = Date.now();
   return status;
 }
 
@@ -859,6 +881,7 @@ export async function refreshDriveKeyring(): Promise<void> {
           `[DriveKey] Background refresh found additional key(s) — keyring now ${cachedKeyring.length}`,
         );
         cachedStatus = { kind: "ready", keyring: cachedKeyring };
+        cachedStatusAt = Date.now();
         void saveCachedDrivePubkeys(pubkey, cachedKeyring.map((k) => k.publicKey));
         notifyDriveKeysChanged();
       }
@@ -1109,13 +1132,19 @@ export async function ensureDriveKeyMinted(): Promise<void> {
   try {
     if (await hasMintedBefore(pubkey)) return;
 
-    const status = await getDriveKeyStatus();
+    // Deliberately bypasses resolveDriveKeyStatusCached — minting is
+    // irreversible (a second key replaces the first, since the event is
+    // replaceable), so the gate must never act on a cached verdict of ANY
+    // age, TTL or not. A cache entry that was correct when written can be
+    // stale by the time this runs; only a resolve that starts right here,
+    // right before the decision, is trustworthy for it.
+    const status = await resolveDriveKeyStatus();
     if (status.kind !== "empty-confirmed") return;
 
     // Re-check right before minting: a concurrent resolution (another read, a
     // background sync, restoreDriveKey from a warning banner) may have found
-    // or created a key in the interim, since getDriveKeyStatus() above may
-    // itself have taken several seconds.
+    // or created a key in the interim, since resolveDriveKeyStatus() above
+    // may itself have taken several seconds.
     if (cachedKeyring && cachedKeyring.length > 0 && cachedPubkey === pubkey) return;
 
     const signer = await signerManager.getSigner();
@@ -1128,6 +1157,7 @@ export async function ensureDriveKeyMinted(): Promise<void> {
     cachedKeyring = [entry];
     cachedPubkey = pubkey;
     cachedStatus = { kind: "ready", keyring: cachedKeyring };
+    cachedStatusAt = Date.now();
     activeSecretKeyHex = entry.secretKeyHex;
 
     void savePayloadCache(pubkey, [
