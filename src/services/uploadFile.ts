@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "nostr-tools/utils";
-import { BlossomClient } from "../blossom";
+import { BlossomClient, BlossomError } from "../blossom";
 import { encryptSegment, deriveConversationKeyFromHex, encryptFileWithExistingKey, segmentCount } from "../crypto";
 import { createAuthEvent } from "../auth";
 import { describeAllServersFailed, isPermanentFailure } from "./uploadErrors";
@@ -15,6 +15,29 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
  * uploads, never hardcoded on the read side.
  */
 export const SEGMENT_SIZE = 65536;
+
+/** Read granularity for {@link computePlaintextHash} — independent of
+ *  SEGMENT_SIZE since this pass never encrypts, so there's no reason to tie
+ *  it to the segment framing; a larger read reduces the number of
+ *  `file.slice().arrayBuffer()` round trips for a plaintext-only pass. */
+const HASH_READ_SIZE = 4 * 1024 * 1024;
+
+/**
+ * Streaming plaintext-only hash — no encryption, no network I/O. Used ahead
+ * of the real upload to compute the NIP-FS `unencryptedFileHash` early
+ * enough to check for a client-level duplicate (see
+ * fileIndex.ts's findDuplicateByHash) before paying for a full encrypt+
+ * upload of content the drive already has.
+ */
+export async function computePlaintextHash(file: File, signal?: AbortSignal): Promise<string> {
+  const hasher = sha256.create();
+  for (let start = 0; start < file.size; start += HASH_READ_SIZE) {
+    throwIfAborted(signal);
+    const end = Math.min(start + HASH_READ_SIZE, file.size);
+    hasher.update(new Uint8Array(await file.slice(start, end).arrayBuffer()));
+  }
+  return bytesToHex(hasher.digest());
+}
 
 export interface UploadResult {
   /** sha256 hex of the single concatenated ciphertext blob (NIP-FS `blobHash`). */
@@ -197,6 +220,30 @@ async function uploadBlobWithFallback(
     if (deadServers.has(server)) continue;
 
     const client = new BlossomClient(server);
+
+    // BUD-06 preflight: ask before sending. The single-blob format can mean
+    // one PUT of several hundred MB — discovering a size cap by streaming
+    // the whole thing into a gateway that silently drops it (502, no CORS
+    // headers on the error) burns minutes and reports a misleading network
+    // error. A server that doesn't implement BUD-06 returns { ok: true } here
+    // (see canAccept's doc comment) so this never blocks a compliant upload.
+    // canAccept only returns ok:false for a definitive, retry-proof refusal
+    // (413/415/403) — a transient probe failure (429, 5xx, timeout) reads as
+    // ok:true and falls through to the real upload attempt instead of
+    // landing here. deadServers is shared with the preview-upload path, so
+    // this add must stay reserved for "this server permanently rejects this
+    // blob", not "the probe couldn't answer right now" — a spurious add
+    // would also cost the thumbnail its upload target.
+    const precheck = await client.canAccept(blob.size, sha256Hash, blob.type, authHeader);
+    if (!precheck.ok) {
+      failures.push({
+        server,
+        error: new BlossomError(precheck.reason || "Server rejected this upload", { status: precheck.status }),
+      });
+      deadServers.add(server);
+      continue;
+    }
+
     let retries = 3;
 
     while (retries > 0) {
