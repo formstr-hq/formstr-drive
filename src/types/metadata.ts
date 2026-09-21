@@ -16,8 +16,8 @@ export interface FileMetadata {
    * stable handle used for updates (rename/move/delete republish under the same
    * `id`) and everywhere the UI needs to identify a file. Per NIP-FS it is a
    * random id, deliberately decoupled from any Blossom blob hash so the public
-   * `d` tag leaks nothing about the stored data. The actual blob addresses live
-   * in `chunks`.
+   * `d` tag leaks nothing about the stored data. The actual blob address lives
+   * in `blobHash` (new format) or `chunks` (legacy format) — see those fields.
    */
   id: string;
   /** SHA-256 hex of the original (plaintext) file, for optional integrity
@@ -27,11 +27,47 @@ export interface FileMetadata {
   type: string;
   folder: string;
   uploadedAt: number;
+  /** Primary/display server — the one shown in the UI and tried first for
+   *  upload/download. For new-format files this is always `servers[0]`; kept
+   *  as its own field (rather than derived on every read) so every existing
+   *  call site that reads `.server` keeps working unchanged across both blob
+   *  formats. */
   server: string;
   encryptionKey: string; // Hex-encoded private key used to encrypt this file
   encryptionAlgorithm: string;
   deleted?: boolean;
   previewHash?: string;
+  /**
+   * NIP-FS server list (new format only): the servers a fallback upload
+   * tried, in the order tried, with `servers[0] === server` always the one
+   * the blob actually landed on first. This is fallback HISTORY, not a
+   * mirror-to-all-of-them instruction — the blob lives on exactly one of
+   * these, not all of them. Absent on legacy (`chunks`-based) files, which
+   * predate this field and use the single `server` instead.
+   */
+  servers?: string[];
+  /**
+   * sha256 hex of the single stored blob (NIP-FS "File Encryption": every
+   * segment, in order, concatenated into one blob). Present together with
+   * `chunkSize` on every file uploaded by the current client. A file has
+   * EITHER this ({@link blobHash} + {@link chunkSize}) OR the legacy
+   * {@link chunks} — never both, never neither. See {@link isLegacyBlobFormat}.
+   */
+  blobHash?: string;
+  /** Plaintext bytes per segment before encryption (NIP-FS: 65536 recommended
+   *  default). Every segment is exactly this size except the last, which may
+   *  be shorter (including empty). Read from here, never hardcoded, since a
+   *  file can in principle have been uploaded with a different chunk size —
+   *  see {@link segmentCount} in crypto.ts, which needs this plus `size` to
+   *  compute the total segment count and which one is last. */
+  chunkSize?: number;
+  /**
+   * Legacy chunk-per-blob layout: one Blossom blob per chunk, addressed
+   * individually. Superseded by {@link blobHash} (one concatenated blob) but
+   * kept for dual-read — files uploaded before this rewrite still carry this
+   * shape and must keep downloading correctly via resolveChunks/chunkHashes.
+   * Never produced by new uploads.
+   */
   chunks?: ChunkRef[];
 }
 
@@ -53,6 +89,25 @@ export interface FileMetadata {
  */
 export function isLegacyFile(file: FileMetadata): boolean {
   return !file.id;
+}
+
+/**
+ * True if this file was uploaded before the NIP-FS single-blob rewrite: its
+ * metadata carries the old {@link ChunkRef}-per-blob layout (`chunks`)
+ * instead of `blobHash`/`chunkSize` (segments concatenated into one blob).
+ *
+ * This is a DIFFERENT axis from {@link isLegacyFile} (no `id`) — the two
+ * "legacy" concepts cover different, non-overlapping file sets:
+ *   - {@link isLegacyFile}: no `id`. Dropped entirely at the index boundary
+ *     (services/fileIndex.ts) and never reaches the UI.
+ *   - {@link isLegacyBlobFormat}: has a valid `id`, just an older blob
+ *     layout. These files DO reach the UI and MUST keep downloading
+ *     correctly — see resolveChunks/chunkHashes for the dual-read path.
+ * A file can be blob-format-legacy while having a perfectly good `id`; do
+ * not conflate the two or a downloadable file gets treated as unrecoverable.
+ */
+export function isLegacyBlobFormat(file: FileMetadata): boolean {
+  return file.blobHash === undefined;
 }
 
 /** A random 6-8 char id for a file's `d` tag (NIP-FS). Hex-encoded 4 bytes. */
