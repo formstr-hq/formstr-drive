@@ -1,7 +1,8 @@
 import { generateSecretKey, type Event } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
-import { prepareUpload } from "../services/uploadFile";
+import { prepareUpload, SEGMENT_SIZE } from "../services/uploadFile";
+import { segmentCount } from "../crypto";
 import { previewFile } from "../services/Preview/previewManager";
 import { buildSignedMetadataEvent, recordPublishedMetadata } from "../services/fileIndex";
 import {
@@ -124,6 +125,12 @@ export async function nativeUploadDriver(
 
     const privateKeyHex = bytesToHex(generateSecretKey());
 
+    // Every segment index below `totalSegments` belongs to the file blob
+    // (destination index 0, appended in order); the preview, staged
+    // separately by prepareUpload at index `totalSegments`, gets its own
+    // destination (index 1) and is never appended onto the file.
+    const totalSegments = segmentCount(file.size, SEGMENT_SIZE);
+
     onProgress({ stage: "Encrypting...", progress: 0 });
     const prepared = await prepareUpload(
       file,
@@ -137,21 +144,22 @@ export async function nativeUploadDriver(
         });
       },
       previewPromise,
-      (index, bytes) => stageNativeUploadChunk(uploadId, index, bytes, prepareAbort.signal),
+      (index, bytes) =>
+        index < totalSegments
+          ? stageNativeUploadChunk(uploadId, 0, bytes, prepareAbort.signal, index > 0)
+          : stageNativeUploadChunk(uploadId, 1, bytes, prepareAbort.signal),
+      SEGMENT_SIZE,
     );
 
     throwIfAborted(prepareAbort.signal);
 
-    const chunkRefs = prepared.chunkRefs ?? [];
-    if (chunkRefs.length !== prepared.chunkHashes.length) {
-      throw new Error("Upload staging did not produce a blob for every chunk");
+    if (!prepared.blobRef) {
+      throw new Error("Upload staging did not produce a blob for the file");
     }
 
-    const blobs: NativeUploadBlob[] = prepared.chunkHashes.map((hash, index) => ({
-      path: chunkRefs[index],
-      hash,
-      contentType: "application/octet-stream",
-    }));
+    const blobs: NativeUploadBlob[] = [
+      { path: prepared.blobRef, hash: prepared.blobHash, contentType: "application/octet-stream" },
+    ];
     if (prepared.previewRef && prepared.previewHash) {
       blobs.push({
         path: prepared.previewRef,
@@ -179,7 +187,7 @@ export async function nativeUploadDriver(
       BACKGROUND_UPLOAD_AUTH_EXPIRATION_SECONDS,
     );
 
-    const baseMetadata: Omit<FileMetadata, "server"> = {
+    const baseMetadata: Omit<FileMetadata, "server" | "servers"> = {
       name: file.name,
       id: generateFileId(),
       unencryptedFileHash: prepared.unencryptedFileHash,
@@ -188,10 +196,11 @@ export async function nativeUploadDriver(
       folder: targetFolder,
       uploadedAt: Date.now(),
       ...(prepared.previewHash ? { previewHash: prepared.previewHash } : {}),
-      // Never a per-chunk `server` override: the worker puts every blob on one
-      // server, falling back all-or-nothing, so the file's single `server`
-      // field always describes every chunk.
-      chunks: prepared.chunkHashes.map((hash) => ({ hash })),
+      // The whole file is one blob now — no per-chunk server override is
+      // possible or needed. The worker puts it on one server, falling back
+      // all-or-nothing, so `server`/`servers` always describe that one blob.
+      blobHash: prepared.blobHash,
+      chunkSize: prepared.chunkSize,
       encryptionKey: privateKeyHex,
       encryptionAlgorithm: "aes-gcm",
     };
@@ -202,7 +211,7 @@ export async function nativeUploadDriver(
     metadataByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
     const metadataEvents: NativeUploadMetadataEvent[] = [];
     for (const server of servers) {
-      const metadata: FileMetadata = { ...baseMetadata, server };
+      const metadata: FileMetadata = { ...baseMetadata, server, servers: [server] };
       const event = await buildSignedMetadataEvent(metadata);
       metadataByServer.set(server, { metadata, event });
       metadataEvents.push({ server, eventJson: JSON.stringify(event) });
@@ -215,14 +224,14 @@ export async function nativeUploadDriver(
     //
     // This is queued before a single byte has actually reached the network —
     // an app kill seconds into staging leaves the exact same queued entry as
-    // one written after every blob genuinely landed. verifyBlob is what tells
-    // those apart at drain time: the first chunk's hash must actually exist
-    // on the primary server before this entry is ever auto-published, or a
+    // one written after the blob genuinely landed. verifyBlob is what tells
+    // those apart at drain time: the file's blob must actually exist on the
+    // primary server before this entry is ever auto-published, or a
     // cancelled/incomplete upload would silently surface as a finished file.
     queuedEvent = metadataByServer.get(servers[0])!.event;
     await replaceQueuedMetadataEvent(queuedEvent, file.name, {
       server: servers[0],
-      hash: prepared.chunkHashes[0],
+      hash: prepared.blobHash,
     });
 
     throwIfAborted(prepareAbort.signal);

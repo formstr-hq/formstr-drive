@@ -23,8 +23,18 @@ export class BlossomClient {
     this.baseUrl = baseUrl;
   }
 
+  /**
+   * `blob` is the exact bytes going over the wire and `sha256Hash` MUST be
+   * its precomputed hash. This deliberately does not hash `blob` itself: the
+   * NIP-FS single-blob format is built by concatenating many encrypted
+   * segments (see uploadFile.ts), and by the time there's a `Blob` to upload
+   * its hash was already computed incrementally, segment-by-segment, during
+   * that assembly — re-hashing the whole (potentially multi-GB) blob here
+   * would mean reading it fully into memory a second time for nothing.
+   */
   async upload(
-    blob: Uint8Array,
+    blob: Blob,
+    sha256Hash: string,
     authHeader: string,
     onProgress?: (percent: number) => void,
     signal?: AbortSignal,
@@ -45,23 +55,12 @@ export class BlossomClient {
       throw new DOMException("Upload aborted", "AbortError");
     }
 
-    const hashBuffer = await crypto.subtle.digest(
-      "SHA-256",
-      blob.buffer.slice(
-        blob.byteOffset,
-        blob.byteOffset + blob.byteLength,
-      ) as ArrayBuffer,
-    );
-    const hexHash = Array.from(new Uint8Array(hashBuffer))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", `${this.baseUrl}/upload`);
       xhr.setRequestHeader("Authorization", authHeader);
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
-      xhr.setRequestHeader("X-SHA-256", hexHash);
+      xhr.setRequestHeader("X-SHA-256", sha256Hash);
 
       let idleTimer = setTimeout(() => {
         xhr.abort();
@@ -151,7 +150,7 @@ export class BlossomClient {
       }
 
       onStage?.("connecting");
-      xhr.send(new Blob([blob as any], { type: "application/octet-stream" }));
+      xhr.send(blob);
     });
   }
 
@@ -217,6 +216,53 @@ export class BlossomClient {
     }
 
     return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /**
+   * Like {@link download}, but hands back the raw response body reader
+   * instead of buffering the whole blob into memory first. The NIP-FS
+   * single-blob download path (segmented decrypt in downloadFile.ts /
+   * swStreamDownload.ts) re-chunks this byte stream into segment-sized
+   * frames as it goes, so a multi-gigabyte blob is never held whole in
+   * memory the way {@link download} necessarily does.
+   */
+  async downloadStream(
+    sha256: string,
+    authHeader?: string,
+    signal?: AbortSignal,
+  ): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; totalBytes: number }> {
+    let res: Response;
+    try {
+      res = await withTimeout(
+        fetch(`${this.baseUrl}/${sha256}`, {
+          headers: authHeader ? { Authorization: authHeader } : {},
+          signal,
+        }),
+        60000,
+        "fetch-timeout",
+        `Blossom download timed out after 60s for ${sha256}`
+      );
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        throw e;
+      }
+      if (e instanceof TypeError) {
+        throw new BlossomError(
+          `Network error reaching ${this.baseUrl} — the connection was blocked or dropped. This can be a CORS misconfiguration, a network hiccup, or a temporary outage.`,
+          { isCorsError: true },
+        );
+      }
+      throw e;
+    }
+
+    if (!res.ok) {
+      throw new BlossomError(res.headers.get("X-Reason") || res.statusText, { status: res.status });
+    }
+    if (!res.body) {
+      throw new BlossomError(`${this.baseUrl} returned no response body for ${sha256}`);
+    }
+
+    return { reader: res.body.getReader(), totalBytes: Number(res.headers.get("content-length")) || 0 };
   }
 
   /**

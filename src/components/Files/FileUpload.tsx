@@ -23,8 +23,10 @@ export const FileUpload: React.FC = () => {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const { ciphertext } = await encryptFileWithKey(bytes);
       const encryptedBytes = new TextEncoder().encode(ciphertext);
-      const auth = await createAuthEvent("upload", `Upload ${file.name}`, encryptedBytes);
-      const sha = await client.upload(encryptedBytes, auth);
+      const hashBuffer = await crypto.subtle.digest("SHA-256", encryptedBytes as unknown as BufferSource);
+      const hexHash = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const auth = await createAuthEvent("upload", `Upload ${file.name}`, [hexHash]);
+      const sha = await client.upload(new Blob([encryptedBytes as BlobPart]), hexHash, auth);
       setSha256(sha);
     } catch (e) {
       if (e instanceof BlossomError) {

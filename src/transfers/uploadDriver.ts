@@ -20,10 +20,6 @@ export async function uploadDriver(
   signal: AbortSignal,
   onProgress: (info: any) => void
 ): Promise<FileMetadata> {
-  // The primary/display server — what shows up as `metadata.server`. The rest
-  // of `servers` are fallback candidates only used if a chunk's PUT fails on
-  // this one after retries (see uploadFile.ts's uploadChunkWithRetry).
-  const server = servers[0];
   const uploadNotifId = crypto.randomUUID();
   let lastNotifPercent = -1;
 
@@ -48,7 +44,7 @@ export async function uploadDriver(
     onProgress({ stage: "Encrypting...", progress: 0 });
     const privateKeyHex = bytesToHex(generateSecretKey());
 
-    const { hashes, previewHash, chunkServers, unencryptedFileHash } = await chunkedUploadFile(
+    const { blobHash, chunkSize, previewHash, usedServer, unencryptedFileHash } = await chunkedUploadFile(
       file,
       servers,
       privateKeyHex,
@@ -67,6 +63,9 @@ export async function uploadDriver(
     );
 
     onProgress({ stage: "Saving metadata...", progress: 98 });
+    // The server the blob actually landed on — the primary (servers[0])
+    // unless it failed and a fallback candidate succeeded instead.
+    const landedServer = usedServer ?? servers[0];
     const metadata: FileMetadata = {
       name: file.name,
       id: generateFileId(),
@@ -75,14 +74,11 @@ export async function uploadDriver(
       type: file.type || "application/octet-stream",
       folder: targetFolder,
       uploadedAt: Date.now(),
-      server,
+      server: landedServer,
+      servers: [landedServer],
       ...(previewHash ? { previewHash } : {}),
-      // A fallback server is recorded per chunk only when that chunk actually
-      // landed somewhere other than the primary — the common case keeps the
-      // original `{ hash }`-only shape.
-      chunks: hashes.map((h: string, i: number) =>
-        chunkServers?.[i] ? { hash: h, server: chunkServers[i] } : { hash: h },
-      ),
+      blobHash,
+      chunkSize,
       encryptionKey: privateKeyHex,
       encryptionAlgorithm: "aes-gcm",
     };

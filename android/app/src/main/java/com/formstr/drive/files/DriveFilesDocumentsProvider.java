@@ -455,6 +455,9 @@ public class DriveFilesDocumentsProvider extends DocumentsProvider {
             try (FileOutputStream outputStream = new FileOutputStream(tempFile, false)) {
                 DriveFileDownloader.downloadAndDecryptToStream(
                         file.server,
+                        file.blobHash,
+                        file.chunkSize,
+                        file.size,
                         file.chunks,
                         file.encryptionKey,
                         file.unencryptedFileHash,

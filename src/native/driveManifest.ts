@@ -84,6 +84,11 @@ type DriveFilesPlugin = {
   saveToDownloads(options: { base64: string; fileName: string; mimeType: string }): Promise<{ uri: string }>;
   downloadToDownloads(options: {
     server: string;
+    /** NIP-FS single-blob file: present together, absent on legacy files
+     *  (which carry `chunks` instead — see types/metadata.ts's
+     *  isLegacyBlobFormat). */
+    blobHash?: string;
+    chunkSize?: number;
     chunks?: ChunkRef[];
     correlationId: string;
     encryptionKey: string;
@@ -154,6 +159,11 @@ export interface NativeDriveFileEntry {
   encryptionKey: string;
   previewHash?: string;
   unencryptedFileHash?: string;
+  /** NIP-FS single-blob file: present together, absent on legacy files
+   *  (which carry `chunks` instead — see types/metadata.ts's
+   *  isLegacyBlobFormat). */
+  blobHash?: string;
+  chunkSize?: number;
   chunks?: ChunkRef[];
 }
 
@@ -315,6 +325,9 @@ export function buildNativeDriveManifest(
       encryptionKey: file.encryptionKey,
       ...(file.previewHash ? { previewHash: file.previewHash } : {}),
       ...(file.unencryptedFileHash ? { unencryptedFileHash: file.unencryptedFileHash } : {}),
+      ...(file.blobHash && file.chunkSize
+        ? { blobHash: file.blobHash, chunkSize: file.chunkSize }
+        : {}),
       ...(file.chunks ? { chunks: resolveChunks(file.chunks, file.server) } : {}),
     };
   });
@@ -474,6 +487,9 @@ async function ensureNativeListeners() {
 export async function downloadFileToDownloads(
   file: {
     server: string;
+    /** NIP-FS single-blob file: present together, absent on legacy files. */
+    blobHash?: string;
+    chunkSize?: number;
     chunks?: ChunkRef[];
     encryptionKey: string;
     unencryptedFileHash?: string;
@@ -504,10 +520,14 @@ export async function downloadFileToDownloads(
     // real download while the native foreground service kept running headless.
     return await plugin.downloadToDownloads({
       server: file.server,
-      // Resolved per-chunk servers, so a chunk that fell back during upload is
-      // fetched from where it actually lives (mirrors resolveChunks usage in
-      // services/downloadFile.ts).
-      chunks: resolveChunks(file.chunks, file.server),
+      ...(file.blobHash && file.chunkSize
+        ? { blobHash: file.blobHash, chunkSize: file.chunkSize }
+        : {
+            // Resolved per-chunk servers, so a chunk that fell back during
+            // upload is fetched from where it actually lives (mirrors
+            // resolveChunks usage in services/downloadFile.ts).
+            chunks: resolveChunks(file.chunks, file.server),
+          }),
       correlationId,
       encryptionKey: file.encryptionKey,
       ...(file.unencryptedFileHash ? { unencryptedFileHash: file.unencryptedFileHash } : {}),
@@ -575,16 +595,24 @@ export async function startNativeUploadService(uploadId: string, fileName: strin
 const STAGE_SLICE_BYTES = 3 * 1024 * 1024;
 
 /**
- * Writes one pre-encrypted upload blob (a chunk or the preview) to
- * app-private storage so the native upload worker can PUT it without any
- * JS/crypto involvement. Called during the foreground prepare phase, one
- * chunk at a time, and streamed in slices so peak memory stays bounded.
+ * Writes one pre-encrypted upload segment to app-private storage so the
+ * native upload worker can PUT it without any JS/crypto involvement. Called
+ * during the foreground prepare phase, one segment at a time, and streamed
+ * in slices so peak memory stays bounded.
+ *
+ * NIP-FS concatenates every segment into a single blob, so a whole file's
+ * worth of segments share one `index` (its destination) — the caller passes
+ * `appendToPrevious: true` for every segment after the first at that index,
+ * so each one's slices land after the previous segment's rather than
+ * truncating it. The preview, which is its own separate blob, uses a
+ * different `index` and the default `appendToPrevious: false`.
  */
 export async function stageNativeUploadChunk(
   uploadId: string,
   index: number,
   bytes: Uint8Array,
   signal?: AbortSignal,
+  appendToPrevious = false,
 ): Promise<string> {
   if (!isAndroidPlatform || !driveFilesPlugin) {
     throw new Error("Native upload staging is only available on Android");
@@ -601,9 +629,12 @@ export async function stageNativeUploadChunk(
       uploadId,
       index,
       base64: uint8ArrayToBase64(slice),
-      // The first slice truncates, so a retry of the same index never appends
-      // onto a partial file left by a previous attempt.
-      append: offset > 0,
+      // The very first slice of the very first segment at this index
+      // truncates, so a retry of the same upload never appends onto a
+      // partial file left by a previous attempt. Every other slice —
+      // whether continuing this segment or starting a later one at the same
+      // index — appends.
+      append: appendToPrevious || offset > 0,
     });
     path = result.path;
   }

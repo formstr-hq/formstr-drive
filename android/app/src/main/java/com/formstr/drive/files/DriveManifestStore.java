@@ -529,6 +529,11 @@ public final class DriveManifestStore {
         @Nullable public final String previewHash;
         /** SHA-256 of the plaintext, when the publishing client recorded one. */
         @Nullable public final String unencryptedFileHash;
+        /** NIP-FS single-blob file: present together, absent on legacy files
+         *  (which populate `chunks` instead — see isLegacyBlobFormat in
+         *  src/types/metadata.ts). */
+        @Nullable public final String blobHash;
+        public final int chunkSize;
         /** Chunks with their resolved per-chunk server (see DriveFileDownloader.Chunk). */
         @Nullable public final List<DriveFileDownloader.Chunk> chunks;
         public final boolean isPendingImport;
@@ -547,6 +552,8 @@ public final class DriveManifestStore {
                 String encryptionKey,
                 @Nullable String previewHash,
                 @Nullable String unencryptedFileHash,
+                @Nullable String blobHash,
+                int chunkSize,
                 @Nullable List<DriveFileDownloader.Chunk> chunks,
                 boolean isPendingImport,
                 @Nullable String pendingImportId,
@@ -563,6 +570,8 @@ public final class DriveManifestStore {
             this.encryptionKey = encryptionKey;
             this.previewHash = previewHash;
             this.unencryptedFileHash = unencryptedFileHash;
+            this.blobHash = blobHash;
+            this.chunkSize = chunkSize;
             this.chunks = chunks;
             this.isPendingImport = isPendingImport;
             this.pendingImportId = pendingImportId;
@@ -586,6 +595,10 @@ public final class DriveManifestStore {
             String unencryptedFileHash = jsonObject.has("unencryptedFileHash")
                     ? jsonObject.optString("unencryptedFileHash")
                     : null;
+            // NIP-FS single-blob file: present together, absent on legacy
+            // files (which populate `chunks` below instead).
+            String blobHash = jsonObject.has("blobHash") ? jsonObject.optString("blobHash") : null;
+            int chunkSize = jsonObject.optInt("chunkSize", 0);
 
             // Accepts both the current `[{hash, server?}]` shape and the legacy
             // bare-string array; entries without their own server resolve to the
@@ -605,6 +618,8 @@ public final class DriveManifestStore {
                     encryptionKey,
                     previewHash,
                     unencryptedFileHash,
+                    blobHash,
+                    chunkSize,
                     chunks,
                     false,
                     null,
@@ -625,6 +640,8 @@ public final class DriveManifestStore {
                     "",
                     null,
                     null,
+                    null,
+                    0,
                     null,
                     true,
                     entry.id,

@@ -51,6 +51,11 @@ public class DriveDownloadService extends Service {
     public static final String EXTRA_MIME_TYPE = "mimeType";
     public static final String EXTRA_CHUNKS_JSON = "chunksJson";
     public static final String EXTRA_UNENCRYPTED_FILE_HASH = "unencryptedFileHash";
+    /** NIP-FS single-blob file: present together with EXTRA_CHUNK_SIZE,
+     *  absent on legacy files (which carry EXTRA_CHUNKS_JSON instead). */
+    public static final String EXTRA_BLOB_HASH = "blobHash";
+    public static final String EXTRA_CHUNK_SIZE = "chunkSize";
+    public static final String EXTRA_SIZE = "size";
 
     public static final String EVENT_PROGRESS = "progress";
     public static final String EVENT_COMPLETE = "complete";
@@ -139,6 +144,9 @@ public class DriveDownloadService extends Service {
         String mimeType = intent.getStringExtra(EXTRA_MIME_TYPE);
         String chunksJson = intent.getStringExtra(EXTRA_CHUNKS_JSON);
         String unencryptedFileHash = intent.getStringExtra(EXTRA_UNENCRYPTED_FILE_HASH);
+        String blobHash = intent.getStringExtra(EXTRA_BLOB_HASH);
+        int chunkSize = intent.getIntExtra(EXTRA_CHUNK_SIZE, 0);
+        long size = intent.getLongExtra(EXTRA_SIZE, 0L);
 
         if (id == null || server == null || encryptionKey == null
                 || fileName == null || mimeType == null) {
@@ -159,7 +167,7 @@ public class DriveDownloadService extends Service {
         activeCount.incrementAndGet();
 
         executor.execute(() ->
-                runDownload(id, server, chunks, encryptionKey, unencryptedFileHash,
+                runDownload(id, server, blobHash, chunkSize, size, chunks, encryptionKey, unencryptedFileHash,
                         fileName, mimeType, notifId, signal));
 
         return START_NOT_STICKY;
@@ -168,6 +176,9 @@ public class DriveDownloadService extends Service {
     private void runDownload(
             String id,
             String server,
+            @Nullable String blobHash,
+            int chunkSize,
+            long size,
             @Nullable List<DriveFileDownloader.Chunk> chunks,
             String encryptionKey,
             @Nullable String unencryptedFileHash,
@@ -208,8 +219,8 @@ public class DriveDownloadService extends Service {
                         throw new java.io.IOException("Failed to open output stream");
                     }
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, encryptionKey, unencryptedFileHash, outputStream,
-                            (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
+                            server, blobHash, chunkSize, size, chunks, encryptionKey, unencryptedFileHash,
+                            outputStream, (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 
                 ContentValues finalize = new ContentValues();
@@ -234,8 +245,8 @@ public class DriveDownloadService extends Service {
                 legacyOutFile = outFile;
                 try (FileOutputStream outputStream = new FileOutputStream(outFile)) {
                     DriveFileDownloader.downloadAndDecryptToStream(
-                            server, chunks, encryptionKey, unencryptedFileHash, outputStream,
-                            (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
+                            server, blobHash, chunkSize, size, chunks, encryptionKey, unencryptedFileHash,
+                            outputStream, (percent) -> onProgress(id, fileName, percent, notifId, nm), signal);
                 }
 
                 fileUri = Uri.fromFile(outFile);
