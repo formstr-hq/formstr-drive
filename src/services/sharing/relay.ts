@@ -9,10 +9,21 @@ import { dataLayer } from "@formstr/local-relay";
 // Every event this feature signs goes through nextCreatedAt() so that never
 // happens — each successive publish this session is guaranteed strictly
 // newer than the last, on top of always being >= wall-clock time.
+//
+// Clamped to MAX_DRIFT_SECONDS ahead of wall clock: a burst of publishes
+// (a folder share alone fires 2-3 events; ~50 rapid shares would otherwise
+// push lastStamp ~150s into the future) bakes that future timestamp into a
+// SIGNED event. A future-dated event then wins the replaceable-event
+// tiebreak against another device's legitimate, real-time update — a rename
+// or revoke from that other device silently loses until wall clock catches
+// up. The clamp keeps same-second ordering intact (still strictly
+// increasing) while bounding how far ahead of reality the clock can run.
 // -----------------------------------------------------------------------------
+const MAX_DRIFT_SECONDS = 60;
 let lastStamp = 0;
 export function nextCreatedAt(): number {
-  lastStamp = Math.max(Math.floor(Date.now() / 1000), lastStamp + 1);
+  const now = Math.floor(Date.now() / 1000);
+  lastStamp = Math.max(now, Math.min(lastStamp + 1, now + MAX_DRIFT_SECONDS));
   return lastStamp;
 }
 
