@@ -227,6 +227,13 @@ async function uploadBlobWithFallback(
     // headers on the error) burns minutes and reports a misleading network
     // error. A server that doesn't implement BUD-06 returns { ok: true } here
     // (see canAccept's doc comment) so this never blocks a compliant upload.
+    // canAccept only returns ok:false for a definitive, retry-proof refusal
+    // (413/415/403) — a transient probe failure (429, 5xx, timeout) reads as
+    // ok:true and falls through to the real upload attempt instead of
+    // landing here. deadServers is shared with the preview-upload path, so
+    // this add must stay reserved for "this server permanently rejects this
+    // blob", not "the probe couldn't answer right now" — a spurious add
+    // would also cost the thumbnail its upload target.
     const precheck = await client.canAccept(blob.size, sha256Hash, blob.type, authHeader);
     if (!precheck.ok) {
       failures.push({
