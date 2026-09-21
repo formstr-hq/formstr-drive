@@ -9,6 +9,8 @@ import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../ut
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { refreshDriveKeyring } from '../../services/driveKey';
+import { PullToRefresh } from '../ui/PullToRefresh';
+import { isAndroidPlatform } from '../../utils/platform';
 
 export function FileList() {
   const {
@@ -271,10 +273,9 @@ export function FileList() {
     );
   }
 
-  return (
-    <div className="file-list-container">
-      <div className="file-list-scroll" style={selectedCount > 0 ? { paddingBottom: 120 } : undefined}>
-        <UploadZone />
+  const scrollContent = (
+    <>
+      <UploadZone />
 
         <div className="file-list-toolbar">
           <div className="search-wrap">
@@ -387,9 +388,10 @@ export function FileList() {
               };
 
               return isGridView ? (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-tile${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -404,11 +406,12 @@ export function FileList() {
                     </span>
                     <span className="folder-tile-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                </div>
               ) : (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-row${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -423,7 +426,7 @@ export function FileList() {
                     </span>
                     <span className="folder-row-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                </div>
               );
             })}
 
@@ -439,11 +442,34 @@ export function FileList() {
                 viewMode={viewMode}
                 selected={selectedFileHashes.has(file.id)}
                 onToggleSelection={toggleFileSelection}
+                // If this card is part of a multi-selection, dragging it should move
+                // the WHOLE selection, matching standard file-manager behavior — not
+                // just the one card that happened to receive the native dragstart.
+                dragIds={
+                  selectedFileHashes.has(file.id) && selectedFileHashes.size > 1
+                    ? Array.from(selectedFileHashes)
+                    : [file.id]
+                }
               />
             ))}
           </div>
         )}
-      </div>
+    </>
+  );
+
+  const scrollStyle = selectedCount > 0 ? { paddingBottom: 120 } : undefined;
+
+  return (
+    <div className="file-list-container">
+      {isAndroidPlatform ? (
+        <PullToRefresh className="file-list-scroll" style={scrollStyle} onRefresh={refresh}>
+          {scrollContent}
+        </PullToRefresh>
+      ) : (
+        <div className="file-list-scroll" style={scrollStyle}>
+          {scrollContent}
+        </div>
+      )}
 
       {selectedCount > 0 && (
         <div className="bulk-action-bar">
