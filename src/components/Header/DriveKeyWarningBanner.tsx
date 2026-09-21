@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useProfileContext } from "../../hooks/useProfileContext";
 import { findOrphanedDrivePubkeys, onDriveKeysChanged } from "../../services/driveKey";
-import { DriveKeyModal } from "./DriveKeyModal";
 import "./DriveKeyWarningBanner.css";
 
 /**
@@ -16,7 +15,6 @@ import "./DriveKeyWarningBanner.css";
 export function DriveKeyWarningBanner() {
   const { pubkey, isSignedIn } = useProfileContext();
   const [orphaned, setOrphaned] = useState<string[]>([]);
-  const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     if (!isSignedIn || !pubkey) {
@@ -38,12 +36,14 @@ export function DriveKeyWarningBanner() {
     };
 
     check();
-    // Re-run whenever the keyring's pubkey set changes — either a successful
-    // Import Drive Key, or refreshDriveKeyring's background top-up silently
-    // finding the missing key on its own (see its doc comment: a tab that
-    // already resolved a keyring otherwise never rechecks relays again).
-    // Without this the banner only ever reflected the state at mount, so it
-    // wouldn't clear itself even after the underlying problem was fixed.
+    // Re-run whenever the keyring's pubkey set changes — there is no manual
+    // import path any more, so this fires only from automatic recovery:
+    // refreshDriveKeyring's background top-up finding the missing key on its
+    // own (see its doc comment: a tab that already resolved a keyring
+    // otherwise never rechecks relays again), or another device's self-heal
+    // publish (driveKey.ts's syncWithRelays) landing here. Without this the
+    // banner only ever reflected the state at mount, so it wouldn't clear
+    // itself even after the underlying problem resolved on its own.
     const unsubscribe = onDriveKeysChanged(check);
 
     return () => {
@@ -60,8 +60,6 @@ export function DriveKeyWarningBanner() {
         A previous Drive Key for this account is missing ({orphaned.length} key
         {orphaned.length === 1 ? "" : "s"}) — files under it may be hidden until it's restored.
       </span>
-      <button onClick={() => setShowModal(true)}>Import Drive Key</button>
-      {showModal && <DriveKeyModal onClose={() => setShowModal(false)} />}
     </div>
   );
 }

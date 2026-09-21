@@ -22,6 +22,19 @@ import { APP_RELAYS, defaultRelays, mergeRelayLists } from "../utils/common";
 import { notifyRelayRefresh } from "./relayRefresh";
 
 let started = false;
+let localRelayClient: LocalRelayClient | null = null;
+
+/**
+ * The bootstrapped `LocalRelayClient`, for the rare caller that needs
+ * routing-policy control `DataLayer` doesn't expose (`setUserRelays` etc.) —
+ * currently just `services/sharing/hints.ts`, which needs to fold a share
+ * link's relay hints into routing before resolving it. `DataLayer.deps` is
+ * private, so this is the only way to reach the client short of exporting it
+ * from the package. Null until `bootstrapDataLayer` has run once.
+ */
+export function getLocalRelayClient(): LocalRelayClient | null {
+  return localRelayClient;
+}
 
 /** Idempotent: spawns the worker + wires the DataLayer once, returns the singleton. */
 export function bootstrapDataLayer(): DataLayer {
@@ -70,6 +83,7 @@ export function bootstrapDataLayer(): DataLayer {
       }
     },
   });
+  localRelayClient = client;
 
   // Drive's app relays carry the kind-34578 file index; the wider default set
   // backs profile (kind 0) and Blossom server (kind 36363) discovery, which the

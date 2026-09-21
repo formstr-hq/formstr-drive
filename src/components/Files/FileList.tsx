@@ -9,6 +9,8 @@ import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../ut
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { refreshDriveKeyring } from '../../services/driveKey';
+import { PullToRefresh } from '../ui/PullToRefresh';
+import { isAndroidPlatform } from '../../utils/platform';
 
 export function FileList() {
   const {
@@ -18,6 +20,7 @@ export function FileList() {
     setCurrentFolder,
     driveStatus,
     degradedReason,
+    degradedMessage,
     deleteFiles,
     moveFiles,
     refresh,
@@ -257,24 +260,37 @@ export function FileList() {
     </div>
   );
 
-  // "resolving" covers both "keyring not settled yet" and "settled, but the
-  // relay replay hasn't EOSE'd" — on a warm cache the latter fires almost
-  // instantly, so this stays as responsive as the old keyRead-only gate did
-  // in the common case, while never rendering content ahead of having
-  // enough information to know whether it's complete.
-  if (driveStatus === "resolving") {
+  // "resolving" covers both "Drive Key resolution not settled yet" and
+  // "settled, but the relay replay hasn't EOSE'd". Files stream into `files`
+  // incrementally as they decrypt, well before EOSE — once anything is
+  // visible there's no reason to keep hiding it behind a spinner. Only block
+  // on the spinner while resolving AND still empty; this also preserves the
+  // invariant the empty-state branch below relies on: reaching it with
+  // hasItems false means driveStatus is never "resolving" here, only
+  // "degraded" or "ready". Copy is deliberately generic ("Looking for your
+  // files…") rather than claiming a specific activity — during this window
+  // the app may actually be proving whether a Drive Key exists at all, not
+  // "fetching files" in any literal sense.
+  if (driveStatus === "resolving" && !hasItems) {
     return (
       <div className="loading-container">
-        <div className="loading-state">Hold tight while we are fetching your files...</div>
+        <div className="loading-state">Looking for your files…</div>
         <div className="loader"></div>
       </div>
     );
   }
 
-  return (
-    <div className="file-list-container">
-      <div className="file-list-scroll" style={selectedCount > 0 ? { paddingBottom: 120 } : undefined}>
-        <UploadZone />
+  const scrollContent = (
+    <>
+      {/* Only "uncertain" means no key is actually resolved — uploading would
+          genuinely fail. "undecryptable" still has a real, working key (some
+          EXISTING files just can't decrypt under it); new uploads work fine
+          there, so gating on driveStatus alone would wrongly block them. */}
+      <UploadZone disabled={degradedReason === "uncertain"} />
+
+      {driveStatus === "resolving" && (
+        <div className="file-list-syncing-hint">Still syncing…</div>
+      )}
 
         <div className="file-list-toolbar">
           <div className="search-wrap">
@@ -340,14 +356,17 @@ export function FileList() {
           degradedReason && !normalizedQuery ? (
             <div className="empty-state error-state">
               <p>
-                {degradedReason === "keys-unavailable"
-                  ? "Couldn't load your Drive Key, so this may not be your complete file list."
+                {degradedReason === "uncertain"
+                  ? degradedMessage ?? "Couldn't confirm your Drive Key yet."
                   : "Some of your files couldn't be decrypted under the current Drive Key — this may " +
                     "not be your complete file list."}
               </p>
               <p className="empty-hint">
-                Check your connection and retry, or use Import Drive Key from the account menu if you
-                have an existing key.
+                {degradedReason === "uncertain"
+                  ? "This resolves automatically once the network is reachable — nothing will be lost " +
+                    "or created in the meantime."
+                  : "Check your connection and retry, or open the drive on a device that already has " +
+                    "the right key."}
               </p>
               <button
                 className="empty-state-retry"
@@ -387,9 +406,10 @@ export function FileList() {
               };
 
               return isGridView ? (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-tile${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -404,11 +424,12 @@ export function FileList() {
                     </span>
                     <span className="folder-tile-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                </div>
               ) : (
-                <button
+                <div
                   key={folderPath}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className={`folder-row${dragOverFolder === folderPath ? " drag-over" : ""}`}
                   onClick={() => setCurrentFolder(folderPath)}
                   title={`Open ${getFolderName(folderPath)}`}
@@ -423,7 +444,7 @@ export function FileList() {
                     </span>
                     <span className="folder-row-meta">{itemsLabel}</span>
                   </div>
-                </button>
+                </div>
               );
             })}
 
@@ -439,11 +460,34 @@ export function FileList() {
                 viewMode={viewMode}
                 selected={selectedFileHashes.has(file.id)}
                 onToggleSelection={toggleFileSelection}
+                // If this card is part of a multi-selection, dragging it should move
+                // the WHOLE selection, matching standard file-manager behavior — not
+                // just the one card that happened to receive the native dragstart.
+                dragIds={
+                  selectedFileHashes.has(file.id) && selectedFileHashes.size > 1
+                    ? Array.from(selectedFileHashes)
+                    : [file.id]
+                }
               />
             ))}
           </div>
         )}
-      </div>
+    </>
+  );
+
+  const scrollStyle = selectedCount > 0 ? { paddingBottom: 120 } : undefined;
+
+  return (
+    <div className="file-list-container">
+      {isAndroidPlatform ? (
+        <PullToRefresh className="file-list-scroll" style={scrollStyle} onRefresh={refresh}>
+          {scrollContent}
+        </PullToRefresh>
+      ) : (
+        <div className="file-list-scroll" style={scrollStyle}>
+          {scrollContent}
+        </div>
+      )}
 
       {selectedCount > 0 && (
         <div className="bulk-action-bar">

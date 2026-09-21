@@ -1,50 +1,21 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <!-- Bottom layer -->
-  <path d="M78 370V428C78 466 158 496 256 496C354 496 434 466 434 428V370"
-        fill="#5A8FD1"/>
-  <ellipse cx="256" cy="370" rx="178" ry="58" fill="#0B7AE8"/>
-  <ellipse cx="256" cy="370" rx="178" ry="58"
-           fill="none" stroke="#000" stroke-width="16"/>
-
-  <!-- Middle layer -->
-  <path d="M78 243V301C78 339 158 369 256 369C354 369 434 339 434 301V243"
-        fill="#5A8FD1"/>
-  <ellipse cx="256" cy="243" rx="178" ry="58" fill="#0B7AE8"/>
-  <ellipse cx="256" cy="243" rx="178" ry="58"
-           fill="none" stroke="#000" stroke-width="16"/>
-
-  <!-- Top layer -->
-  <path d="M78 116V174C78 212 158 242 256 242C354 242 434 212 434 174V116"
-        fill="#5A8FD1"/>
-  <ellipse cx="256" cy="116" rx="178" ry="58" fill="#8BB6F0"/>
-  <ellipse cx="256" cy="116" rx="178" ry="58"
-           fill="none" stroke="#000" stroke-width="16"/>
-
-  <!-- Top highlight -->
-  <ellipse cx="240" cy="96" rx="162" ry="48"
-           fill="#D8E5F8" opacity="0.55"/>
-
-  <!-- Decorative left strokes -->
-  <path d="M100 174C128 190 160 199 194 204"
-        fill="none" stroke="#000" stroke-width="16" stroke-linecap="round"/>
-  <path d="M100 297C128 313 160 322 194 327"
-        fill="none" stroke="#000" stroke-width="16" stroke-linecap="round"/>
-  <path d="M100 420C128 436 160 445 194 454"
-        fill="none" stroke="#000" stroke-width="16" stroke-linecap="round"/>
-
-  <!-- Decorative right strokes -->
-  <path d="M398 228C387 234 376 239 364 242"
-        fill="none" stroke="#000" stroke-width="16" stroke-linecap="round"/>
-  <path d="M398 355C387 361 376 366 364 369"
-        fill="none" stroke="#000" stroke-width="16" stroke-linecap="round"/>
-
-  <!-- Status dots -->
-  <circle cx="350" cy="193" r="8" fill="#000"/>
-  <circle cx="396" cy="178" r="8" fill="#000"/>
-
-  <circle cx="350" cy="318" r="8" fill="#000"/>
-  <circle cx="396" cy="303" r="8" fill="#000"/>
-
-  <circle cx="350" cy="443" r="8" fill="#000"/>
-  <circle cx="396" cy="428" r="8" fill="#000"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <!-- Form* Drive mark — ink plate, folder in a bold ember gradient with an ink outline for
+       definition, Form* asterisk hovering clear above the folder's rounded corner (kept off
+       the curve so the star silhouette stays clean at small sizes). -->
+  <rect width="96" height="96" rx="20" fill="#0B0B0C"/>
+  <path d="M21,24 L38,24 Q42,24 44.4,27.2 L45.9,29.2 Q48,32 51.5,32 L75,32 Q80,32 80,37 L80,69 Q80,74 75,74 L21,74 Q16,74 16,69 L16,29 Q16,24 21,24 Z"
+        fill="url(#folder-grad)" stroke="#0B0B0C" stroke-width="3" stroke-linejoin="round"/>
+  <line x1="82" y1="10" x2="82" y2="28" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="74.21" y1="14.5" x2="89.79" y2="23.5" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="89.79" y1="14.5" x2="74.21" y2="23.5" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="82" y1="11.1" x2="82" y2="26.9" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="75.16" y1="15.05" x2="88.84" y2="22.95" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="88.84" y1="15.05" x2="75.16" y2="22.95" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="folder-grad" x1="16" y1="24" x2="80" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF9500"/>
+      <stop offset=".5" stop-color="#FF5733"/>
+      <stop offset="1" stop-color="#C81E4D"/>
+    </linearGradient>
+  </defs>
 </svg>

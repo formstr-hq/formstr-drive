@@ -1,0 +1,57 @@
+/* Share Modal */
+.share-modal-status {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.share-modal-error {
+  color: var(--color-danger, #e5484d);
+}
+
+.share-modal-reused {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.share-modal-progress {
+  margin-top: var(--space-6);
+}
+
+.share-modal-warning {
+  margin-top: var(--space-6);
+  color: var(--color-warning, #f5a524);
+}
+
+.share-modal-hint {
+  margin: 0 0 var(--space-8);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.share-link-row {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.share-link-input {
+  flex: 1;
+  padding: var(--space-6) var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono, monospace);
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  .share-link-row {
+    flex-direction: column;
+    gap: var(--space-8);
+  }
+
+  .share-link-input {
+    width: auto;
+  }
+}

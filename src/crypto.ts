@@ -234,6 +234,119 @@ export async function aesGcmDecryptBytes(
   return aesGcmDecryptRaw(payload, conversationKey);
 }
 
+/**
+ * Number of segments a file of `size` bytes splits into under `chunkSize`.
+ * Always at least 1 — an empty file (size 0) still has exactly one, empty,
+ * last segment (NIP-FS: "the last may be shorter, including empty"). A file
+ * whose size is an exact multiple of `chunkSize` (including exactly one
+ * `chunkSize`) is NOT followed by a trailing empty segment: ceil() already
+ * lands on the right count, so e.g. size === chunkSize gives exactly 1.
+ */
+export function segmentCount(size: number, chunkSize: number): number {
+  return Math.max(1, Math.ceil(size / chunkSize));
+}
+
+/**
+ * Builds the NIP-FS per-segment nonce (12 bytes): an 11-byte big-endian
+ * segment counter, followed by a 1-byte last-segment flag (0x01 on the final
+ * segment, 0x00 otherwise). Unlike {@link aesGcmEncryptRaw}'s nonce, this is
+ * never random and never stored — the decryptor rebuilds the identical nonce
+ * from the segment's index and position (both derivable from the file's
+ * `size`/`chunkSize` in metadata), which is what makes a reordered segment's
+ * auth tag fail (wrong nonce recomputed for that ciphertext) and a truncated
+ * stream detectable (the decryptor, told the true segment count up front,
+ * never reaches a segment it can decrypt with the last-flag set).
+ *
+ * Avoids bitwise ops throughout: index can in principle exceed 2^31, where
+ * JS's `<<`/`&` silently truncate to 32 bits, so the byte-at-a-time write
+ * below uses only `%`/`Math.floor` division.
+ */
+function buildSegmentNonce(index: number, isLast: boolean): Uint8Array {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error(`Segment index must be a non-negative integer, got ${index}`);
+  }
+  const nonce = new Uint8Array(12);
+  let remaining = index;
+  for (let i = 10; i >= 0; i--) {
+    nonce[i] = remaining % 256;
+    remaining = Math.floor(remaining / 256);
+  }
+  if (remaining > 0) {
+    // Would need more than 11 bytes (2^88 segments) — unreachable for any
+    // real file, but fail loudly rather than silently wrap the counter.
+    throw new Error(`Segment index too large to encode in 11 bytes: ${index}`);
+  }
+  nonce[11] = isLast ? 1 : 0;
+  return nonce;
+}
+
+/**
+ * Imports `blobKey` directly as an AES-256-GCM key — no HKDF derivation.
+ * Distinct from {@link deriveGcmKeyAndIv} (the NIP-44 chunk/content format
+ * above), which derives a fresh key+IV per random nonce via HKDF; the NIP-FS
+ * segment format uses the key as-is and gets its per-segment uniqueness
+ * entirely from the counter nonce (see {@link buildSegmentNonce}).
+ */
+async function importSegmentKey(blobKey: Uint8Array): Promise<CryptoKey> {
+  if (blobKey.length !== 32) {
+    throw new Error(`blobKey must be 32 bytes, got ${blobKey.length}`);
+  }
+  return crypto.subtle.importKey("raw", blobKey as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+/**
+ * NIP-FS segment encryption ("File Encryption" in the spec): AES-256-GCM
+ * directly under the file's 32-byte blobKey, with a nonce built from the
+ * segment's position rather than drawn at random — see
+ * {@link buildSegmentNonce} for why. Output is `ciphertext || tag(16)`, with
+ * no version byte and no stored nonce (both are implicit — recomputed from
+ * `index`/`isLast` on decrypt). Every segment's output is concatenated, in
+ * order, into the single blob that gets uploaded; that blob's sha256 is the
+ * file's `blobHash`.
+ *
+ * `index`/`isLast` come from the caller's own loop position, not from
+ * anything stored in this payload — see {@link segmentCount} for computing
+ * the total up front from `size`/`chunkSize`.
+ */
+export async function encryptSegment(
+  plaintext: Uint8Array,
+  blobKey: Uint8Array,
+  index: number,
+  isLast: boolean,
+): Promise<Uint8Array> {
+  const aesKey = await importSegmentKey(blobKey);
+  const nonce = buildSegmentNonce(index, isLast);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource },
+    aesKey,
+    plaintext as BufferSource,
+  );
+  return new Uint8Array(ciphertext);
+}
+
+/**
+ * Inverse of {@link encryptSegment}. The caller must supply the SAME
+ * `index`/`isLast` the segment was encrypted with — get either wrong (a
+ * reordered segment, or a stream that ended before the true last-flagged
+ * segment) and the recomputed nonce won't match, so the AES-GCM tag check
+ * fails and this throws rather than returning wrong or truncated plaintext.
+ */
+export async function decryptSegment(
+  payload: Uint8Array,
+  blobKey: Uint8Array,
+  index: number,
+  isLast: boolean,
+): Promise<Uint8Array> {
+  const aesKey = await importSegmentKey(blobKey);
+  const nonce = buildSegmentNonce(index, isLast);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource },
+    aesKey,
+    payload as BufferSource,
+  );
+  return new Uint8Array(plaintext);
+}
+
 export function deriveConversationKeyFromHex(privateKeyHex: string): Uint8Array {
   const secretKey = hexToBytes(privateKeyHex);
   const pubkey = getPublicKey(secretKey);

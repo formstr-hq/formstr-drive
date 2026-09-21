@@ -4,13 +4,19 @@ import { useFileIndex } from '../../hooks/useFileContext';
 interface FolderSidebarProps {
   isOpen: boolean;
   onClose: () => void;
+  currentView?: "files" | "shared-by-me";
+  onSelectSharedByMe?: () => void;
+  onSelectFolder?: () => void;
 }
 
 import { isDirectChildFolder, getFolderName, ancestorsOf, getFolderItemCount } from '../../utils/folder';
 import { FILE_HASH_MIME } from '../../utils/constants';
-import { HomeIcon, FolderIcon, ChevronIcon } from '../icons/Icons';
+import { HomeIcon, FolderIcon, ChevronIcon, ShareIcon } from '../icons/Icons';
 
-
+// Folder sharing is set aside for now (see services/sharing/folder) — this
+// sidebar no longer offers a "Share folder" entry point. It used to accept
+// onShare/isShared props to wire one; those are gone until folder sharing is
+// wired back into a UI entry point.
 interface FolderNodeProps {
   path: string;
   depth: number;
@@ -111,7 +117,13 @@ function FolderNode({
   );
 }
 
-export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
+export function FolderSidebar({ 
+  isOpen, 
+  onClose,
+  currentView = "files",
+  onSelectSharedByMe,
+  onSelectFolder
+}: FolderSidebarProps) {
   const { folders, currentFolder, setCurrentFolder, files, addCustomFolder, moveFiles } =
     useFileIndex();
   const [newFolderName, setNewFolderName] = useState("");
@@ -151,6 +163,7 @@ export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
 
   const handleFolderClick = (folder: string) => {
     setCurrentFolder(folder);
+    onSelectFolder?.();
     onClose();
   };
 
@@ -235,7 +248,7 @@ export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
 
           <nav className="folder-list">
             <div
-              className={`folder-item folder-item--root ${currentFolder === "/" ? "active" : ""} ${
+              className={`folder-item folder-item--root ${currentFolder === "/" && currentView === "files" ? "active" : ""} ${
                 dragOverRoot ? "drag-over" : ""
               }`}
               style={{ paddingLeft: 12 }}
@@ -270,7 +283,7 @@ export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
                   path={folder}
                   depth={0}
                   folders={folders}
-                  currentFolder={currentFolder}
+                  currentFolder={currentView === "files" ? currentFolder : ""}
                   expanded={expanded}
                   onToggle={toggleExpanded}
                   onSelect={handleFolderClick}
@@ -280,6 +293,28 @@ export function FolderSidebar({ isOpen, onClose }: FolderSidebarProps) {
                   setDragOverFolder={setDragOverFolder}
                 />
               ))}
+          </nav>
+        </div>
+        <div className="sidebar-section">
+          <nav className="folder-list">
+            <div
+              className={`folder-item ${currentView === "shared-by-me" ? "active" : ""}`}
+              style={{ paddingLeft: 12, marginTop: 8, marginBottom: 8 }}
+            >
+              <span className="folder-toggle folder-toggle--spacer" />
+              <button 
+                className="folder-item-btn" 
+                onClick={() => { 
+                  onSelectSharedByMe?.(); 
+                  onClose(); 
+                }}
+              >
+                <span className="folder-item-icon">
+                  <ShareIcon />
+                </span>
+                <span className="folder-name">Shared by me</span>
+              </button>
+            </div>
           </nav>
         </div>
       </aside>

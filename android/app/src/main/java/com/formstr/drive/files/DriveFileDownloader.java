@@ -128,15 +128,179 @@ public final class DriveFileDownloader {
     }
 
     /**
-     * Streams chunk-by-chunk from Blossom, decrypts each piece, and writes it
-     * straight to outputStream — nothing is buffered beyond a single chunk.
-     * Each chunk is fetched from its own resolved server.
+     * Dispatches to the NIP-FS single-blob path when {@code blobHash} is
+     * present, otherwise the legacy chunk-per-blob path — mirrors the
+     * blobHash-vs-chunks branch in every web download path
+     * (src/services/downloadFile.ts / swStreamDownload.ts) and
+     * isLegacyBlobFormat (src/types/metadata.ts).
+     */
+    public static void downloadAndDecryptToStream(
+            String server,
+            @Nullable String blobHash,
+            int chunkSize,
+            long size,
+            @Nullable List<Chunk> chunks,
+            String encryptionKey,
+            @Nullable String unencryptedFileHash,
+            OutputStream outputStream,
+            @Nullable ProgressCallback onProgress,
+            @Nullable CancellationSignal signal
+    ) throws IOException {
+        if (blobHash != null && !blobHash.isEmpty()) {
+            downloadAndDecryptSingleBlobToStream(
+                    server, blobHash, chunkSize, size, encryptionKey, unencryptedFileHash,
+                    outputStream, onProgress, signal);
+            return;
+        }
+        downloadAndDecryptChunkedToStream(
+                server, chunks, encryptionKey, unencryptedFileHash, outputStream, onProgress, signal);
+    }
+
+    /**
+     * NIP-FS single-blob download: streams the one stored blob and re-chunks
+     * the raw byte stream into segment-sized frames (chunkSize + 16, except
+     * the last — computed from size/chunkSize the same way segmentCount does
+     * in src/crypto.ts), decrypting each in order via
+     * DriveFilesCrypto.decryptSegment and writing straight to outputStream.
+     * Peak memory stays around one segment. Mirrors streamDecryptedSegments
+     * in src/services/downloadFile.ts.
+     *
+     * When {@code unencryptedFileHash} is present it is verified against the
+     * plaintext as it streams and a mismatch fails the download, matching the
+     * web path's verifyUnencryptedFileHash.
+     */
+    private static void downloadAndDecryptSingleBlobToStream(
+            String server,
+            String blobHash,
+            int chunkSize,
+            long size,
+            String encryptionKey,
+            @Nullable String unencryptedFileHash,
+            OutputStream outputStream,
+            @Nullable ProgressCallback onProgress,
+            @Nullable CancellationSignal signal
+    ) throws IOException {
+        if (chunkSize <= 0) {
+            throw new IOException("Drive file is missing a valid chunkSize");
+        }
+
+        MessageDigest plaintextDigest = null;
+        if (unencryptedFileHash != null && !unencryptedFileHash.isEmpty()) {
+            try {
+                plaintextDigest = MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException error) {
+                throw new IOException("SHA-256 is unavailable on this device", error);
+            }
+        }
+
+        String normalizedServer = server.endsWith("/") ? server.substring(0, server.length() - 1) : server;
+        URL url = new URL(normalizedServer + "/" + blobHash);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(30000);
+        connection.setDoInput(true);
+
+        try {
+            connection.connect();
+
+            if (signal != null && signal.isCanceled()) {
+                throw new IOException("File open was cancelled");
+            }
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode < 200 || responseCode >= 300) {
+                throw new IOException("Server rejected blob read with HTTP " + responseCode);
+            }
+
+            // max(1, ceil(size/chunkSize)) — mirrors segmentCount in
+            // src/crypto.ts exactly: size 0 still has one (empty) last segment.
+            long totalSegmentsLong = Math.max(1, (size + chunkSize - 1) / chunkSize);
+            if (totalSegmentsLong > Integer.MAX_VALUE) {
+                throw new IOException("File has too many segments to download: " + totalSegmentsLong);
+            }
+            int totalSegments = (int) totalSegmentsLong;
+
+            try (InputStream inputStream = connection.getInputStream()) {
+                for (int i = 0; i < totalSegments; i++) {
+                    if (signal != null && signal.isCanceled()) {
+                        throw new IOException("File open was cancelled");
+                    }
+
+                    boolean isLast = i == totalSegments - 1;
+                    long plainLen = isLast ? size - (long) chunkSize * (totalSegments - 1) : chunkSize;
+                    int frameLen = (int) (plainLen + 16);
+
+                    byte[] frame = readExactly(inputStream, frameLen, signal);
+                    byte[] decrypted;
+                    try {
+                        decrypted = DriveFilesCrypto.decryptSegment(frame, encryptionKey, i, isLast);
+                    } catch (Exception error) {
+                        throw new IOException("Failed to decrypt segment " + i, error);
+                    }
+
+                    if (plaintextDigest != null) {
+                        plaintextDigest.update(decrypted);
+                    }
+                    outputStream.write(decrypted);
+
+                    if (onProgress != null) {
+                        onProgress.onProgress((int) ((i + 1) * 100L / totalSegments));
+                    }
+                }
+            }
+
+            outputStream.flush();
+
+            if (plaintextDigest != null) {
+                String actual = bytesToHex(plaintextDigest.digest());
+                if (!actual.equalsIgnoreCase(unencryptedFileHash)) {
+                    throw new IOException(
+                            "File integrity check failed: expected hash " + unencryptedFileHash + ", got " + actual);
+                }
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * Reads exactly {@code n} bytes from {@code inputStream}, or throws if
+     * the stream ends first — a short read here means a truncated or
+     * corrupted blob, which must never be handed to
+     * DriveFilesCrypto.decryptSegment as if it were a whole frame. Mirrors
+     * createFrameReader's readExactly in src/services/downloadFile.ts.
+     */
+    private static byte[] readExactly(InputStream inputStream, int n, @Nullable CancellationSignal signal)
+            throws IOException {
+        byte[] buffer = new byte[n];
+        int totalRead = 0;
+        while (totalRead < n) {
+            if (signal != null && signal.isCanceled()) {
+                throw new IOException("File open was cancelled");
+            }
+            int read = inputStream.read(buffer, totalRead, n - totalRead);
+            if (read == -1) {
+                throw new IOException(
+                        "Downloaded blob ended early: expected " + (n - totalRead) + " more byte(s). " +
+                                "The file may be corrupted, or the download was interrupted.");
+            }
+            totalRead += read;
+        }
+        return buffer;
+    }
+
+    /**
+     * Legacy chunk-per-blob download: streams chunk-by-chunk from Blossom,
+     * decrypts each piece, and writes it straight to outputStream — nothing
+     * is buffered beyond a single chunk. Each chunk is fetched from its own
+     * resolved server.
      *
      * When {@code unencryptedFileHash} is present it is verified against the
      * plaintext as it streams and a mismatch fails the download, matching the
      * web path's verifyUnencryptedFileHash (src/services/downloadFile.ts).
      */
-    public static void downloadAndDecryptToStream(
+    private static void downloadAndDecryptChunkedToStream(
             String server,
             @Nullable List<Chunk> chunks,
             String encryptionKey,

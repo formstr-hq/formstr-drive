@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <!-- Form* Drive mark, in-app — transparent bg, ink outline for contrast on any surface,
+       folder in a bold ember gradient, Form* asterisk hovering clear above the folder's
+       rounded corner (kept off the curve so the star silhouette stays clean at small sizes). -->
+  <path d="M21,24 L38,24 Q42,24 44.4,27.2 L45.9,29.2 Q48,32 51.5,32 L75,32 Q80,32 80,37 L80,69 Q80,74 75,74 L21,74 Q16,74 16,69 L16,29 Q16,24 21,24 Z"
+        fill="url(#folder-grad)" stroke="#0B0B0C" stroke-width="3" stroke-linejoin="round"/>
+  <line x1="82" y1="10" x2="82" y2="28" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="74.21" y1="14.5" x2="89.79" y2="23.5" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="89.79" y1="14.5" x2="74.21" y2="23.5" stroke="#0B0B0C" stroke-width="8" stroke-linecap="round"/>
+  <line x1="82" y1="11.1" x2="82" y2="26.9" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="75.16" y1="15.05" x2="88.84" y2="22.95" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="88.84" y1="15.05" x2="75.16" y2="22.95" stroke="#F4F4F3" stroke-width="5.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="folder-grad" x1="16" y1="24" x2="80" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF9500"/>
+      <stop offset=".5" stop-color="#FF5733"/>
+      <stop offset="1" stop-color="#C81E4D"/>
+    </linearGradient>
+  </defs>
+</svg>
