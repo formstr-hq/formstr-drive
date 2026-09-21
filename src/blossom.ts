@@ -340,8 +340,10 @@ export class BlossomClient {
    * BUD-06 is optional in the spec, so a server that doesn't implement it (no
    * response, or a non-implementing 404/501) must not be treated as refusing
    * the upload — that would wrongly skip every server that just doesn't
-   * support this check. Only an explicit non-2xx *response* (the server
-   * looked at the request and said no) counts as a refusal.
+   * support this check. Only a status the server can't recover from on retry
+   * (413 too large, 415 unsupported type, 403 forbidden) counts as a
+   * refusal; everything else non-2xx — including 429/5xx, which BUD-06's own
+   * status table lists as transient — is treated the same as no response.
    */
   async canAccept(
     sizeBytes: number,
@@ -373,6 +375,20 @@ export class BlossomClient {
     }
 
     if (res.ok) return { ok: true };
+
+    // Only a status the server can't possibly recover from on retry counts
+    // as a refusal: 413 (too large), 415 (unsupported type), 403 (forbidden).
+    // Everything else non-2xx — 404/501 (BUD-06 unimplemented, as above),
+    // 429 (rate limited), and 5xx (transient server trouble) — is
+    // inconclusive, not a refusal: the server evaluated a HEAD probe, not
+    // the actual upload, and a probe that fails transiently must not
+    // permanently disqualify a server the real PUT might still accept.
+    // Verified against live servers: cdn.satellite.earth returns 404 to this
+    // probe though its PUT may work fine, and BUD-06's own status table
+    // explicitly lists 429/503 as transient.
+    const DEFINITIVE_REFUSAL_STATUSES = new Set([403, 413, 415]);
+    if (!DEFINITIVE_REFUSAL_STATUSES.has(res.status)) return { ok: true };
+
     // A definitive non-2xx response IS a refusal — the server evaluated the
     // request and rejected it (too large, wrong type, etc). `status` lets the
     // caller run this through the same classifyUploadFailure() used for a
