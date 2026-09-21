@@ -1,7 +1,7 @@
 import { BlossomClient } from "../blossom";
 import { createAuthEvent } from "../auth";
 import { chunkHashes, isLegacyBlobFormat, type FileMetadata } from "../types/metadata";
-import { findHashesStillReferenced, isFileIndexPopulated } from "./fileIndex";
+import { findHashesStillReferenced, isFileIndexReady } from "./fileIndex";
 
 /**
  * Deletes every Blossom blob backing a file, plus the preview.
@@ -44,12 +44,15 @@ export async function deleteRemoteBlobs(
       ? [file.blobHash]
       : [];
 
-  // An index that hasn't synced yet can't distinguish "no other file uses this"
-  // from "no other file loaded yet" — the one reading that would delete a blob
-  // still in use, so decline to delete anything at all.
-  if (!isFileIndexPopulated()) {
+  // An index that hasn't finished its initial sync (EOSE) can't distinguish
+  // "no other file uses this" from "no other file loaded yet" — a non-empty
+  // but still-syncing store is exactly as untrustworthy here as an empty
+  // one, since a file that hasn't replayed yet looks identical to one that
+  // doesn't exist. The one reading that gap wrong would delete a blob still
+  // in use, so decline to delete anything at all until sync has settled.
+  if (!isFileIndexReady()) {
     console.warn(
-      `[Delete] File index not populated — leaving ${file.name}'s blobs on the server rather than risk deleting data another file still references.`,
+      `[Delete] File index not yet fully synced — leaving ${file.name}'s blobs on the server rather than risk deleting data another file still references.`,
     );
     return;
   }

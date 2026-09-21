@@ -183,15 +183,23 @@ export function findDuplicateByHash(unencryptedFileHash: string): FileMetadata |
  * Reusing it unchecked would mint a new metadata entry that's broken from the
  * moment it's created, failing only later at download with a 404.
  *
+ * Legacy (`chunks`-based) matches always read as not-live: checking a single
+ * chunk isn't a valid liveness proof for the whole set — a partially-deleted
+ * legacy file (chunk 3 gone, chunks 0-2 present) would have a live chunk 0
+ * and pass, reusing a blob set that's actually broken. Verifying every chunk
+ * is a HEAD per chunk, too expensive for a dedup check, and legacy files are
+ * a shrinking set — restricting reuse to new-format (single `blobHash`)
+ * matches is the safe default and costs at most a redundant upload on a
+ * legacy hit.
+ *
  * `BlossomClient.exists()` deliberately throws (rather than returning false)
  * when it can't get a definitive answer — a thrown result is treated as
  * "uncertain", the same stance the metadataOutbox drain takes on the identical
  * check, and callers should fall through to a real upload rather than gamble.
  */
 export async function duplicateBlobIsLive(duplicate: FileMetadata): Promise<boolean> {
-  const hash = isLegacyBlobFormat(duplicate)
-    ? chunkHashes(duplicate.chunks)[0]
-    : duplicate.blobHash;
+  if (isLegacyBlobFormat(duplicate)) return false;
+  const hash = duplicate.blobHash;
   if (!hash) return false;
 
   try {
@@ -237,12 +245,31 @@ export function findHashesStillReferenced(files: FileMetadata[]): Set<string> {
   return stillReferenced;
 }
 
-/** Whether the index has enough loaded to trust {@link findHashesStillReferenced}.
- *  An empty store means "nothing synced yet", never "nothing else exists" — a
- *  distinction deletion must respect, since acting on the latter reading
- *  destroys data. */
-export function isFileIndexPopulated(): boolean {
-  return fileIndexStore.snapshot().length > 0;
+// Whether replay has actually reached EOSE for the current subscription —
+// set true at the same point observeFileIndex's own `onReady` fires, reset
+// false on unobserve so a fresh subscription (sign-out/sign-in) starts
+// unready again. This, not "the store is non-empty", is what
+// isFileIndexReady below is built on: a non-empty store only means SOME
+// files have synced, not that sync finished, and the gap between those two
+// readings is a real bug this flag exists to close (see isFileIndexReady's
+// doc comment).
+let fileIndexEoseReached = false;
+
+/**
+ * Whether the index has enough loaded to trust {@link findHashesStillReferenced}.
+ *
+ * Deliberately NOT "the store is non-empty" — that reading was the bug:
+ * `FileList` renders files while still syncing (only the empty-AND-syncing
+ * case blocks the loading spinner), so a user can see 5 of 50 files stream
+ * in and delete one before a dedup copy of its plaintext has replayed. At
+ * that moment `findHashesStillReferenced` sees an empty set for that hash —
+ * indistinguishable from "genuinely nothing else references it" — and the
+ * shared blob is destroyed. An empty store and a PARTIALLY-loaded one are
+ * both "nothing synced yet" from deletion's point of view; only EOSE having
+ * actually fired proves the index reflects reality.
+ */
+export function isFileIndexReady(): boolean {
+  return fileIndexEoseReached;
 }
 
 /**
@@ -431,6 +458,7 @@ export function observeFileIndex(
               );
               if (!readyFired) {
                 readyFired = true;
+                fileIndexEoseReached = true;
                 handlers.onReady?.();
               }
               if (skippedCount > lastWarnedSkippedCount) {
@@ -512,6 +540,7 @@ export function observeFileIndex(
 
   return () => {
     stopped = true;
+    fileIndexEoseReached = false;
     handles.forEach((h) => h.unobserve());
     unsubscribeStore();
     unsubscribeDriveKeysChanged();
