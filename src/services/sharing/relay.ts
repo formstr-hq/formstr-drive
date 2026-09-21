@@ -1,5 +1,6 @@
 import { type Event, type Filter } from "nostr-tools";
 import { dataLayer } from "@formstr/local-relay";
+import { withRelayHints } from "./hints";
 
 // -----------------------------------------------------------------------------
 // A monotonic created_at clock, module-scoped. Relays tie-break equal
@@ -145,8 +146,15 @@ export async function fetchEventByCoordinate(
   pubkey: string,
   d: string,
   timeoutMs = 8000,
+  /** Relay hints from a share link's `naddr`, or a container member's `"a"`
+   *  tag hint — folded into routing policy for just this call via
+   *  {@link withRelayHints}. Omit/empty for internal lookups (e.g. our own
+   *  share-info bookkeeping) that don't carry a hint and don't need one. */
+  relays: string[] = [],
 ): Promise<Event | null> {
-  const events = await observeCollecting([{ kinds: [kind], authors: [pubkey], "#d": [d] }], timeoutMs);
+  const events = await withRelayHints(relays, () =>
+    observeCollecting([{ kinds: [kind], authors: [pubkey], "#d": [d] }], timeoutMs),
+  );
   return events.reduce<Event | null>(
     (latest, event) => (!latest || event.created_at > latest.created_at ? event : latest),
     null,

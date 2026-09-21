@@ -3,7 +3,7 @@ import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
 import { uploadFile as chunkedUploadFile, computePlaintextHash } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
-import { saveFileMetadata, findDuplicateByHash } from "../services/fileIndex";
+import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
 import {
@@ -37,7 +37,12 @@ export async function uploadDriver(
     // work whose result gets thrown away.
     onProgress({ stage: "Checking for duplicates...", progress: 0 });
     const plaintextHash = await computePlaintextHash(file, signal);
-    const duplicate = findDuplicateByHash(plaintextHash);
+    const candidate = findDuplicateByHash(plaintextHash);
+    // findDuplicateByHash is a pure local-index lookup — confirm the blob it
+    // points at is actually still on the server before reusing it. Skipping
+    // this would let a stale/deleted blob mint a new metadata entry that's
+    // broken from the moment it's created (see fileIndex.ts's doc comment).
+    const duplicate = candidate && (await duplicateBlobIsLive(candidate)) ? candidate : undefined;
 
     if (duplicate) {
       onProgress({ stage: "Saving metadata...", progress: 90 });

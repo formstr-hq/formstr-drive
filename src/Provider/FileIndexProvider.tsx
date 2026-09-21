@@ -13,6 +13,7 @@ import {
   extractFolders,
   clearFileIndexStore,
 } from "../services/fileIndex";
+import { ensureDriveKeyMinted, type DriveKeyStatus } from "../services/driveKey";
 import {
   getRelayRefresh,
   subscribeRelayRefresh,
@@ -51,14 +52,17 @@ export type DriveIndexStatus = "resolving" | "degraded" | "ready";
 
 /**
  * Why `status` is "degraded" — always paired with `status`, never read alone.
- *  - "keys-unavailable": the Drive Key keyring failed to resolve, or
- *    resolved to zero usable keys. Previously this was silently swallowed
- *    into an empty keyring (`getDriveConversationKeys().catch(() => [])`
- *    in fileIndex.ts), which then produced an empty — and entirely
- *    believable — file list. This is the exact gap the mint-hazard
- *    incident exposed.
- *  - "undecryptable": the keyring resolved with keys, replay finished, but
- *    at least one file-index event failed to decrypt under it while the
+ *  - "uncertain": Drive Key resolution genuinely doesn't know yet — could not
+ *    reach enough of the network to tell whether a key exists, or found an
+ *    event this build can't read. NEVER means "confirmed no key" — a proven
+ *    first-time user (no key found, and that absence is proven) is `ready`
+ *    with an empty file list, not `degraded`; see driveKey.ts's
+ *    DriveKeyStatus for how that distinction is established. `degradedMessage`
+ *    carries the specific reason instead of a generic line — driveKey.ts
+ *    produces several distinct, actionable messages that used to all be
+ *    collapsed into one ("keys unavailable") by fileIndex.ts's `.catch`.
+ *  - "undecryptable": the keyring resolved with real keys, replay finished,
+ *    but at least one file-index event failed to decrypt under it while the
  *    file list came back empty — the signature of the WRONG (but
  *    successfully-resolved) key being active, not of an empty drive.
  *
@@ -71,7 +75,7 @@ export type DriveIndexStatus = "resolving" | "degraded" | "ready";
  * brand-new user's real empty state as suspicious the moment their own
  * key-creation event round-trips back to them.
  */
-export type DriveIndexDegradedReason = "keys-unavailable" | "undecryptable";
+export type DriveIndexDegradedReason = "uncertain" | "undecryptable";
 
 export interface FileIndexContextType {
   files: FileMetadata[];
@@ -83,6 +87,9 @@ export interface FileIndexContextType {
   driveStatus: DriveIndexStatus;
   /** Non-null exactly when `driveStatus === "degraded"`. */
   degradedReason: DriveIndexDegradedReason | null;
+  /** The specific reason, when `degradedReason === "uncertain"` — driveKey.ts's
+   *  actual message, not a generic line. Null otherwise. */
+  degradedMessage: string | null;
   error: string | null;
   deleteFile: (hash: string) => Promise<void>;
   deleteFiles: (hashes: string[]) => Promise<void>;
@@ -104,14 +111,16 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [customFolders, setCustomFolders] = useState<string[]>([]);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
-  // The three raw signals driveStatus is computed from. None of these is
+  // The raw signals driveStatus is computed from. None of these is
   // meaningful read alone — that was the problem with the flags they
   // replace — so nothing outside the useMemo below should read them
   // directly; everything downstream consumes `driveStatus`/`degradedReason`.
   //
-  // null = "the keyring attempt has not settled yet" (distinct from `false`,
-  // which is a confirmed empty/failed resolution — see onKeyStatus below).
-  const [hasKeys, setHasKeys] = useState<boolean | null>(null);
+  // null = "Drive Key resolution has not settled yet". Once settled, the full
+  // DriveKeyStatus verdict is kept (not just a boolean) so "empty-confirmed"
+  // (proven, safe) and "unresolved" (genuinely unknown, carries a reason) stay
+  // distinguishable all the way to the UI.
+  const [keyStatus, setKeyStatus] = useState<DriveKeyStatus | null>(null);
   // True once at least one EOSE has been received for the current
   // subscription — the local relay's cache-or-network replay is done.
   const [hydrated, setHydrated] = useState(false);
@@ -124,24 +133,35 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [manualRefreshCount, setManualRefreshCount] = useState(0);
 
   // The single source of truth every consumer must use instead of combining
-  // the three raw signals above by hand — see DriveIndexStatus's doc comment
-  // for what each branch means and why identityHistory is deliberately NOT
+  // the raw signals above by hand — see DriveIndexStatus's doc comment for
+  // what each branch means and why identityHistory is deliberately NOT
   // consulted here (it is the right signal for driveKey.ts's mint decision,
   // and the wrong one for this: an existing identity's genuinely-empty
   // drive must never be flagged as suspicious just because that identity
   // has published something, anything, before).
-  const { driveStatus, degradedReason } = useMemo<{
+  //
+  // "empty-confirmed" deliberately falls through to the SAME hydration/
+  // decrypt-failure checks as "ready" rather than being its own terminal
+  // branch: a proven-empty keyring still needs the file-index subscription
+  // to hydrate before the (correctly empty) file list can be trusted, same
+  // as any other keyring would.
+  const { driveStatus, degradedReason, degradedMessage } = useMemo<{
     driveStatus: DriveIndexStatus;
     degradedReason: DriveIndexDegradedReason | null;
+    degradedMessage: string | null;
   }>(() => {
-    if (hasKeys === null) return { driveStatus: "resolving", degradedReason: null };
-    if (!hasKeys) return { driveStatus: "degraded", degradedReason: "keys-unavailable" };
-    if (!hydrated) return { driveStatus: "resolving", degradedReason: null };
-    if (files.length === 0 && hadDecryptFailures) {
-      return { driveStatus: "degraded", degradedReason: "undecryptable" };
+    if (keyStatus === null) {
+      return { driveStatus: "resolving", degradedReason: null, degradedMessage: null };
     }
-    return { driveStatus: "ready", degradedReason: null };
-  }, [hasKeys, hydrated, hadDecryptFailures, files.length]);
+    if (keyStatus.kind === "unresolved") {
+      return { driveStatus: "degraded", degradedReason: "uncertain", degradedMessage: keyStatus.reason };
+    }
+    if (!hydrated) return { driveStatus: "resolving", degradedReason: null, degradedMessage: null };
+    if (files.length === 0 && hadDecryptFailures) {
+      return { driveStatus: "degraded", degradedReason: "undecryptable", degradedMessage: null };
+    }
+    return { driveStatus: "ready", degradedReason: null, degradedMessage: null };
+  }, [keyStatus, hydrated, hadDecryptFailures, files.length]);
 
   // Bumps when the relay worker can newly serve cached data it couldn't a
   // moment ago (IndexedDB hydration finished, or the worker restarted after a
@@ -196,22 +216,32 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       // files replayed immediately on subscribe.
       clearFileIndexStore();
       setFiles([]);
-      setHasKeys(null);
+      setKeyStatus(null);
       setHydrated(false);
       setHadDecryptFailures(false);
       return;
     }
 
-    // Fresh subscription: none of the three raw signals from a previous
+    // Fresh subscription: none of the raw signals from a previous
     // identity/subscription is valid evidence about this one.
-    setHasKeys(null);
+    setKeyStatus(null);
     setHydrated(false);
     setHadDecryptFailures(false);
     setError(null);
 
     const unobserve = observeFileIndex(pubkey, {
       onFiles: setFiles,
-      onKeyStatus: setHasKeys,
+      onKeyStatus: (status) => {
+        setKeyStatus(status);
+        // The ONE place this fires from: a PROVEN empty keyring, reported by
+        // the read path itself, never a guess or a timeout. ensureDriveKeyMinted
+        // is idempotent per identity (in-session + persisted guards), so
+        // calling it again on every relayRefresh-triggered resubscribe is
+        // harmless — it only ever actually mints once.
+        if (status.kind === "empty-confirmed") {
+          void ensureDriveKeyMinted();
+        }
+      },
       onReady: () => setHydrated(true),
       onDecryptFailures: () => setHadDecryptFailures(true),
     });
@@ -225,6 +255,23 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     if (!isSignedIn || !pubkey) return;
     setManualRefreshCount((n) => n + 1);
   }, [isSignedIn, pubkey]);
+
+  // Auto-retry while genuinely uncertain (see DriveIndexDegradedReason —
+  // "uncertain" means the network hasn't yet proven either a key exists or
+  // that it definitely doesn't; a relay that's temporarily unreachable — the
+  // whole reason this state exists — can recover at any moment on its own).
+  // Without this, a user who first opens the drive during a relay outage
+  // would stay stuck until they manually clicked Retry, even long after the
+  // relay came back — resolveDriveKeyStatusCached() deliberately never
+  // caches "unresolved" so each of these re-checks gets a genuinely fresh
+  // answer, not a stale one.
+  useEffect(() => {
+    if (driveStatus !== "degraded" || degradedReason !== "uncertain") return;
+    const interval = setInterval(() => {
+      void refresh();
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [driveStatus, degradedReason, refresh]);
 
   const { deleteFile, deleteFiles, moveFile, moveFiles, renameFile } =
     useFileMutations(files);
@@ -266,6 +313,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       setCurrentFolder,
       driveStatus,
       degradedReason,
+      degradedMessage,
       error,
       deleteFile,
       deleteFiles,
@@ -282,6 +330,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       currentFolder,
       driveStatus,
       degradedReason,
+      degradedMessage,
       error,
       deleteFile,
       deleteFiles,

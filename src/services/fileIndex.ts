@@ -1,13 +1,15 @@
 import { nip44, finalizeEvent, type Event } from "nostr-tools";
 import { hexToBytes } from "nostr-tools/utils";
 import { dataLayer, type PublishResult } from "@formstr/local-relay";
-import { isLegacyFile, type FileMetadata } from "../types/metadata";
+import { chunkHashes, isLegacyBlobFormat, isLegacyFile, type FileMetadata } from "../types/metadata";
+import { BlossomClient } from "../blossom";
 import {
   getActiveDriveKey,
-  getDriveConversationKeys,
+  getDriveKeyStatus,
   getDriveKeyPubkeys,
   getCachedDrivePubkeys,
   onDriveKeysChanged,
+  type DriveKeyStatus,
 } from "./driveKey";
 import { enqueueMetadataEvent, publishAndDequeue } from "./metadataOutbox";
 import { publishDeletionRequest } from "./deletionRequest";
@@ -41,6 +43,13 @@ const CLIENT_TAG = "formstr-drive";
  */
 const fileIndexStore = (() => {
   const entries = new Map<string, { created_at: number; metadata: FileMetadata | null }>();
+  // Raw events that failed to decrypt, kept ONLY so a later-arriving Drive Key
+  // can be retried against them without a reload. Previously a failed decrypt
+  // discarded the ciphertext/id/author entirely — the null written to `entries`
+  // was a permanent tombstone, since write()'s monotonicity guard rejected the
+  // SAME event replayed later even after it decrypted successfully (equal
+  // created_at). See write()'s upgrade path below and retryFailed().
+  const failedEvents = new Map<string, Event>();
   let onFiles: ((files: FileMetadata[]) => void) | null = null;
 
   function emit(): void {
@@ -65,14 +74,36 @@ const fileIndexStore = (() => {
         if (onFiles === handler) onFiles = null;
       };
     },
-    /** The one guarded write: applied only if strictly newer than what's
-     *  already held for this id (ties are treated as "already have it" —
-     *  the same rule the committed code always used for relay events). */
-    write(id: string, createdAt: number, metadata: FileMetadata | null): void {
+    /**
+     * The one guarded write: strictly newer than what's already held for this
+     * id always applies. An EQUAL timestamp is also allowed through, but ONLY
+     * to upgrade a previously-failed (`metadata: null`) entry into a real one
+     * — the same event, now decryptable under a key that arrived later. A
+     * real entry is never displaced by anything at an equal-or-older
+     * timestamp, and a null never overwrites a real entry.
+     *
+     * `rawEvent` is retained (keyed by id) whenever a decrypt fails, so
+     * {@link retryFailed} has something to retry — and dropped the moment
+     * this id ever succeeds, since it's no longer needed.
+     */
+    write(id: string, createdAt: number, metadata: FileMetadata | null, rawEvent?: Event): void {
       const existing = entries.get(id);
-      if (existing && existing.created_at >= createdAt) return;
+      if (existing) {
+        if (existing.created_at > createdAt) return;
+        if (existing.created_at === createdAt && existing.metadata !== null) return;
+      }
       entries.set(id, { created_at: createdAt, metadata });
-      if (metadata) emit();
+      if (metadata) {
+        failedEvents.delete(id);
+        emit();
+      } else if (rawEvent) {
+        failedEvents.set(id, rawEvent);
+      }
+    },
+    /** Snapshot of every currently-retained failed event, for a caller (a
+     *  newly-arrived Drive Key) to retry decrypting. */
+    getFailedEvents(): Event[] {
+      return Array.from(failedEvents.values());
     },
     /** Re-emits the current state unconditionally — used after a replay
      *  (EOSE) completes even if every replayed event turned out to be one
@@ -85,6 +116,7 @@ const fileIndexStore = (() => {
      *  previous one's files. */
     clear(): void {
       entries.clear();
+      failedEvents.clear();
       emit();
     },
     /** Same filter/shape as what subscribers are handed, but synchronous —
@@ -140,6 +172,107 @@ export function findDuplicateByHash(unencryptedFileHash: string): FileMetadata |
 }
 
 /**
+ * Whether a dedup match found by {@link findDuplicateByHash} is safe to reuse
+ * — i.e. its blob is still actually on the server, not merely present in this
+ * device's (possibly stale) local index.
+ *
+ * findDuplicateByHash is a pure in-memory snapshot lookup with zero network
+ * calls, so a match can point at a blob that's since been deleted (see
+ * fileOperations.ts's deleteRemoteBlobs — dedup is exactly what makes deletion
+ * a shared-ownership problem in the first place) or otherwise GC'd upstream.
+ * Reusing it unchecked would mint a new metadata entry that's broken from the
+ * moment it's created, failing only later at download with a 404.
+ *
+ * Legacy (`chunks`-based) matches always read as not-live: checking a single
+ * chunk isn't a valid liveness proof for the whole set — a partially-deleted
+ * legacy file (chunk 3 gone, chunks 0-2 present) would have a live chunk 0
+ * and pass, reusing a blob set that's actually broken. Verifying every chunk
+ * is a HEAD per chunk, too expensive for a dedup check, and legacy files are
+ * a shrinking set — restricting reuse to new-format (single `blobHash`)
+ * matches is the safe default and costs at most a redundant upload on a
+ * legacy hit.
+ *
+ * `BlossomClient.exists()` deliberately throws (rather than returning false)
+ * when it can't get a definitive answer — a thrown result is treated as
+ * "uncertain", the same stance the metadataOutbox drain takes on the identical
+ * check, and callers should fall through to a real upload rather than gamble.
+ */
+export async function duplicateBlobIsLive(duplicate: FileMetadata): Promise<boolean> {
+  if (isLegacyBlobFormat(duplicate)) return false;
+  const hash = duplicate.blobHash;
+  if (!hash) return false;
+
+  try {
+    return await new BlossomClient(duplicate.server).exists(hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which Blossom hashes belonging to `files` are STILL referenced by some file
+ * outside that set — i.e. must not be deleted from the server.
+ *
+ * Dedup (see findDuplicateByHash) makes a re-upload of identical bytes reuse
+ * the original's blob verbatim: N metadata entries fan into ONE blobHash (and
+ * one previewHash). Deletion, which is per-file, therefore cannot assume it
+ * owns the bytes it's about to remove — deleting one copy would otherwise
+ * destroy every other copy's data, which keeps listing normally and only
+ * fails later, at download, as a 404 from the server the blob correctly
+ * landed on.
+ *
+ * Takes the whole delete SET rather than one file so a bulk delete gets one
+ * consistent answer: evaluated per-file mid-loop, the result would flip
+ * depending on how far the tombstones had propagated.
+ *
+ * Best-effort in the safe direction only. The snapshot is just what this
+ * device has synced, so "nothing else references this" can be wrong — and the
+ * cost of being wrong is unrecoverable data loss, versus a leaked blob for the
+ * opposite error. Callers must treat a hash's ABSENCE here as "no evidence",
+ * not as permission (see deleteRemoteBlobs).
+ */
+export function findHashesStillReferenced(files: FileMetadata[]): Set<string> {
+  const deletingIds = new Set(files.map((f) => f.id));
+  const stillReferenced = new Set<string>();
+
+  for (const other of fileIndexStore.snapshot()) {
+    if (deletingIds.has(other.id)) continue;
+    if (other.blobHash) stillReferenced.add(other.blobHash);
+    if (other.previewHash) stillReferenced.add(other.previewHash);
+    for (const hash of chunkHashes(other.chunks)) stillReferenced.add(hash);
+  }
+
+  return stillReferenced;
+}
+
+// Whether replay has actually reached EOSE for the current subscription —
+// set true at the same point observeFileIndex's own `onReady` fires, reset
+// false on unobserve so a fresh subscription (sign-out/sign-in) starts
+// unready again. This, not "the store is non-empty", is what
+// isFileIndexReady below is built on: a non-empty store only means SOME
+// files have synced, not that sync finished, and the gap between those two
+// readings is a real bug this flag exists to close (see isFileIndexReady's
+// doc comment).
+let fileIndexEoseReached = false;
+
+/**
+ * Whether the index has enough loaded to trust {@link findHashesStillReferenced}.
+ *
+ * Deliberately NOT "the store is non-empty" — that reading was the bug:
+ * `FileList` renders files while still syncing (only the empty-AND-syncing
+ * case blocks the loading spinner), so a user can see 5 of 50 files stream
+ * in and delete one before a dedup copy of its plaintext has replayed. At
+ * that moment `findHashesStillReferenced` sees an empty set for that hash —
+ * indistinguishable from "genuinely nothing else references it" — and the
+ * shared blob is destroyed. An empty store and a PARTIALLY-loaded one are
+ * both "nothing synced yet" from deletion's point of view; only EOSE having
+ * actually fired proves the index reflects reality.
+ */
+export function isFileIndexReady(): boolean {
+  return fileIndexEoseReached;
+}
+
+/**
  * Decrypt metadata by trying every Drive Key in the keyring until one
  * validates the NIP-44 MAC. This recovers files encrypted under an older
  * (forked) key that isn't the active one.
@@ -173,20 +306,18 @@ export interface FileIndexStreamHandlers {
    */
   onReady?: () => void;
   /**
-   * Fires once the Drive Key keyring attempt settles — success or failure,
-   * we're no longer blocked on it — reporting whether it actually produced
-   * at least one usable key. `hasKeys: false` covers BOTH a genuine failure
-   * and a keyring that resolved successfully but empty; either way there is
-   * no key to decrypt with, so a subsequently-empty `onFiles` result must
-   * NOT be read as "confirmed empty" — see identityHistory.ts for how a
-   * caller should tell a genuinely new identity apart from one whose key
-   * just couldn't be resolved this time. (Previously this fired unconditionally
-   * once the promise settled either way, with no way to tell which case
-   * happened — the keyring's own `.catch` silently turned a failure into an
-   * empty array, so "resolved to nothing" and "resolved with real keys" were
-   * indistinguishable to every caller.)
+   * Fires once the Drive Key resolution attempt settles — success or
+   * failure, we're no longer blocked on it — with the FULL verdict, not just
+   * a boolean. `kind !== "ready"` covers both a proven-empty drive (safe,
+   * `"empty-confirmed"`) and a genuinely unresolved one (`"unresolved"`,
+   * with a `reason` — unreachable network, or a found-but-unusable event);
+   * either way there is no key to decrypt with, so a subsequently-empty
+   * `onFiles` result must NOT be read as "confirmed empty" unless the
+   * verdict itself is "empty-confirmed". (Previously this reported only a
+   * boolean, collapsing driveKey.ts's five distinct, actionable messages
+   * into one generic "keys unavailable" the UI couldn't act on.)
    */
-  onKeyStatus?: (hasKeys: boolean) => void;
+  onKeyStatus?: (status: DriveKeyStatus) => void;
   /**
    * Fires (at most once per EOSE) when at least one event under the
    * currently-subscribed authors failed to decrypt. An empty file list
@@ -212,19 +343,20 @@ export function observeFileIndex(
   identityPubkey: string,
   handlers: FileIndexStreamHandlers,
 ): () => void {
-  const driveKeysPromise: Promise<Uint8Array[]> = getDriveConversationKeys().catch(
-    (e) => {
-      console.warn("[FileIndex] Could not obtain Drive Key keyring", e);
-      return [];
-    },
+  const statusPromise: Promise<DriveKeyStatus> = getDriveKeyStatus().catch((e) => {
+    console.warn("[FileIndex] Could not obtain Drive Key status", e);
+    return { kind: "unresolved", reason: "Couldn't check your Drive Key." } as DriveKeyStatus;
+  });
+  const driveKeysPromise: Promise<Uint8Array[]> = statusPromise.then((status) =>
+    status.kind === "ready" ? status.keyring.map((entry) => entry.conversationKey) : [],
   );
-  // Report the moment the keyring settles — success or failure, we're no
-  // longer blocked on it — but unlike before, report WHETHER it actually
-  // resolved to usable keys rather than firing unconditionally. Not gated on
-  // `stopped`: callers may want to know the key resolved even if the
-  // component unmounted a moment later, and firing this has no side effect
-  // beyond the callback itself.
-  void driveKeysPromise.then((keys) => handlers.onKeyStatus?.(keys.length > 0));
+  // Report the moment resolution settles — success or failure, we're no
+  // longer blocked on it — with the full verdict so the UI can distinguish
+  // a proven-empty drive from a genuinely unresolved one. Not gated on
+  // `stopped`: callers may want to know the status even if the component
+  // unmounted a moment later, and firing this has no side effect beyond the
+  // callback itself.
+  void statusPromise.then((status) => handlers.onKeyStatus?.(status));
 
   let stopped = false;
 
@@ -269,7 +401,9 @@ export function observeFileIndex(
     // Record even failed decrypts so an older, decryptable version of the
     // same id can't resurrect a file the newest event superseded — the store
     // itself enforces the created_at monotonicity, regardless of `stopped`.
-    fileIndexStore.write(id, event.created_at, metadata);
+    // The raw event is retained on failure so a key arriving later (see the
+    // onDriveKeysChanged retry below) can revisit it without a reload.
+    fileIndexStore.write(id, event.created_at, metadata, event);
   };
 
   // Serialize event processing: decryption awaits the keyring, so a simple
@@ -324,6 +458,7 @@ export function observeFileIndex(
               );
               if (!readyFired) {
                 readyFired = true;
+                fileIndexEoseReached = true;
                 handlers.onReady?.();
               }
               if (skippedCount > lastWarnedSkippedCount) {
@@ -360,13 +495,52 @@ export function observeFileIndex(
   //    clean and just never asked about the right author. subscribeAuthors is
   //    additive and self-dedupes, so calling it again here is always safe.
   const unsubscribeDriveKeysChanged = onDriveKeysChanged(() => {
+    if (stopped) return;
     void getDriveKeyPubkeys().then(subscribeAuthors).catch((e) => {
       console.warn("[FileIndex] Could not resolve updated Drive Key pubkeys", e);
+    });
+
+    // A key that arrives AFTER an event already failed to decrypt under it —
+    // the exact case this whole listener exists for: getting subscribeAuthors
+    // to re-declare interest above does nothing for events that already
+    // streamed through and failed, since a standing observe never replays
+    // what it's already delivered. Re-decrypt every retained failure against
+    // the now-current keyring; fileIndexStore.write's equal-timestamp upgrade
+    // path is what lets a success here actually replace the earlier null.
+    void enqueue(async () => {
+      const failed = fileIndexStore.getFailedEvents();
+      if (failed.length === 0) return;
+
+      const status = await getDriveKeyStatus().catch(() => null);
+      if (!status || status.kind !== "ready") return;
+      const freshKeys = status.keyring.map((entry) => entry.conversationKey);
+
+      let recovered = 0;
+      for (const event of failed) {
+        if (stopped) return;
+        const dTag = event.tags.find((t: string[]) => t[0] === "d");
+        const id = dTag?.[1];
+        if (!id) continue;
+        try {
+          const metadata = decryptMetadataWithDriveKey(event.content, freshKeys);
+          fileIndexStore.write(id, event.created_at, metadata, event);
+          recovered++;
+        } catch {
+          // Still can't read it under the new key set either — leave it
+          // retained for the next onDriveKeysChanged.
+        }
+      }
+      if (recovered > 0) {
+        // Each successful write() above already called emit() itself —
+        // nothing further to do here besides the log.
+        console.log(`[FileIndex] Recovered ${recovered} previously-undecryptable file(s) under a newly-arrived Drive Key`);
+      }
     });
   });
 
   return () => {
     stopped = true;
+    fileIndexEoseReached = false;
     handles.forEach((h) => h.unobserve());
     unsubscribeStore();
     unsubscribeDriveKeysChanged();

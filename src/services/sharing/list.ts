@@ -1,16 +1,17 @@
-import { aesGcmDecrypt } from "../../crypto";
+import { decryptSharePayload } from "./crypto";
 import { getDriveKeyPubkeys, getDriveConversationKeys } from "../driveKey";
-import { METADATA_KIND, buildCoordinate } from "./link";
-import { buildShareUrl } from "./link";
+import { METADATA_KIND, buildCoordinate, encodeShareLink, parseCoordinate } from "./link";
 import { fetchEvents } from "./relay";
 import { sourceEquals } from "./dedupe";
 import type { ShareMember, ShareSource, SharedByMeEntry } from "./types";
 
 /**
- * Loads all "Shared by me" entries by fetching the user's `share-info`
- * events and decrypting them with the Drive Key. Revoked shares stay in the
- * list (their `revokedAt` is set) — a vanished entry would be indistinguishable
- * from a relay read failure, and this is the handle a caller needs to retry a
+ * Loads all "Shared by me" entries by fetching the user's `shared-container`
+ * bookkeeping events (NIP-FS's "Shared container Information subtype" —
+ * published for file shares too, despite the name; see shareInfo.ts) and
+ * decrypting them with the Drive Key. Revoked shares stay in the list (their
+ * `revokedAt` is set) — a vanished entry would be indistinguishable from a
+ * relay read failure, and this is the handle a caller needs to retry a
  * partially-failed revoke.
  */
 export async function loadSharedByMe(): Promise<SharedByMeEntry[]> {
@@ -18,7 +19,9 @@ export async function loadSharedByMe(): Promise<SharedByMeEntry[]> {
   const conversationKeys = await getDriveConversationKeys();
   if (drivePubkeys.length === 0) return [];
 
-  const events = await fetchEvents([{ kinds: [METADATA_KIND], authors: drivePubkeys, "#t": ["share-info"] }]);
+  const events = await fetchEvents([
+    { kinds: [METADATA_KIND], authors: drivePubkeys, "#t": ["shared-container"] },
+  ]);
 
   const entries: SharedByMeEntry[] = [];
 
@@ -26,7 +29,7 @@ export async function loadSharedByMe(): Promise<SharedByMeEntry[]> {
     let json: string | null = null;
     for (const key of conversationKeys) {
       try {
-        json = await aesGcmDecrypt(event.content, key);
+        json = decryptSharePayload(event.content, key);
         break;
       } catch {
         // Wrong key — try the next one in the keyring.
@@ -42,47 +45,28 @@ export async function loadSharedByMe(): Promise<SharedByMeEntry[]> {
       const parsed = JSON.parse(json) as Record<string, unknown>;
       const kind: "file" | "folder" = parsed.kind === "folder" ? "folder" : "file";
       const name = typeof parsed.name === "string" ? parsed.name : null;
-      if (!name) continue;
+      const coordinate = typeof parsed.coordinate === "string" ? parsed.coordinate : null;
+      const encryptionKey = typeof parsed.encryptionKey === "string" ? parsed.encryptionKey : null;
+      const source = parsed.source as ShareSource | undefined;
+      if (!name || !coordinate || !encryptionKey || !source) continue;
 
-      if (parsed.v === 2) {
-        const coordinate = parsed.coordinate;
-        const encryptionKey = parsed.encryptionKey;
-        if (typeof coordinate !== "string" || typeof encryptionKey !== "string") continue;
+      const relays = Array.isArray(parsed.relays) ? (parsed.relays as string[]) : [];
+      const { d } = parseCoordinate(coordinate);
 
-        entries.push({
-          kind,
-          name,
-          source: (parsed.source as ShareSource | undefined) ?? null,
-          sharedAtSeconds: event.created_at,
-          url: buildShareUrl({ v: 1, kind, a: coordinate, k: encryptionKey }),
-          infoD,
-          infoCoordinate,
-          coordinate,
-          encryptionKey,
-          members: kind === "folder" ? ((parsed.members as ShareMember[] | undefined) ?? []) : [],
-          revokedAt: typeof parsed.revokedAt === "number" ? parsed.revokedAt : undefined,
-        });
-      } else {
-        // v1 record: no `v`, `source`, or `members` — `container` is an
-        // ["a", coordinate, hint] triple.
-        const container = parsed.container as [string, string, string?] | undefined;
-        const encryptionKey = parsed.encryptionKey;
-        if (!container || typeof encryptionKey !== "string") continue;
-        const coordinate = container[1];
-
-        entries.push({
-          kind,
-          name,
-          source: null,
-          sharedAtSeconds: event.created_at,
-          url: buildShareUrl({ v: 1, kind, a: coordinate, k: encryptionKey }),
-          infoD,
-          infoCoordinate,
-          coordinate,
-          encryptionKey,
-          members: null,
-        });
-      }
+      entries.push({
+        kind,
+        name,
+        source,
+        sharedAtSeconds: event.created_at,
+        url: encodeShareLink({ pubkey: event.pubkey, dTag: d, relays, secretKeyHex: encryptionKey }),
+        infoD,
+        infoCoordinate,
+        coordinate,
+        relays,
+        encryptionKey,
+        members: kind === "folder" ? ((parsed.members as ShareMember[] | undefined) ?? []) : [],
+        revokedAt: typeof parsed.revokedAt === "number" ? parsed.revokedAt : undefined,
+      });
     } catch {
       // Skip malformed entries.
     }

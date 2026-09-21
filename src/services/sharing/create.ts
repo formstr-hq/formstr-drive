@@ -1,11 +1,10 @@
-import { finalizeEvent } from "nostr-tools";
 import { hexToBytes } from "nostr-tools/utils";
 import { generateFileId, isLegacyFile, type FileMetadata } from "../../types/metadata";
 import { getActiveDriveKey } from "../driveKey";
-import { aesGcmEncrypt } from "../../crypto";
 import { enqueueMetadataEvent, publishAndDequeue } from "../metadataOutbox";
-import { METADATA_KIND, CLIENT_TAG, buildCoordinate, buildShareUrl } from "./link";
-import { nextCreatedAt } from "./relay";
+import { buildShareEvent } from "./event";
+import { relaysFromPublish } from "./hints";
+import { buildCoordinate, encodeShareLink } from "./link";
 import { dedupeShareRequest } from "./dedupe";
 import { generateEphemeralEncryptionKey, writeShareInfo } from "./shareInfo";
 import { findActiveShare } from "./list";
@@ -20,26 +19,24 @@ async function createFileShare(file: FileMetadata): Promise<ShareResult> {
   const ephemeral = generateEphemeralEncryptionKey();
   const dTag = `s-${generateFileId()}`;
 
-  const event = finalizeEvent(
-    {
-      kind: METADATA_KIND,
-      created_at: nextCreatedAt(),
-      tags: [
-        ["d", dTag],
-        ["t", "shared-file"],
-        ["client", CLIENT_TAG],
-        ["encrypted", "nip44"],
-      ],
-      content: await aesGcmEncrypt(JSON.stringify(file), ephemeral.conversationKey),
-    },
-    hexToBytes(driveKey.secretKeyHex),
-  );
+  const event = buildShareEvent({
+    subtype: "shared-file",
+    dTag,
+    payload: file,
+    conversationKey: ephemeral.conversationKey,
+    signingKey: hexToBytes(driveKey.secretKeyHex),
+  });
 
   await enqueueMetadataEvent(event, file.name);
-  await publishAndDequeue(event);
+  const publishResult = await publishAndDequeue(event);
+  const relays = relaysFromPublish(publishResult);
 
-  const coordinate = buildCoordinate(driveKey.publicKey, dTag);
-  const shareUrl = buildShareUrl({ v: 1, kind: "file", a: coordinate, k: ephemeral.secretKeyHex });
+  const shareUrl = encodeShareLink({
+    pubkey: driveKey.publicKey,
+    dTag,
+    relays,
+    secretKeyHex: ephemeral.secretKeyHex,
+  });
 
   // Best-effort and not on the critical path: the link itself already works
   // without this landing, and it's a second full relay round trip a caller
@@ -48,7 +45,8 @@ async function createFileShare(file: FileMetadata): Promise<ShareResult> {
     kind: "file",
     name: file.name,
     source: { type: "file", id: file.id },
-    coordinate,
+    coordinate: buildCoordinate(driveKey.publicKey, dTag),
+    relays,
     members: [],
     encryptionKey: ephemeral.secretKeyHex,
   }).catch((e) => {

@@ -20,6 +20,7 @@ export function FileList() {
     setCurrentFolder,
     driveStatus,
     degradedReason,
+    degradedMessage,
     deleteFiles,
     moveFiles,
     refresh,
@@ -259,15 +260,21 @@ export function FileList() {
     </div>
   );
 
-  // "resolving" covers both "keyring not settled yet" and "settled, but the
-  // relay replay hasn't EOSE'd" — on a warm cache the latter fires almost
-  // instantly, so this stays as responsive as the old keyRead-only gate did
-  // in the common case, while never rendering content ahead of having
-  // enough information to know whether it's complete.
-  if (driveStatus === "resolving") {
+  // "resolving" covers both "Drive Key resolution not settled yet" and
+  // "settled, but the relay replay hasn't EOSE'd". Files stream into `files`
+  // incrementally as they decrypt, well before EOSE — once anything is
+  // visible there's no reason to keep hiding it behind a spinner. Only block
+  // on the spinner while resolving AND still empty; this also preserves the
+  // invariant the empty-state branch below relies on: reaching it with
+  // hasItems false means driveStatus is never "resolving" here, only
+  // "degraded" or "ready". Copy is deliberately generic ("Looking for your
+  // files…") rather than claiming a specific activity — during this window
+  // the app may actually be proving whether a Drive Key exists at all, not
+  // "fetching files" in any literal sense.
+  if (driveStatus === "resolving" && !hasItems) {
     return (
       <div className="loading-container">
-        <div className="loading-state">Hold tight while we are fetching your files...</div>
+        <div className="loading-state">Looking for your files…</div>
         <div className="loader"></div>
       </div>
     );
@@ -275,7 +282,15 @@ export function FileList() {
 
   const scrollContent = (
     <>
-      <UploadZone />
+      {/* Only "uncertain" means no key is actually resolved — uploading would
+          genuinely fail. "undecryptable" still has a real, working key (some
+          EXISTING files just can't decrypt under it); new uploads work fine
+          there, so gating on driveStatus alone would wrongly block them. */}
+      <UploadZone disabled={degradedReason === "uncertain"} />
+
+      {driveStatus === "resolving" && (
+        <div className="file-list-syncing-hint">Still syncing…</div>
+      )}
 
         <div className="file-list-toolbar">
           <div className="search-wrap">
@@ -341,14 +356,17 @@ export function FileList() {
           degradedReason && !normalizedQuery ? (
             <div className="empty-state error-state">
               <p>
-                {degradedReason === "keys-unavailable"
-                  ? "Couldn't load your Drive Key, so this may not be your complete file list."
+                {degradedReason === "uncertain"
+                  ? degradedMessage ?? "Couldn't confirm your Drive Key yet."
                   : "Some of your files couldn't be decrypted under the current Drive Key — this may " +
                     "not be your complete file list."}
               </p>
               <p className="empty-hint">
-                Check your connection and retry, or use Import Drive Key from the account menu if you
-                have an existing key.
+                {degradedReason === "uncertain"
+                  ? "This resolves automatically once the network is reachable — nothing will be lost " +
+                    "or created in the meantime."
+                  : "Check your connection and retry, or open the drive on a device that already has " +
+                    "the right key."}
               </p>
               <button
                 className="empty-state-retry"

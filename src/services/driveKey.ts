@@ -46,6 +46,8 @@ signerManager.onChange((pubkey) => {
   if (!pubkey) {
     cachedKeyring = null;
     cachedPubkey = null;
+    cachedStatus = null;
+    cachedStatusAt = null;
     activeSecretKeyHex = null;
     void removeStoredItem(STORAGE_KEYS.DRIVE_KEY_CACHE);
     void removeStoredItem(STORAGE_KEYS.DRIVE_PUBKEY_CACHE);
@@ -276,10 +278,31 @@ async function decryptDriveKeyPayload(
  * (buildDriveKeyring) that needs to make a mint-or-not decision — this
  * function's only job is fetching, not judging.
  */
-async function fetchDriveKeyEvents(pubkey: string): Promise<NostrEvent[]> {
+/**
+ * `fetchDriveKeyEvents`'s result, plus whether the network itself was ever
+ * actually given a chance to answer (see `networkConsulted` below) — needed
+ * by `resolveEmptyKeyring`'s retry trigger, which today only fires on a
+ * fully empty keyring and therefore never runs for "found 1 key when 2
+ * exist" (the local cache answered, the network never got asked).
+ */
+interface DriveKeyFetchResult {
+  events: NostrEvent[];
+  networkConsulted: boolean;
+}
+
+async function fetchDriveKeyEvents(pubkey: string): Promise<DriveKeyFetchResult> {
   return new Promise((resolve) => {
     let settled = false;
+    let localEoseAt: number | null = null;
+    let networkConsulted = false;
     const found = new Map<string, NostrEvent>();
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      handle.unobserve();
+      resolve({ events: sortNewestFirst([...found.values()]), networkConsulted });
+    };
 
     const handle = dataLayer.observe(
       [
@@ -292,25 +315,44 @@ async function fetchDriveKeyEvents(pubkey: string): Promise<NostrEvent[]> {
       {
         onEvent: (event: Event) => {
           found.set(event.id, event as unknown as NostrEvent);
+          // Anything arriving after the local-cache EOSE (below) came from
+          // the network, not the replay — that's the only signal available
+          // that the network was actually consulted, since observe()'s EOSE
+          // fires on local-cache replay only and upstream relay EOSE is
+          // never propagated to the main thread (see the doc comment above
+          // this function).
+          if (localEoseAt !== null) networkConsulted = true;
         },
         onEose: () => {
-          // Cache hit: resolve immediately — this is the instant-startup path.
-          // Empty cache: keep the interest open for the network window below.
-          if (!settled && found.size > 0) {
-            settled = true;
-            handle.unobserve();
-            resolve(sortNewestFirst([...found.values()]));
-          }
+          // This EOSE is the local-cache replay finishing, NOT proof the
+          // network has answered — resolving here (as this used to) lets a
+          // stale cached copy of the one replaceable Drive Key event win the
+          // race and tears the interest down (unobserve) before a relay can
+          // deliver the newer version. Instead, hold the interest open for a
+          // settle window so the network gets an actual chance.
+          if (localEoseAt === null) localEoseAt = Date.now();
         },
       },
     );
 
-    // Safety timeout — flaky mobile relays get a generous window.
+    // The network-settle window: after the local replay's EOSE, give
+    // upstream relays a few seconds to answer before accepting whatever the
+    // cache had as final. Nothing blocks the UI on this any more (the read
+    // path never awaits this synchronously from a user-visible spinner), so
+    // it can afford to be patient rather than snapshotting the first answer.
+    const NETWORK_SETTLE_MS = 3000;
+    const checkSettle = setInterval(() => {
+      if (localEoseAt !== null && Date.now() - localEoseAt >= NETWORK_SETTLE_MS) {
+        clearInterval(checkSettle);
+        finish();
+      }
+    }, 250);
+
+    // Safety timeout — flaky mobile relays get a generous window even if the
+    // local EOSE itself never fires (e.g. a completely cold worker).
     setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      handle.unobserve();
-      resolve(sortNewestFirst([...found.values()]));
+      clearInterval(checkSettle);
+      finish();
     }, 20000);
   });
 }
@@ -320,7 +362,8 @@ function sortNewestFirst<T extends { created_at: number }>(items: T[]): T[] {
 }
 
 /**
- * Build the full Drive Key keyring for the current user.
+ * Resolve the full Drive Key keyring for the current user — read-only, never
+ * creates anything.
  *
  * Order of operations, and why:
  *   1. Load the cached ENCRYPTED payloads and decrypt every one with the
@@ -328,83 +371,150 @@ function sortNewestFirst<T extends { created_at: number }>(items: T[]): T[] {
  *      relays, as long as the signer (e.g. the local nsec) is available.
  *   2. Reconcile with relays. If we already had cached keys this runs in the
  *      background so it never blocks startup; otherwise we await it.
- *   3. We treat this as a first-time user (and offer to create a key) both
- *      when relays report nothing, and when every event we found was in an
- *      unsupported/legacy format — anything that decrypted but didn't match
- *      our expected shape. We only hard-block WITHOUT offering to overwrite
- *      when the signer itself genuinely failed to decrypt something (an
- *      auth/extension problem), since that's the one case where a key might
- *      actually still be there and recoverable.
+ *   3. If the keyring is still empty after that, classify WHY (see
+ *      classifyEmptyKeyring) rather than throwing or prompting: "proven
+ *      empty" (safe for ensureDriveKeyMinted to later act on) is kept
+ *      strictly separate from "genuinely don't know" (unreachable network,
+ *      or a found-but-unusable event this build can't read) — the latter
+ *      must never be treated as permission to create anything.
  */
-// In-flight keyring build, so concurrent callers on a cold in-memory cache
-// share one build instead of each running its own full decrypt. Without this,
-// a single launch's getDriveConversationKeys/getDriveKeyPubkeys/
+// -----------------------------------------------------------------------------
+// Reading a keyring must never be able to CREATE one. Every read consumer
+// (getDriveConversationKeys, getActiveDriveKey, getDriveKeyPubkeys,
+// getDriveKeyByPubkey) funnels through getDriveKeyring() below, which used to
+// mint on a cold cache — meaning simply opening the drive could create and
+// publish a key. DriveKeyStatus separates "what did we find" from "is it safe
+// to create one", and only ensureDriveKeyMinted() (below, near
+// initializeDriveKey) is ever allowed to act on that safety verdict.
+// -----------------------------------------------------------------------------
+export type DriveKeyStatus =
+  | { kind: "ready"; keyring: DriveKeyEntry[] }
+  // No key exists anywhere reachable, and that absence is PROVEN (see
+  // identityHistory.ts's proveRelayCoverage) — safe for ensureDriveKeyMinted
+  // to act on. Never entered on a guess or a timeout.
+  | { kind: "empty-confirmed" }
+  // Genuinely don't know: unreachable network, a found-but-unusable event, or
+  // an identity with history but no locatable key. Must NEVER be treated as
+  // "safe to create a key" — that was the entire mint hazard.
+  | { kind: "unresolved"; reason: string };
+
+// Last resolved status, alongside the same cachedKeyring/cachedPubkey the rest
+// of this module already reads directly (self-heal, refreshDriveKeyring). Kept
+// in sync with cachedKeyring/cachedPubkey at every write site below.
+let cachedStatus: DriveKeyStatus | null = null;
+// When cachedStatus was last set — what makes "empty-confirmed" a bounded-
+// freshness cache entry rather than a permanent one. See the TTL check in
+// resolveDriveKeyStatusCached below for why.
+let cachedStatusAt: number | null = null;
+// "empty-confirmed" is a proof about a moment ("every configured relay
+// answered just now and none carried a key"), not about the identity — the
+// same KIND of statement "unresolved" already isn't allowed to be cached
+// unboundedly for. A relay that's briefly unreachable and later recovers can
+// make this verdict stale, and acting on a stale one is the actual mint
+// hazard: ensureDriveKeyMinted would publish a new key over one that exists
+// but wasn't reachable at the moment this was resolved, destroying it on
+// every relay that accepts the publish.
+const EMPTY_CONFIRMED_TTL_MS = 30_000;
+
+// In-flight keyring resolution, so concurrent callers on a cold in-memory
+// cache share one resolution instead of each running its own full decrypt.
+// Without this, a single launch's getDriveConversationKeys/getDriveKeyPubkeys/
 // getActiveDriveKey calls (fileIndex.ts's observeFileIndex fires the first two
 // back-to-back) each miss the fast path and independently decrypt the same
 // cached payloads — with a remote signer (Amber) each decrypt is its own
 // inter-app round trip, so this turns N round trips into 1.
 //
-// Keyed by the pubkey the build started for: an account switch mid-flight
+// Keyed by the pubkey the resolution started for: an account switch mid-flight
 // must not hand the new account the previous one's in-flight promise.
-let inFlightBuild: { pubkey: string | undefined; promise: Promise<DriveKeyEntry[]> } | null = null;
+let inFlightResolve: { pubkey: string | undefined; promise: Promise<DriveKeyStatus> } | null = null;
 
-export async function getDriveKeyring(): Promise<DriveKeyEntry[]> {
-  // Fast path: in-memory cache, but only for the SAME user still signed in.
+async function resolveDriveKeyStatusCached(): Promise<DriveKeyStatus> {
+  // Fast path: in-memory cache, but only for the SAME user still signed in,
+  // and only for a STABLE conclusion. "ready" doesn't need re-checking — a
+  // keyring that resolved once stays valid (keys are only ever added, never
+  // silently removed, by anything this module does). "empty-confirmed" is
+  // proven at the moment it's resolved, but only usable for EMPTY_CONFIRMED_TTL_MS
+  // after that — see the constant's own comment for why an unbounded cache
+  // of it is the mint hazard. "unresolved" must NOT be cached at all — it's
+  // a statement about right-now connectivity, not about the identity
+  // (identityHistory.ts's own "never cache unknown" rule, which this mirrors)
+  // — caching it would mean a relay that was unreachable at the first call
+  // stays "unresolved" forever for the rest of the page's life, even after it
+  // recovers, since nothing would ever re-run the actual check again.
   if (
-    cachedKeyring &&
+    cachedStatus &&
     cachedPubkey &&
-    cachedPubkey === signerManager.getPubkey()
+    cachedPubkey === signerManager.getPubkey() &&
+    (cachedStatus.kind === "ready" ||
+      (cachedStatus.kind === "empty-confirmed" &&
+        cachedStatusAt !== null &&
+        Date.now() - cachedStatusAt < EMPTY_CONFIRMED_TTL_MS))
   ) {
-    return cachedKeyring;
+    return cachedStatus;
   }
 
   const currentPubkey = signerManager.getPubkey();
-  if (inFlightBuild && inFlightBuild.pubkey === currentPubkey) {
-    return inFlightBuild.promise;
+  if (inFlightResolve && inFlightResolve.pubkey === currentPubkey) {
+    return inFlightResolve.promise;
   }
 
-  const promise = buildDriveKeyring();
-  inFlightBuild = { pubkey: currentPubkey, promise };
+  const promise = resolveDriveKeyStatus();
+  inFlightResolve = { pubkey: currentPubkey, promise };
   try {
     return await promise;
   } finally {
-    if (inFlightBuild?.promise === promise) {
-      inFlightBuild = null;
+    if (inFlightResolve?.promise === promise) {
+      inFlightResolve = null;
     }
   }
 }
 
-/** The pieces of buildDriveKeyring's in-progress state resolveEmptyKeyring
- *  needs — passed explicitly (rather than resolveEmptyKeyring closing over
- *  buildDriveKeyring's locals) so this stays a normal, independently
- *  readable top-level function instead of more nested closure state. */
+/** Read-only: resolves the keyring if one exists. NEVER creates one — see
+ *  {@link ensureDriveKeyMinted} for the one place that's allowed to. */
+export async function getDriveKeyring(): Promise<DriveKeyEntry[]> {
+  const status = await resolveDriveKeyStatusCached();
+  return status.kind === "ready" ? status.keyring : [];
+}
+
+/** Same resolution as {@link getDriveKeyring}, but exposes the full verdict —
+ *  UI callers need to tell "empty-confirmed" (proven, safe) apart from
+ *  "unresolved" (unknown, must not be presented as empty). */
+export async function getDriveKeyStatus(): Promise<DriveKeyStatus> {
+  return resolveDriveKeyStatusCached();
+}
+
+/** The pieces of resolveDriveKeyStatus's in-progress state classifyEmptyKeyring
+ *  needs — passed explicitly (rather than closing over resolveDriveKeyStatus's
+ *  locals) so this stays a normal, independently readable top-level function
+ *  instead of more nested closure state. */
 interface EmptyKeyringDeps {
   getKeyringLength: () => number;
-  addSecret: (secretKeyHex: string, createdAt: number) => boolean;
-  rememberPayload: (content: string, createdAt: number) => void;
   ingestDriveKeyEvents: (events: NostrEvent[]) => Promise<void>;
   persistCache: () => void;
 }
 
 /**
- * Runs only when the first Drive Key fetch left the keyring empty: decides
- * whether that means "genuinely new" (safe to mint) or something else
- * entirely (found-but-unusable, unreachable network, or findable via a
- * wider relay search) — see the inline comments for why each branch is
- * handled the way it is.
+ * Runs only when the first Drive Key fetch left the keyring empty: classifies
+ * why — "genuinely new, proven" vs "don't actually know" — WITHOUT ever
+ * creating anything. This function cannot mint; see {@link ensureDriveKeyMinted}
+ * for the one place that's allowed to, and only ever on this function's
+ * "empty-confirmed" verdict.
+ *
+ * Returns `null` when the retry below actually found the key — the caller
+ * re-checks `getKeyringLength()` itself and treats that case as "found",
+ * never reading a verdict for it.
  */
-async function resolveEmptyKeyring(
+async function classifyEmptyKeyring(
   pubkey: string,
-  signer: Awaited<ReturnType<typeof signerManager.getSigner>>,
   firstAttemptEvents: NostrEvent[],
   deps: EmptyKeyringDeps,
-): Promise<void> {
-  const { getKeyringLength, addSecret, rememberPayload, ingestDriveKeyEvents, persistCache } = deps;
+): Promise<{ kind: "empty-confirmed" } | { kind: "unresolved"; reason: string } | null> {
+  const { getKeyringLength, ingestDriveKeyEvents, persistCache } = deps;
 
   // A Drive Key event existing at all — regardless of WHY we couldn't turn
   // it into a usable key (signer failure, or a payload shape this build
   // doesn't recognize) — means a key already exists. Minting a replacement
-  // here would publish over it: the Drive Key event is replaceable (one per
+  // would publish over it: the Drive Key event is replaceable (one per
   // identity), so a second mint doesn't coexist with the first, it destroys
   // it on every relay that accepts the publish, with no way back (see
   // restoreDriveKey's doc comment for the incident this guards against).
@@ -414,11 +524,13 @@ async function resolveEmptyKeyring(
   // shape never sets), which is exactly the gap a format change walked
   // through undetected.
   if (firstAttemptEvents.length > 0) {
-    throw new Error(
-      "Found a Drive Key on the relays, but this app couldn't use it (unrecognized format or a " +
-        "decrypt failure). Creating a new key here would permanently replace it and orphan every " +
-        "file under it. Please update the app, or use Import Drive Key with your existing secret.",
-    );
+    return {
+      kind: "unresolved",
+      reason:
+        "Found a Drive Key on this account, but this app couldn't read it (an unrecognized format " +
+        "or a decrypt failure). Retrying, or opening the drive on a device that already has it, " +
+        "may resolve this automatically.",
+    };
   }
 
   // No Drive Key event was found at all — but that alone still isn't proof
@@ -444,46 +556,43 @@ async function resolveEmptyKeyring(
     // had nothing to route with. Retry now that it might: this is what
     // actually finds a Drive Key published to relays outside this app's
     // fixed default set, not just what stops the app from destroying it.
-    const retryEvents = await fetchDriveKeyEvents(pubkey);
-    await ingestDriveKeyEvents(retryEvents);
+    const retry = await fetchDriveKeyEvents(pubkey);
+    await ingestDriveKeyEvents(retry.events);
     persistCache();
   }
 
-  if (getKeyringLength() === 0 && identityHistory !== "new") {
-    throw new Error(
+  if (getKeyringLength() > 0) {
+    // The retry above found it. Not empty any more — caller re-checks length
+    // and takes the "found" path; nothing further to classify.
+    return null;
+  }
+
+  if (identityHistory === "new") {
+    // Proven — see proveRelayCoverage: every configured relay answered a
+    // control query just now, and none of them carries an event for this
+    // pubkey under any kind. Safe for ensureDriveKeyMinted to act on later;
+    // this function itself still creates nothing.
+    return { kind: "empty-confirmed" };
+  }
+
+  return {
+    kind: "unresolved",
+    reason:
       identityHistory === "existing"
-        ? "This account has used Nostr before, but no Drive Key could be found for it, even after " +
-            "checking its own relay list. Creating a new one would risk destroying an existing key " +
-            "if one exists elsewhere. Please check your connection and try again, or use Import " +
-            "Drive Key with your existing secret."
-        : "Could not reach enough relays to tell whether this account already has a Drive Key. " +
-            "Refusing to create one, since that could permanently destroy an existing key. Please " +
-            "check your connection and try again.",
-    );
-  }
-
-  if (getKeyringLength() === 0) {
-    // Only reachable with identityHistory === "new" — the "existing" and
-    // "unknown" cases both throw above.
-    const confirmMessage =
-      "No Drive Key found, and this looks like a new account — create one now?\n\n" +
-      "Note: creating a key REPLACES your Drive Key everywhere it's published (one per account, " +
-      "replaceable). If you've actually used Drive before and see this by mistake, use Import Drive " +
-      "Key with your existing secret instead.";
-    if (!window.confirm(confirmMessage)) {
-      throw new Error("User cancelled drive key creation.");
-    }
-
-    const created = await initializeDriveKey(signer, pubkey);
-    addSecret(created.entry.secretKeyHex, created.created_at);
-    rememberPayload(created.encryptedContent, created.created_at);
-    persistCache();
-  }
-  // else: the retry above found the key — a returning user whose key lives
-  // outside the fixed relay set. Nothing left to do here.
+        ? "This account has used Nostr before, but no Drive Key could be found for it yet, even " +
+            "after checking its own relay list. This should resolve automatically once the network " +
+            "is reachable — nothing will be created in the meantime."
+        : "Couldn't reach enough of the network to tell whether this account already has a Drive " +
+            "Key. Retrying automatically; nothing will be created until that's confirmed one way " +
+            "or the other.",
+  };
 }
 
-async function buildDriveKeyring(): Promise<DriveKeyEntry[]> {
+/** Resolves the keyring for the current signed-in user. Read-only: on an
+ *  empty result this reports a verdict (see {@link DriveKeyStatus}) but never
+ *  creates anything itself — {@link ensureDriveKeyMinted} is the only path
+ *  that may act on an "empty-confirmed" verdict. */
+async function resolveDriveKeyStatus(): Promise<DriveKeyStatus> {
   const signer = await signerManager.getSigner();
   const pubkey = await signer.getPublicKey();
 
@@ -592,19 +701,26 @@ async function buildDriveKeyring(): Promise<DriveKeyEntry[]> {
   };
 
   // --- 2. Reconcile with relays -------------------------------------------
-  const syncWithRelays = async () => {
-    const events = await fetchDriveKeyEvents(pubkey); // never rejects — may resolve empty
-    await ingestDriveKeyEvents(events);
+  // Returns the empty-keyring verdict when the keyring is STILL empty after
+  // this run, or null when keys were found (by the first fetch, by
+  // classifyEmptyKeyring's own retry, or were already cached). Only the
+  // caller of the AWAITED (cold-cache) call below reads this — the
+  // backgrounded warm-cache call's verdict, if any, doesn't affect what
+  // resolveDriveKeyStatus returns, since a warm cache already has entries.
+  const syncWithRelays = async (): Promise<
+    { kind: "empty-confirmed" } | { kind: "unresolved"; reason: string } | null
+  > => {
+    const fetchResult = await fetchDriveKeyEvents(pubkey); // never rejects — may resolve empty
+    await ingestDriveKeyEvents(fetchResult.events);
 
     // Persist whatever we now hold so the next cold start doesn't need relays.
     persistCache();
 
-    // --- 3. First-time-user handling ---
+    // --- 3. First-time-user classification (never creates anything) ---
+    let emptyVerdict: { kind: "empty-confirmed" } | { kind: "unresolved"; reason: string } | null = null;
     if (keyring.length === 0) {
-      await resolveEmptyKeyring(pubkey, signer, events, {
+      emptyVerdict = await classifyEmptyKeyring(pubkey, fetchResult.events, {
         getKeyringLength: () => keyring.length,
-        addSecret,
-        rememberPayload,
         ingestDriveKeyEvents,
         persistCache,
       });
@@ -632,8 +748,8 @@ async function buildDriveKeyring(): Promise<DriveKeyEntry[]> {
     //   - what's resolved locally must be a STRICT superset of what that
     //     event carries — never publish a subset, and only publish when
     //     every secret the network currently has is also one we hold
-    if (events.length > 0 && keyring.length > 0) {
-      const newestEvent = events[0]!; // fetchDriveKeyEvents returns newest-first
+    if (fetchResult.events.length > 0 && keyring.length > 0) {
+      const newestEvent = fetchResult.events[0]!; // fetchDriveKeyEvents returns newest-first
       const publishedSecrets = await tryDecrypt(newestEvent.content);
       if (publishedSecrets) {
         const resolvedSecrets = keyring.map((k) => k.secretKeyHex);
@@ -663,27 +779,36 @@ async function buildDriveKeyring(): Promise<DriveKeyEntry[]> {
         }
       }
     }
+
+    return emptyVerdict;
   };
 
+  let emptyVerdict: { kind: "empty-confirmed" } | { kind: "unresolved"; reason: string } | null = null;
+
   if (hadCachedKeys) {
-    // Returning user: never block startup, never risk a create-key prompt.
+    // Returning user: never block startup, never risk creating anything.
     finalizeActiveKey();
     void syncWithRelays().catch((e) =>
       console.warn("[DriveKey] Background relay sync failed", e),
     );
   } else {
-    // Cold cache: we must wait for relays to give us the key, confirm via
-    // identityHistory that this is genuinely a first-time user, or throw
-    // (unreachable network, or an existing-but-unreadable key — either way,
-    // no prompt).
-    await syncWithRelays();
+    // Cold cache: wait for relays, get a real verdict (found / proven-empty /
+    // unresolved) — no throwing, no dialog, whatever the outcome.
+    emptyVerdict = await syncWithRelays();
   }
 
   cachedKeyring = keyring;
   cachedPubkey = pubkey;
 
   console.log(`[DriveKey] Keyring ready with ${keyring.length} key(s)`);
-  return keyring;
+
+  const status: DriveKeyStatus =
+    keyring.length > 0
+      ? { kind: "ready", keyring }
+      : emptyVerdict ?? { kind: "unresolved", reason: "Still checking for your Drive Key…" };
+  cachedStatus = status;
+  cachedStatusAt = Date.now();
+  return status;
 }
 
 // Guards refreshDriveKeyring against overlapping calls and against firing on
@@ -698,8 +823,8 @@ const MIN_REFRESH_INTERVAL_MS = 60_000;
  * Re-checks relays for Drive Key secrets beyond what's already cached,
  * WITHOUT ever resolving from scratch or risking a mint decision — this only
  * ever ADDS keys to an already-resolved keyring, the same thing
- * buildDriveKeyring's own background sync (the `hadCachedKeys` branch) does
- * once, on the very first resolution of a session.
+ * resolveDriveKeyStatus's own background sync (the `hadCachedKeys` branch)
+ * does once, on the very first resolution of a session.
  *
  * That "once" is the gap this fills: getDriveKeyring()'s fast path returns
  * `cachedKeyring` forever after that, with no mechanism to ever recheck
@@ -714,7 +839,7 @@ const MIN_REFRESH_INTERVAL_MS = 60_000;
  * Wired to fire when the tab regains visibility (see the listener below) —
  * the same "did something change while we were away" pattern
  * usePendingNativeImports.ts already uses for pending imports, not a blind
- * poll. A no-op if nothing has resolved yet (buildDriveKeyring will run
+ * poll. A no-op if nothing has resolved yet (resolveDriveKeyStatus will run
  * naturally) or the signed-in identity has changed since.
  */
 export async function refreshDriveKeyring(): Promise<void> {
@@ -727,9 +852,9 @@ export async function refreshDriveKeyring(): Promise<void> {
   refreshInFlight = (async () => {
     try {
       const signer = await signerManager.getSigner();
-      const events = await fetchDriveKeyEvents(pubkey);
+      const { events } = await fetchDriveKeyEvents(pubkey);
       // Re-check after the await: a sign-out/switch or a fresh
-      // buildDriveKeyring could have run while this was in flight.
+      // resolveDriveKeyStatus could have run while this was in flight.
       if (events.length === 0 || !cachedKeyring || cachedPubkey !== pubkey) return;
 
       const seenSecrets = new Set(cachedKeyring.map((k) => k.secretKeyHex));
@@ -755,6 +880,8 @@ export async function refreshDriveKeyring(): Promise<void> {
         console.log(
           `[DriveKey] Background refresh found additional key(s) — keyring now ${cachedKeyring.length}`,
         );
+        cachedStatus = { kind: "ready", keyring: cachedKeyring };
+        cachedStatusAt = Date.now();
         void saveCachedDrivePubkeys(pubkey, cachedKeyring.map((k) => k.publicKey));
         notifyDriveKeysChanged();
       }
@@ -951,6 +1078,103 @@ async function initializeDriveKey(
     encryptedContent,
     created_at,
   };
+}
+
+// Per-pubkey guard against two CONCURRENT calls both trying to mint at once —
+// deliberately NOT a "never try again this session" latch: a call that bails
+// on status.kind !== "empty-confirmed" (relays not yet fully reachable) must
+// be retriable once conditions improve, e.g. the user hitting the degraded
+// state's Retry button, or a relay that comes back later in the same page
+// load. The persisted marker below (recordMinted/hasMintedBefore) is the
+// separate guard against ever SUCCEEDING at minting twice for one identity.
+const mintInFlight = new Set<string>();
+
+async function hasMintedBefore(pubkey: string): Promise<boolean> {
+  const marker = await getStoredItem<Record<string, boolean>>(STORAGE_KEYS.DRIVE_KEY_MINTED_MARKER, {});
+  return marker[pubkey] === true;
+}
+
+async function recordMinted(pubkey: string): Promise<void> {
+  const marker = await getStoredItem<Record<string, boolean>>(STORAGE_KEYS.DRIVE_KEY_MINTED_MARKER, {});
+  marker[pubkey] = true;
+  await setStoredItem(STORAGE_KEYS.DRIVE_KEY_MINTED_MARKER, marker);
+}
+
+/**
+ * The ONE place in this module allowed to create a Drive Key. Intended to be
+ * called once per signed-in session (fire-and-forget, non-blocking — see
+ * FileIndexProvider.tsx's wiring) as soon as a "empty-confirmed" verdict is
+ * available. Silent: no dialog, no confirmation. Mints ONLY on
+ * resolveDriveKeyStatus's "empty-confirmed" verdict — proven via
+ * identityHistory.ts's proveRelayCoverage, i.e. every configured relay
+ * answered a control query just now and none of them carries anything for
+ * this pubkey under any kind. Never called from a read path, never on a
+ * timeout, never from a UI confirmation click.
+ *
+ * Doubly guarded against minting twice for one identity: an in-memory
+ * concurrency lock (rejects only calls that overlap an attempt already in
+ * flight, not later independent calls) plus a persisted per-pubkey marker
+ * (survives a reload — a second "empty-confirmed" verdict arriving later in
+ * the same identity's life, however unlikely in practice, must still refuse
+ * to mint again).
+ *
+ * Callers should call this again whenever a fresh verdict becomes available
+ * (FileIndexProvider.tsx does, from onKeyStatus) rather than assuming one
+ * call is the only chance — a bail on "not yet empty-confirmed" is not a
+ * permanent no, it's "ask again once you know more".
+ */
+export async function ensureDriveKeyMinted(): Promise<void> {
+  const pubkey = signerManager.getPubkey();
+  if (!pubkey) return;
+  if (mintInFlight.has(pubkey)) return;
+  mintInFlight.add(pubkey);
+
+  try {
+    if (await hasMintedBefore(pubkey)) return;
+
+    // Deliberately bypasses resolveDriveKeyStatusCached — minting is
+    // irreversible (a second key replaces the first, since the event is
+    // replaceable), so the gate must never act on a cached verdict of ANY
+    // age, TTL or not. A cache entry that was correct when written can be
+    // stale by the time this runs; only a resolve that starts right here,
+    // right before the decision, is trustworthy for it.
+    const status = await resolveDriveKeyStatus();
+    if (status.kind !== "empty-confirmed") return;
+
+    // Re-check right before minting: a concurrent resolution (another read, a
+    // background sync, restoreDriveKey from a warning banner) may have found
+    // or created a key in the interim, since resolveDriveKeyStatus() above
+    // may itself have taken several seconds.
+    if (cachedKeyring && cachedKeyring.length > 0 && cachedPubkey === pubkey) return;
+
+    const signer = await signerManager.getSigner();
+    const signerPubkey = await signer.getPublicKey();
+    if (signerPubkey !== pubkey) return; // account switched mid-flight
+
+    const created = await initializeDriveKey(signer, pubkey);
+    const entry = created.entry;
+
+    cachedKeyring = [entry];
+    cachedPubkey = pubkey;
+    cachedStatus = { kind: "ready", keyring: cachedKeyring };
+    cachedStatusAt = Date.now();
+    activeSecretKeyHex = entry.secretKeyHex;
+
+    void savePayloadCache(pubkey, [
+      { content: created.encryptedContent, created_at: created.created_at },
+    ]);
+    void saveCachedDrivePubkeys(pubkey, [entry.publicKey]);
+    await recordMinted(pubkey);
+
+    console.log("[DriveKey] Minted a new Drive Key (proven first-time user)");
+    notifyDriveKeysChanged();
+  } catch (e) {
+    console.warn("[DriveKey] Failed to mint a new Drive Key", e);
+    // Do NOT record the marker on failure — a genuinely new user whose first
+    // mint attempt failed (e.g. a network blip) must be allowed to try again.
+  } finally {
+    mintInFlight.delete(pubkey);
+  }
 }
 
 /**

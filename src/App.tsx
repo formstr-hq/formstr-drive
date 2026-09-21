@@ -18,7 +18,7 @@ import { ThemeProvider } from "./context/ThemeProvider";
 import { AntdThemeBridge } from "./components/ui/AntdThemeBridge";
 import { SharedView } from "./components/Shared/SharedView";
 import { SharesProvider } from "./context/SharesProvider";
-import { parseShareHash } from "./services/sharing";
+import { decodeShareLink } from "./services/sharing";
 import "./App.css";
 
 function DriveLayout() {
@@ -81,11 +81,11 @@ function App() {
   // one never depends on the local relay's account-scoped state or a signer
   // being available. See docs/NIP-FS.md "File/Folder Sharing".
   const [isSharedRoute, setIsSharedRoute] = useState(
-    () => parseShareHash(window.location.hash) !== null,
+    () => decodeShareLink(window.location.hash) !== null,
   );
 
   useEffect(() => {
-    const onHashChange = () => setIsSharedRoute(parseShareHash(window.location.hash) !== null);
+    const onHashChange = () => setIsSharedRoute(decodeShareLink(window.location.hash) !== null);
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
