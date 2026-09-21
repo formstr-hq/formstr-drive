@@ -23,6 +23,8 @@ public final class DriveFilesCrypto {
     private static final int PAYLOAD_NONCE_LENGTH = 32;
     private static final int MESSAGE_KEY_LENGTH = 44;
     private static final byte[] NIP44_INFO = "nip44-v2".getBytes(StandardCharsets.UTF_8);
+    private static final int SEGMENT_NONCE_LENGTH = 12;
+    private static final int SEGMENT_TAG_LENGTH_BITS = 128;
 
     private DriveFilesCrypto() {
     }
@@ -98,6 +100,58 @@ public final class DriveFilesCrypto {
         }
 
         return cipher.doFinal(ciphertext);
+    }
+
+    /**
+     * NIP-FS single-blob segment decryption (mirrors crypto.ts's
+     * decryptSegment exactly): AES-256-GCM directly under the file's
+     * conversationKey (deriveConversationKey's output used AS the raw
+     * 32-byte AES key — no HKDF expansion, unlike decryptChunkBlob above).
+     * The nonce is computed, never stored: 11-byte big-endian segment index,
+     * then a 1-byte last-segment flag (1 on the final segment, 0 otherwise).
+     * Payload is {@code ciphertext || tag(16)} — no version byte.
+     *
+     * `segmentIndex`/`isLast` MUST match what the segment was encrypted
+     * with. Getting either wrong recomputes the wrong nonce, which fails the
+     * GCM tag check by design — see buildSegmentNonce for why: this is what
+     * makes a reordered or truncated segment detectable rather than silently
+     * decrypting to garbage or returning a short file.
+     */
+    public static byte[] decryptSegment(byte[] payload, String privateKeyHex, long segmentIndex, boolean isLast)
+            throws GeneralSecurityException {
+        byte[] conversationKey = deriveConversationKey(privateKeyHex);
+        byte[] nonce = buildSegmentNonce(segmentIndex, isLast);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(
+                Cipher.DECRYPT_MODE,
+                new SecretKeySpec(conversationKey, "AES"),
+                new GCMParameterSpec(SEGMENT_TAG_LENGTH_BITS, nonce));
+
+        return cipher.doFinal(payload);
+    }
+
+    /**
+     * Mirrors crypto.ts's buildSegmentNonce exactly. Uses {@code long} (not
+     * {@code int}) for the index: a large file at the default 64 KiB
+     * chunkSize can exceed Integer.MAX_VALUE segments well before the
+     * 11-byte encoding limit this throws on.
+     */
+    private static byte[] buildSegmentNonce(long segmentIndex, boolean isLast) throws GeneralSecurityException {
+        if (segmentIndex < 0) {
+            throw new GeneralSecurityException("Segment index must be non-negative, got " + segmentIndex);
+        }
+        byte[] nonce = new byte[SEGMENT_NONCE_LENGTH];
+        long remaining = segmentIndex;
+        for (int i = 10; i >= 0; i--) {
+            nonce[i] = (byte) (remaining & 0xFF);
+            remaining >>>= 8;
+        }
+        if (remaining != 0) {
+            throw new GeneralSecurityException("Segment index too large to encode in 11 bytes: " + segmentIndex);
+        }
+        nonce[11] = (byte) (isLast ? 1 : 0);
+        return nonce;
     }
 
     /** Big-endian 4-byte chunk index — the v3 salt seed and AAD. */

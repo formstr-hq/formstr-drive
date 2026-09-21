@@ -1,9 +1,9 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "nostr-tools/utils";
 import { BlossomClient } from "../blossom";
-import { resolveChunks, type FileMetadata } from "../types/metadata";
-import { aesGcmDecryptBytes, deriveConversationKeyFromHex } from "../crypto";
-import type { DownloadProgressInfo } from "./downloadFile";
+import { resolveChunks, isLegacyBlobFormat, type FileMetadata } from "../types/metadata";
+import { aesGcmDecryptBytes, deriveConversationKeyFromHex, segmentCount } from "../crypto";
+import { streamDecryptedSegments, type DownloadProgressInfo } from "./downloadFile";
 import { withTimeout, TransferFailure } from "../transfers/withTimeout";
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -199,18 +199,23 @@ async function attemptDownloadViaServiceWorker(
     await new Promise<void>((resolve, reject) => {
       (async () => {
         try {
-          const chunks = resolveChunks(file.chunks, file.server);
           let bytesSent = 0;
           // Hashed incrementally as plaintext bytes are produced — verified
           // against NIP-FS's optional unencryptedFileHash once the whole file
           // has streamed through, before the SW is told the transfer is done.
           const plaintextHasher = file.unencryptedFileHash ? sha256.create() : null;
 
-          if (chunks.length > 0) {
-            const convKey = deriveConversationKeyFromHex(file.encryptionKey);
-            const totalChunks = chunks.length;
+          if (!isLegacyBlobFormat(file)) {
+            const { blobHash, chunkSize } = file;
+            if (!blobHash || !chunkSize) {
+              throw new Error("File is missing blobHash/chunkSize — cannot download");
+            }
+            const blobKey = deriveConversationKeyFromHex(file.encryptionKey);
+            const total = segmentCount(file.size, chunkSize);
+            const { reader } = await getClient(file.server).downloadStream(blobHash, undefined, signal);
 
-            for (let i = 0; i < totalChunks; i++) {
+            let i = 0;
+            for await (const decBytes of streamDecryptedSegments(reader, { ...file, blobHash, chunkSize }, blobKey)) {
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
@@ -218,32 +223,65 @@ async function attemptDownloadViaServiceWorker(
               throwIfAborted(signal);
               if (cancelledBySw) break;
 
-              const { hash, server } = chunks[i];
-              const encBytes = await getClient(server).download(hash, undefined, undefined, signal);
-              const decBytes = await aesGcmDecryptBytes(encBytes, convKey);
-              let buffer = decBytes.buffer.slice(
+              const buffer = decBytes.buffer.slice(
                 decBytes.byteOffset,
                 decBytes.byteOffset + decBytes.byteLength,
               ) as ArrayBuffer;
-              
-              if (bytesSent + buffer.byteLength > file.size) {
-                buffer = buffer.slice(0, file.size - bytesSent);
-              }
               bytesSent += buffer.byteLength;
               // Must hash before postMessage — the transfer list detaches
               // `buffer`, making it unreadable afterward.
               plaintextHasher?.update(new Uint8Array(buffer));
               port.postMessage({ type: "chunk", buffer }, [buffer]);
+              i++;
 
               onProgress?.({
                 stage: "Downloading...",
-                progress: Math.round(((i + 1) / totalChunks) * 100),
-                currentChunk: i + 1,
-                totalChunks,
+                progress: Math.round((i / total) * 100),
+                currentChunk: i,
+                totalChunks: total,
               });
             }
           } else {
-            throw new Error("File has no chunks — cannot download");
+            const chunks = resolveChunks(file.chunks, file.server);
+            if (chunks.length > 0) {
+              const convKey = deriveConversationKeyFromHex(file.encryptionKey);
+              const totalChunks = chunks.length;
+
+              for (let i = 0; i < totalChunks; i++) {
+                throwIfAborted(signal);
+                if (cancelledBySw) break;
+
+                await takePull();
+                throwIfAborted(signal);
+                if (cancelledBySw) break;
+
+                const { hash, server } = chunks[i];
+                const encBytes = await getClient(server).download(hash, undefined, undefined, signal);
+                const decBytes = await aesGcmDecryptBytes(encBytes, convKey);
+                let buffer = decBytes.buffer.slice(
+                  decBytes.byteOffset,
+                  decBytes.byteOffset + decBytes.byteLength,
+                ) as ArrayBuffer;
+
+                if (bytesSent + buffer.byteLength > file.size) {
+                  buffer = buffer.slice(0, file.size - bytesSent);
+                }
+                bytesSent += buffer.byteLength;
+                // Must hash before postMessage — the transfer list detaches
+                // `buffer`, making it unreadable afterward.
+                plaintextHasher?.update(new Uint8Array(buffer));
+                port.postMessage({ type: "chunk", buffer }, [buffer]);
+
+                onProgress?.({
+                  stage: "Downloading...",
+                  progress: Math.round(((i + 1) / totalChunks) * 100),
+                  currentChunk: i + 1,
+                  totalChunks,
+                });
+              }
+            } else {
+              throw new Error("File has no chunks — cannot download");
+            }
           }
 
           if (cancelledBySw) {
