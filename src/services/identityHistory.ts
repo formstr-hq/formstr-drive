@@ -111,7 +111,7 @@ export async function establishIdentityHistory(identityPubkey: string): Promise<
 
     const filters: Filter[] = [{ kinds: EXISTENCE_KINDS, authors: [identityPubkey], limit: 1 }];
     const handle = dataLayer.observe(filters, {
-      onEvent: (_event: Event) => {
+      onEvent: () => {
         found = true;
       },
       onEose: () => {

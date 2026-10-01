@@ -215,6 +215,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       // (possibly a different account) would see the previous account's
       // files replayed immediately on subscribe.
       clearFileIndexStore();
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setFiles([]);
       setKeyStatus(null);
       setHydrated(false);

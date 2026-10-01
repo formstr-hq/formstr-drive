@@ -70,7 +70,7 @@ export async function fetchFilePreview(file: FileMetadata): Promise<PreviewData 
   const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
   const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
 
-  const arr = new Uint8Array(decrypted as any);
+  const arr = new Uint8Array(decrypted);
   const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
 
   const blob = new Blob([decrypted as BlobPart], { type: mimeType });

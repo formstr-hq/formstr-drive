@@ -17,11 +17,7 @@ function Breadcrumb({
   onNavigate: (path: string) => void;
 }) {
   const parts = currentFolder.split("/").filter(Boolean);
-  let acc = "";
-  const segments = parts.map((part) => {
-    acc += "/" + part;
-    return { name: part, path: acc };
-  });
+  const segments = parts.map((part, i) => ({ name: part, path: "/" + parts.slice(0, i + 1).join("/") }));
 
   return (
     <nav className="breadcrumb" aria-label="Folder path">

@@ -18,6 +18,7 @@ export function DriveKeyWarningBanner() {
 
   useEffect(() => {
     if (!isSignedIn || !pubkey) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setOrphaned([]);
       return;
     }

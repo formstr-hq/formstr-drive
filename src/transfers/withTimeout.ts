@@ -1,7 +1,7 @@
 export class TransferFailure extends Error {
   code: string;
-  detail?: any;
-  constructor(code: string, message: string, detail?: any) {
+  detail?: unknown;
+  constructor(code: string, message: string, detail?: unknown) {
     super(message);
     this.code = code;
     this.detail = detail;

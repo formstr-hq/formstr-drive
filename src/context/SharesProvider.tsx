@@ -38,6 +38,7 @@ export function SharesProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isSignedIn) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setEntries([]);
       setLoaded(false);
       return;

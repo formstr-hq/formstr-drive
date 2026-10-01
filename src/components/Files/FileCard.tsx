@@ -77,6 +77,7 @@ export function FileCard({
     // Check cache first — if cached, set immediately without async work
     const cached = file.previewHash ? getCachedPreview(file.previewHash) : undefined;
     if (cached) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setPreview(cached);
       setPreviewloaded(true);
       return;

@@ -1,7 +1,7 @@
 import { generateSecretKey } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
-import { uploadFile as chunkedUploadFile, computePlaintextHash } from "../services/uploadFile";
+import { uploadFile as chunkedUploadFile, computePlaintextHash, type UploadProgressInfo } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
 import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
@@ -18,7 +18,7 @@ export async function uploadDriver(
   servers: string[],
   targetFolder: string,
   signal: AbortSignal,
-  onProgress: (info: any) => void
+  onProgress: (info: UploadProgressInfo) => void
 ): Promise<FileMetadata> {
   const uploadNotifId = crypto.randomUUID();
   let lastNotifPercent = -1;
@@ -70,7 +70,7 @@ export async function uploadDriver(
       return metadata;
     }
 
-    const previewPromise = previewFile(file).catch((e: any) => {
+    const previewPromise = previewFile(file).catch((e: unknown) => {
       console.warn("Background preview generation failed", e);
       return null;
     });
@@ -88,7 +88,7 @@ export async function uploadDriver(
       file,
       servers,
       privateKeyHex,
-      (info: any) => {
+      (info) => {
         onProgress(info);
         if (isAndroidPlatform) {
           const pct = Math.floor(info.progress ?? 0);
@@ -133,12 +133,12 @@ export async function uploadDriver(
     }
 
     return metadata;
-  } catch (e: any) {
+  } catch (e) {
     if (isAndroidPlatform) {
       if (isAbortError(e)) {
         void clearUploadNotification(uploadNotifId);
       } else {
-        void finishUploadNotification(uploadNotifId, file.name, false, e.message);
+        void finishUploadNotification(uploadNotifId, file.name, false, e instanceof Error ? e.message : String(e));
       }
     }
     throw e;
