@@ -1,4 +1,3 @@
-/* Sign In */
 .sign-in-container {
   display: flex;
   align-items: center;
@@ -10,6 +9,8 @@
     radial-gradient(circle at top, var(--color-bg-surface), var(--color-bg-sunken)),
     linear-gradient(180deg, var(--color-bg-sunken) 0%, var(--color-bg-active) 100%);
   box-sizing: border-box;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Embedded — nested inside AddAccountModal instead of taking the full

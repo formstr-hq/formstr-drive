@@ -12,11 +12,12 @@
   overflow: hidden;
   z-index: var(--z-overlay);
   animation: slideUp 0.3s ease-out;
+  pointer-events: auto;
 }
 
 .transfer-managers-container {
   position: fixed;
-  bottom: var(--space-12);
+  bottom: max(var(--space-12), var(--safe-area-bottom));
   right: var(--space-12);
   display: flex;
   flex-direction: column;
@@ -24,6 +25,7 @@
   z-index: var(--z-overlay);
   width: calc(100% - 48px);
   max-width: 320px;
+  pointer-events: none;
 }
 
 @media (min-width: 768px) {
@@ -174,8 +176,9 @@
 
 .upload-progress-wrapper {
   position: relative;
-  width: 32px;
-  height: 32px;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -199,7 +202,9 @@
 
 .progress-text {
   position: absolute;
-  font-size: var(--font-size-xs);
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
 }
@@ -278,4 +283,24 @@
   width: 14px;
   height: 14px;
   margin-top: 1px;
+}
+
+/* Animated trailing dots for a running stage label. */
+.upload-item-stage--active::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: stage-dots 1.2s steps(4, end) infinite;
+}
+
+@keyframes stage-dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-item-stage--active::after { animation: none; content: "..."; }
 }

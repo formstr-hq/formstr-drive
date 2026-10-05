@@ -8,7 +8,11 @@
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   position: relative;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: 64px;
   transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+  -webkit-touch-callout: none;
 }
 
 .file-card.selected {
@@ -18,12 +22,8 @@
     0 6px 20px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
-.file-card:hover {
-  border-color: var(--color-border-hover);
-  box-shadow: var(--shadow-xs);
-}
-
 .file-select {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -33,9 +33,16 @@
   transition: opacity var(--motion-fast) ease;
 }
 
-/* Show checkbox when parent card is hovered */
-.file-card:hover .file-select {
-  opacity: 1;
+@media (hover: hover) {
+  .file-card:hover {
+    border-color: var(--color-border-hover);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* Show checkbox when parent card is hovered */
+  .file-card:hover .file-select {
+    opacity: 1;
+  }
 }
 
 /* Always show when checked */
@@ -58,7 +65,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--motion-fast) ease;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
   box-shadow: var(--shadow-xs);
 }
 
@@ -167,9 +174,11 @@
   color: var(--color-text-secondary);
 }
 
-.action-btn:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+@media (hover: hover) {
+  .action-btn:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
 }
 
 .action-btn:disabled {
@@ -202,51 +211,39 @@
   position: relative;
 }
 
-.file-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: var(--space-2);
-  background: var(--color-bg-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-sm);
-  z-index: var(--z-dropdown);
-  min-width: 160px;
-  backdrop-filter: var(--surface-blur);
-  -webkit-backdrop-filter: var(--surface-blur);
+@media (pointer: coarse), (hover: none) {
+  /* On touch, always show checkboxes slightly faded so they can be tapped. */
+  .file-select {
+    opacity: 0.6;
+  }
+
+  .file-select::after {
+    content: "";
+    position: absolute;
+    inset: -14px;
+  }
+
+  .action-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* No hover on touch: the sheet's own actions replace these. */
+  .action-btn--hover-only {
+    display: none;
+  }
 }
 
-.file-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  background: var(--color-scrim-weak);
-  z-index: var(--z-dropdown-backdrop);
-  border: none;
-  padding: 0;
-  margin: 0;
-}
+/* Touch: no hover shadows to animate, and a Drive-style pressed tint instead
+   of per-card transitions (cheaper to paint while scrolling a long list). */
+@media (hover: none) {
+  .file-card,
+  .file-tile {
+    transition: none;
+  }
 
-.file-menu button {
-  display: block;
-  width: 100%;
-  padding: var(--space-5) var(--space-10);
-  border: none;
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  font-size: var(--font-size-base);
-  color: var(--color-text-primary);
-}
-
-.file-menu button:hover {
-  background: var(--color-bg-hover);
-}
-
-.file-menu button.delete-btn {
-  color: var(--color-danger);
-}
-
-.file-menu button.move-btn {
-  color: var(--color-accent);
+  .file-card:active,
+  .file-tile:active {
+    background: var(--color-bg-active);
+  }
 }

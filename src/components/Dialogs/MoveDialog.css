@@ -47,12 +47,16 @@
 }
 
 .move-dialog-header h3 {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin: 0;
   font-size: var(--font-size-2xl);
   font-weight: var(--font-weight-semibold);
 }
 
 .move-dialog-header button {
+  flex-shrink: 0;
   width: 32px;
   height: 32px;
   border: none;

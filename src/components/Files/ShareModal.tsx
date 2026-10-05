@@ -4,6 +4,8 @@ import type { FileMetadata } from "../../types/metadata";
 import { ensureFileShare, type ShareResult } from "../../services/sharing";
 import { useToast } from "../../hooks/useToast";
 import { useShares } from "../../context/SharesProvider";
+import { Share } from "@capacitor/share";
+import { isNativePlatform } from "../../utils/platform";
 import "./ShareModal.css";
 
 // Folder sharing is set aside for now (see services/sharing/folder) — this
@@ -74,12 +76,19 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
   const handleCopy = async () => {
     if (!result) return;
     try {
+      if (isNativePlatform) {
+        await Share.share({
+          url: result.url,
+          title: `Share ${label}`,
+        });
+        return;
+      }
       await navigator.clipboard.writeText(result.url);
       setCopied(true);
       toast.success("Link copied to clipboard");
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast.error("Couldn't copy automatically — select and copy the link manually");
+      toast.error("Couldn't share automatically — select and copy the link manually");
     }
   };
 
@@ -118,7 +127,7 @@ export function ShareModal({ target, onClose }: ShareModalProps) {
                   className="share-link-input"
                 />
                 <button onClick={handleCopy} className="rename-btn">
-                  {copied ? "Copied" : "Copy"}
+                  {copied ? "Copied" : (isNativePlatform ? "Share" : "Copy")}
                 </button>
               </div>
             </>

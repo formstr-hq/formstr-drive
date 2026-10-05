@@ -51,6 +51,7 @@ const fileIndexStore = (() => {
   // created_at). See write()'s upgrade path below and retryFailed().
   const failedEvents = new Map<string, Event>();
   let onFiles: ((files: FileMetadata[]) => void) | null = null;
+  let emitScheduled = false;
 
   function emit(): void {
     if (!onFiles) return;
@@ -62,6 +63,16 @@ const fileIndexStore = (() => {
       .sort((a, b) => b.created_at - a.created_at)
       .map((e) => e.metadata);
     onFiles(files);
+  }
+
+  function scheduleEmit(): void {
+    if (emitScheduled) return;
+    emitScheduled = true;
+    queueMicrotask(() => {
+      if (!emitScheduled) return;
+      emitScheduled = false;
+      emit();
+    });
   }
 
   return {
@@ -95,7 +106,7 @@ const fileIndexStore = (() => {
       entries.set(id, { created_at: createdAt, metadata });
       if (metadata) {
         failedEvents.delete(id);
-        emit();
+        scheduleEmit();
       } else if (rawEvent) {
         failedEvents.set(id, rawEvent);
       }
@@ -109,12 +120,21 @@ const fileIndexStore = (() => {
      *  (EOSE) completes even if every replayed event turned out to be one
      *  `write()` already rejected as not-newer. */
     refresh(): void {
+      emitScheduled = false;
       emit();
+    },
+    /** Synchronous flush of any pending scheduled emit. */
+    flush(): void {
+      if (emitScheduled) {
+        emitScheduled = false;
+        emit();
+      }
     },
     /** Drops everything and emits the resulting empty list — call on
      *  logout/account switch so a new identity never briefly shows the
      *  previous one's files. */
     clear(): void {
+      emitScheduled = false;
       entries.clear();
       failedEvents.clear();
       emit();
@@ -134,6 +154,8 @@ const fileIndexStore = (() => {
   };
 })();
 
+export { fileIndexStore };
+
 /** Clears the shared file-index store — call when the signed-in identity
  *  changes so a new account never briefly shows the previous one's files. */
 export function clearFileIndexStore(): void {
@@ -152,6 +174,16 @@ export function clearFileIndexStore(): void {
  */
 export function recordPublishedMetadata(metadata: FileMetadata, createdAt: number): void {
   fileIndexStore.write(metadata.id, createdAt, metadata);
+}
+
+/**
+ * Cheap pre-check for {@link findDuplicateByHash}: byte-identical files have
+ * identical sizes, so if no indexed file has this size there is nothing the
+ * (expensive, full-file) plaintext hash could possibly match. Lets uploads of
+ * anything unique skip the dedup read-and-hash pass entirely.
+ */
+export function hasSameSizeFile(size: number): boolean {
+  return fileIndexStore.snapshot().some((f) => f.size === size && !!f.unencryptedFileHash);
 }
 
 /**

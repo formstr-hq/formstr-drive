@@ -12,7 +12,9 @@
   border-radius: var(--radius-lg);
   overflow: visible;
   background: var(--color-bg-surface);
-  cursor: default;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
   transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
   position: relative;
 }
@@ -24,10 +26,6 @@
     0 6px 20px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
-.file-tile:hover .file-select {
-  opacity: 1;
-}
-
 .file-select-tile {
   position: absolute;
   top: 10px;
@@ -35,14 +33,16 @@
   z-index: 3;
 }
 
-.file-tile:hover {
-  box-shadow: var(--shadow-md);
-  border-color: var(--color-border-hover);
-  z-index: 2;
-}
+@media (hover: hover) {
+  .file-tile:hover .file-select {
+    opacity: 1;
+  }
 
-.file-tile.menu-open {
-  z-index: 50;
+  .file-tile:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--color-border-hover);
+    z-index: 2;
+  }
 }
 
 /* Square preview */
@@ -56,10 +56,6 @@
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-}
-
-.file-tile-preview.menu-open {
-  overflow: visible;
 }
 
 .file-tile-img {
@@ -132,14 +128,11 @@
   pointer-events: none;
 }
 
-.file-tile:hover .file-tile-overlay {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.file-tile.menu-open .file-tile-overlay {
-  opacity: 1;
-  pointer-events: auto;
+@media (hover: hover) {
+  .file-tile:hover .file-tile-overlay {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .tile-action-btn {
@@ -159,21 +152,15 @@
   position: relative;
 }
 
-.tile-action-btn:hover {
-  background: #fff;
+@media (hover: hover) {
+  .tile-action-btn:hover {
+    background: #fff;
+  }
 }
 
 .tile-action-btn:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.tile-menu {
-  top: calc(100% + 8px);
-  bottom: auto;
-  right: -18px;
-  margin: 0;
-  z-index: 60;
 }
 
 /* Footer */
@@ -204,4 +191,47 @@
   margin-left: 0;
   margin-top: 2px;
   align-self: flex-start;
+}
+
+@media (hover: none) {
+  /* On touch, always show checkboxes slightly faded so they can be tapped. */
+  .file-select {
+    opacity: 0.6;
+  }
+
+  /* Make the touch target for checkboxes bigger on mobile */
+  .file-select::after {
+    content: "";
+    position: absolute;
+    inset: -14px;
+  }
+
+  /* Only the 3-dot button shows on touch; the sheet carries every action. */
+  .file-tile-overlay {
+    opacity: 1;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .tile-action-btn--hover-only {
+    display: none;
+  }
+
+  .tile-action-btn--more {
+    pointer-events: auto;
+    width: 36px;
+    height: 36px;
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
+    border-radius: 50%;
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* 44px hit area around the 36px visual */
+  .tile-action-btn--more::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+  }
 }

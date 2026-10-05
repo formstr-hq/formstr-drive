@@ -322,7 +322,8 @@
     height: 100%;
     z-index: var(--z-drawer);
     transform: translateX(-100%);
-    transition: transform var(--motion-drawer) ease;
+    transition: transform var(--motion-drawer) cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform;
   }
 
   .folder-sidebar.sidebar-open {

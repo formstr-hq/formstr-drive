@@ -1,6 +1,6 @@
 import { useFileIndex } from '../../hooks/useFileContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import DriveMark from "../../assets/drive-mark.svg";
+import { DriveMark } from "../icons/DriveMark";
 import { ProfileMenu } from './ProfileMenu';
 import { useProfileContext } from '../../hooks/useProfileContext';
 import { MenuOutlined } from "@ant-design/icons";
@@ -17,11 +17,7 @@ function Breadcrumb({
   onNavigate: (path: string) => void;
 }) {
   const parts = currentFolder.split("/").filter(Boolean);
-  let acc = "";
-  const segments = parts.map((part) => {
-    acc += "/" + part;
-    return { name: part, path: acc };
-  });
+  const segments = parts.map((part, i) => ({ name: part, path: "/" + parts.slice(0, i + 1).join("/") }));
 
   return (
     <nav className="breadcrumb" aria-label="Folder path">
@@ -61,7 +57,7 @@ export function Header({ onMenuClick }: HeaderProps) {
               onClick={onMenuClick}
             />
         )}
-        <img src={DriveMark} alt="Form* Drive" className="app-mark" />
+        <DriveMark className="app-mark" />
         <Breadcrumb currentFolder={currentFolder} onNavigate={setCurrentFolder} />
       </div>
 

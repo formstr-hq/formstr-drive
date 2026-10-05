@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { loadSharedByMe, type SharedByMeEntry } from "../services/sharing";
 import { useProfileContext } from "../hooks/useProfileContext";
+import { SHARES_CHANGED_EVENT, setLoadedShareEntries } from "./sharesEvents";
 
 export interface SharesApi {
   /** True if this file currently has a live (non-revoked) share link. */
@@ -38,8 +39,10 @@ export function SharesProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isSignedIn) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setEntries([]);
       setLoaded(false);
+      setLoadedShareEntries(null);
       return;
     }
     let cancelled = false;
@@ -48,6 +51,7 @@ export function SharesProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setEntries(result);
           setLoaded(true);
+          setLoadedShareEntries(result);
         }
       })
       .catch((e) => {
@@ -61,6 +65,12 @@ export function SharesProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [isSignedIn, version]);
+
+  useEffect(() => {
+    const onChanged = () => setVersion((v) => v + 1);
+    window.addEventListener(SHARES_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(SHARES_CHANGED_EVENT, onChanged);
+  }, []);
 
   const fileIds = useMemo(() => {
     const ids = new Set<string>();

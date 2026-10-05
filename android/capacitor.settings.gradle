@@ -2,11 +2,20 @@
 include ':capacitor-android'
 project(':capacitor-android').projectDir = new File('../node_modules/.pnpm/@capacitor+android@8.3.1_@capacitor+core@8.3.1/node_modules/@capacitor/android/capacitor')
 
+include ':capacitor-app'
+project(':capacitor-app').projectDir = new File('../node_modules/.pnpm/@capacitor+app@8.1.1_@capacitor+core@8.3.1/node_modules/@capacitor/app/android')
+
+include ':capacitor-keyboard'
+project(':capacitor-keyboard').projectDir = new File('../node_modules/.pnpm/@capacitor+keyboard@8.0.5_@capacitor+core@8.3.1/node_modules/@capacitor/keyboard/android')
+
 include ':capacitor-preferences'
 project(':capacitor-preferences').projectDir = new File('../node_modules/.pnpm/@capacitor+preferences@8.0.1_@capacitor+core@8.3.1/node_modules/@capacitor/preferences/android')
 
+include ':capacitor-share'
+project(':capacitor-share').projectDir = new File('../node_modules/.pnpm/@capacitor+share@8.0.1_@capacitor+core@8.3.1/node_modules/@capacitor/share/android')
+
 include ':khadarvsk-capacitor-secure-storage'
-project(':khadarvsk-capacitor-secure-storage').projectDir = new File('../node_modules/.pnpm/@khadarvsk+capacitor-secure-storage@0.0.1_@capacitor+core@8.3.1/node_modules/@khadarvsk/capacitor-secure-storage/android')
+project(':khadarvsk-capacitor-secure-storage').projectDir = new File('../node_modules/.pnpm/@khadarvsk+capacitor-secure_b03eee5e3ce8ba075fda930655156b0e/node_modules/@khadarvsk/capacitor-secure-storage/android')
 
 include ':nostr-signer-capacitor-plugin'
 project(':nostr-signer-capacitor-plugin').projectDir = new File('../node_modules/.pnpm/nostr-signer-capacitor-plugin@0.0.5_@capacitor+core@8.3.1/node_modules/nostr-signer-capacitor-plugin/android')

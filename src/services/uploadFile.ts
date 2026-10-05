@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha256";
+import { createStreamHasher } from "./sha256Stream";
 import { bytesToHex } from "nostr-tools/utils";
 import { BlossomClient, BlossomError } from "../blossom";
 import { encryptSegment, deriveConversationKeyFromHex, encryptFileWithExistingKey, segmentCount } from "../crypto";
@@ -31,10 +32,17 @@ const HASH_READ_SIZE = 4 * 1024 * 1024;
  */
 export async function computePlaintextHash(file: File, signal?: AbortSignal): Promise<string> {
   const hasher = sha256.create();
+  const read = (start: number) =>
+    file.slice(start, Math.min(start + HASH_READ_SIZE, file.size)).arrayBuffer();
+  // Reads the next slice while the current one is being hashed, so disk/bridge
+  // latency overlaps the CPU-bound digest instead of adding to it.
+  let next = file.size > 0 ? read(0) : null;
   for (let start = 0; start < file.size; start += HASH_READ_SIZE) {
     throwIfAborted(signal);
-    const end = Math.min(start + HASH_READ_SIZE, file.size);
-    hasher.update(new Uint8Array(await file.slice(start, end).arrayBuffer()));
+    const buf = await next!;
+    const following = start + HASH_READ_SIZE;
+    next = following < file.size ? read(following) : null;
+    hasher.update(new Uint8Array(buf));
   }
   return bytesToHex(hasher.digest());
 }
@@ -69,6 +77,93 @@ function toHexHash(digest: ArrayBuffer): string {
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException("Upload aborted", "AbortError");
+  }
+}
+
+/** Plaintext read per batch in the encrypt pass. A multiple of any sane
+ *  `chunkSize`; segments inside a batch are encrypted concurrently. */
+const ENCRYPT_BATCH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The one encrypt+hash pass both {@link prepareUpload} and {@link uploadFile}
+ * run. Reads the file in multi-segment batches (one `slice().arrayBuffer()` per
+ * batch instead of per 64KB segment, with the next batch prefetched), encrypts
+ * a batch's segments concurrently — WebCrypto does the AES off the main thread —
+ * then feeds them to `sink` and the ciphertext hasher strictly in order.
+ *
+ * `knownPlaintextHash` (from the dedup pre-check) skips re-hashing the
+ * plaintext: that SHA-256 runs in JS and is the slowest part of the pass.
+ */
+async function encryptSegments(
+  file: File,
+  blobKey: Uint8Array,
+  chunkSize: number,
+  signal: AbortSignal | undefined,
+  onProgress: ((info: UploadProgressInfo) => void) | undefined,
+  knownPlaintextHash: string | undefined,
+  sink: (index: number, encBytes: Uint8Array) => Promise<void>,
+): Promise<{ blobHash: string; unencryptedFileHash: string }> {
+  const totalSize = file.size;
+  const totalSegments = segmentCount(totalSize, chunkSize);
+  const perBatch = Math.max(1, Math.floor(ENCRYPT_BATCH_BYTES / chunkSize));
+  const batchCount = Math.ceil(totalSegments / perBatch);
+  // Both digests run on their own worker threads, in parallel with each other
+  // and with the (also off-thread) AES — JS SHA-256 is the slowest part here.
+  const blobHasher = createStreamHasher();
+  const plaintextHasher = knownPlaintextHash ? null : createStreamHasher();
+
+  const readBatch = async (batch: number) => {
+    const first = batch * perBatch;
+    const start = first * chunkSize;
+    const end = Math.min(start + perBatch * chunkSize, totalSize);
+    return { first, bytes: new Uint8Array(await file.slice(start, end).arrayBuffer()) };
+  };
+
+  try {
+    let next: Promise<{ first: number; bytes: Uint8Array }> | null = readBatch(0);
+    for (let batch = 0; batch < batchCount; batch++) {
+      throwIfAborted(signal);
+      const { first, bytes } = await next!;
+      next = batch + 1 < batchCount ? readBatch(batch + 1) : null;
+
+      onProgress?.({
+        stage: "Encrypting...",
+        progress: Math.round((first / totalSegments) * 20),
+        currentChunk: first + 1,
+        totalChunks: totalSegments,
+      });
+
+      const inBatch = Math.min(perBatch, totalSegments - first);
+      const encrypted = await Promise.all(
+        Array.from({ length: inBatch }, (_, j) => {
+          const index = first + j;
+          const segment = bytes.subarray(j * chunkSize, Math.min((j + 1) * chunkSize, bytes.length));
+          return encryptSegment(segment, blobKey, index, index === totalSegments - 1);
+        }),
+      );
+
+      // Encryption is done with `bytes`, so it can be handed to the hasher.
+      await plaintextHasher?.update(bytes, true);
+      const merged = new Uint8Array(encrypted.reduce((n, e) => n + e.length, 0));
+      let offset = 0;
+      for (const e of encrypted) {
+        merged.set(e, offset);
+        offset += e.length;
+      }
+      await blobHasher.update(merged, true);
+      for (let j = 0; j < inBatch; j++) {
+        throwIfAborted(signal);
+        await sink(first + j, encrypted[j]);
+      }
+    }
+
+    return {
+      blobHash: await blobHasher.digest(),
+      unencryptedFileHash: knownPlaintextHash ?? (await plaintextHasher!.digest()),
+    };
+  } finally {
+    blobHasher.dispose();
+    plaintextHasher?.dispose();
   }
 }
 
@@ -119,48 +214,36 @@ export async function prepareUpload(
   preview?: Uint8Array | null | Promise<Uint8Array | null>,
   onBlob?: (index: number, bytes: Uint8Array) => Promise<string>,
   chunkSize: number = SEGMENT_SIZE,
+  knownPlaintextHash?: string,
 ): Promise<PreparedUpload> {
   const blobKey = deriveConversationKeyFromHex(encryptionKeyHex);
   const totalSize = file.size;
   const totalSegments = segmentCount(totalSize, chunkSize);
   const blobParts: Uint8Array[] = [];
   let blobRef: string | undefined;
-  // Incremental digest of the concatenated ciphertext (blobHash) and of the
-  // plaintext (unencryptedFileHash) — both updated per segment so neither
-  // needs a second full-file pass.
-  const blobHasher = sha256.create();
-  const plaintextHasher = sha256.create();
 
-  for (let i = 0; i < totalSegments; i++) {
-    throwIfAborted(signal);
-    onProgress?.({
-      stage: "Encrypting...",
-      progress: Math.round((i / totalSegments) * 20),
-      currentChunk: i + 1,
-      totalChunks: totalSegments,
-    });
-
-    const start = i * chunkSize;
-    const end = Math.min(start + chunkSize, totalSize);
-    const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-    plaintextHasher.update(bytes);
-    const isLast = i === totalSegments - 1;
-    const encBytes = await encryptSegment(bytes, blobKey, i, isLast);
-    blobHasher.update(encBytes);
-
-    if (onBlob) {
-      blobRef = await onBlob(i, encBytes);
-      // encBytes goes out of scope here — memory bounded to ~one segment.
-    } else {
-      blobParts.push(encBytes);
-    }
-  }
+  const { blobHash, unencryptedFileHash } = await encryptSegments(
+    file,
+    blobKey,
+    chunkSize,
+    signal,
+    onProgress,
+    knownPlaintextHash,
+    async (index, encBytes) => {
+      if (onBlob) {
+        blobRef = await onBlob(index, encBytes);
+        // encBytes goes out of scope here — memory bounded to ~one batch.
+      } else {
+        blobParts.push(encBytes);
+      }
+    },
+  );
 
   const result: PreparedUpload = {
-    blobHash: bytesToHex(blobHasher.digest()),
+    blobHash,
     totalSize,
     chunkSize,
-    unencryptedFileHash: bytesToHex(plaintextHasher.digest()),
+    unencryptedFileHash,
   };
   if (onBlob) {
     result.blobRef = blobRef;
@@ -347,7 +430,7 @@ async function uploadPreviewWithRetry(
  * prompt, so it happens once, after the hash is known), so the segment loop
  * runs to completion, THEN the auth header is requested, THEN the single PUT
  * happens — but nothing is re-encrypted or re-read for that; the loop's
- * output (`blobParts`) is simply held until upload time. The browser backs a
+ * output (`blobParts`, Blobs the browser can page to disk) is simply held until upload time. The browser backs a
  * multi-part `Blob` without requiring the parts to be contiguous JS memory,
  * so this doesn't hold the whole file in one buffer despite the two logical
  * phases.
@@ -360,39 +443,43 @@ export async function uploadFile(
   signal?: AbortSignal,
   previewPromise?: Promise<Uint8Array | null>,
   chunkSize: number = SEGMENT_SIZE,
+  knownPlaintextHash?: string,
 ): Promise<UploadResult> {
   const blobKey = deriveConversationKeyFromHex(encryptionKeyHex);
   const totalSize = file.size;
   const totalSegments = segmentCount(totalSize, chunkSize);
-  const plaintextHasher = sha256.create();
-  const blobHasher = sha256.create();
-  const blobParts: Uint8Array[] = [];
+  // Ciphertext is wrapped into Blobs as it's produced (a few MB each) instead
+  // of kept as Uint8Arrays: the browser can page Blob data out to disk, so the
+  // JS heap stays small however big the file is. Holding every segment as a
+  // typed array until upload time kept the whole file's ciphertext in RAM.
+  const blobParts: Blob[] = [];
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const flushPending = () => {
+    if (pending.length === 0) return;
+    blobParts.push(new Blob(pending as BlobPart[]));
+    pending = [];
+    pendingBytes = 0;
+  };
   // Shared across the whole upload: once a candidate server is discovered
   // dead (exhausted retries or permanently rejected), later fallback
   // attempts (the preview) skip re-discovering the same failure.
   const deadServers = new Set<string>();
 
-  for (let i = 0; i < totalSegments; i++) {
-    throwIfAborted(signal);
-    onProgress?.({
-      stage: "Encrypting...",
-      progress: Math.round((i / totalSegments) * 20),
-      currentChunk: i + 1,
-      totalChunks: totalSegments,
-    });
-
-    const start = i * chunkSize;
-    const end = Math.min(start + chunkSize, totalSize);
-    const bytes = new Uint8Array(await file.slice(start, end).arrayBuffer());
-    plaintextHasher.update(bytes);
-    const isLast = i === totalSegments - 1;
-    const encBytes = await encryptSegment(bytes, blobKey, i, isLast);
-    blobHasher.update(encBytes);
-    blobParts.push(encBytes);
-  }
-
-  const blobHash = bytesToHex(blobHasher.digest());
-  const unencryptedFileHash = bytesToHex(plaintextHasher.digest());
+  const { blobHash, unencryptedFileHash } = await encryptSegments(
+    file,
+    blobKey,
+    chunkSize,
+    signal,
+    onProgress,
+    knownPlaintextHash,
+    async (_index, encBytes) => {
+      pending.push(encBytes);
+      pendingBytes += encBytes.length;
+      if (pendingBytes >= ENCRYPT_BATCH_BYTES) flushPending();
+    },
+  );
+  flushPending();
 
   // The preview is folded into the SAME upload auth as the file blob so the
   // user signs only once. Awaited here (at signing time, not up front) so
@@ -424,7 +511,7 @@ export async function uploadFile(
   const expirationSeconds = Math.max(1800, Math.ceil(totalSize / (1024 * 1024)) * 2);
   const authHeader = await createAuthEvent("upload", `Upload ${file.name}`, authHashes, expirationSeconds);
 
-  const blob = new Blob(blobParts as BlobPart[]);
+  const blob = new Blob(blobParts);
   const usedServer = await uploadBlobWithFallback(servers, blob, blobHash, authHeader, signal, deadServers, onProgress);
 
   let previewUploaded = false;

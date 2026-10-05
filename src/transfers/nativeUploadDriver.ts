@@ -9,6 +9,7 @@ import {
   recordPublishedMetadata,
   saveFileMetadata,
   findDuplicateByHash,
+  hasSameSizeFile,
   duplicateBlobIsLive,
 } from "../services/fileIndex";
 import {
@@ -63,6 +64,41 @@ export const PREPARE_PROGRESS_SHARE = 40;
  * prompt, which is what makes pre-signing one variant per candidate server
  * affordable.
  */
+const STAGE_FLUSH_BYTES = 3 * 1024 * 1024;
+
+/** Accumulates ciphertext segments for the file blob (destination 0) and
+ *  appends them to the native staging file in STAGE_FLUSH_BYTES writes. */
+function createStager(uploadId: string, signal: AbortSignal) {
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  let started = false;
+  let path = "";
+
+  const flush = async (): Promise<string> => {
+    if (pendingBytes === 0 && started) return path;
+    const merged = new Uint8Array(pendingBytes);
+    let offset = 0;
+    for (const part of pending) {
+      merged.set(part, offset);
+      offset += part.length;
+    }
+    pending = [];
+    pendingBytes = 0;
+    path = await stageNativeUploadChunk(uploadId, 0, merged, signal, started);
+    started = true;
+    return path;
+  };
+
+  return {
+    async add(bytes: Uint8Array): Promise<string> {
+      pending.push(bytes);
+      pendingBytes += bytes.length;
+      return pendingBytes >= STAGE_FLUSH_BYTES ? flush() : path;
+    },
+    flush,
+  };
+}
+
 export async function nativeUploadDriver(
   file: File,
   servers: string[],
@@ -81,14 +117,21 @@ export async function nativeUploadDriver(
   // even starts, since a duplicate needs neither: there's nothing to
   // encrypt, stage, or hand off, so it's published synchronously right here
   // instead of going through the background-survivable upload machinery.
-  onProgress({ stage: "Checking for duplicates...", progress: 0 });
-  const dedupHash = await computePlaintextHash(file, signal);
-  const dedupCandidate = findDuplicateByHash(dedupHash);
-  // findDuplicateByHash is a pure local-index lookup — confirm the blob it
-  // points at is actually still on the server before reusing it. See
-  // uploadDriver.ts's identical check / fileIndex.ts's doc comment.
-  const duplicate =
-    dedupCandidate && (await duplicateBlobIsLive(dedupCandidate)) ? dedupCandidate : undefined;
+  // Skipped outright when no indexed file shares this size (byte-identical
+  // content can't differ in size), which is the common case; otherwise the
+  // hash is computed once here and handed to prepareUpload so the encrypt pass
+  // doesn't repeat it.
+  let dedupHash: string | undefined;
+  let duplicate: FileMetadata | undefined;
+  if (hasSameSizeFile(file.size)) {
+    onProgress({ stage: "Checking for duplicates...", progress: 0 });
+    dedupHash = await computePlaintextHash(file, signal);
+    const dedupCandidate = findDuplicateByHash(dedupHash);
+    // findDuplicateByHash is a pure local-index lookup — confirm the blob it
+    // points at is actually still on the server before reusing it. See
+    // uploadDriver.ts's identical check / fileIndex.ts's doc comment.
+    duplicate = dedupCandidate && (await duplicateBlobIsLive(dedupCandidate)) ? dedupCandidate : undefined;
+  }
   if (duplicate) {
     const metadata: FileMetadata = {
       ...duplicate,
@@ -168,6 +211,11 @@ export async function nativeUploadDriver(
     // destination (index 1) and is never appended onto the file.
     const totalSegments = segmentCount(file.size, SEGMENT_SIZE);
 
+    // Each Capacitor bridge call carries one base64 string through JSON, so
+    // staging every 64KB ciphertext segment on its own meant ~16K bridge round
+    // trips per GB. Segments are buffered and written in multi-MB appends.
+    const fileStager = createStager(uploadId, prepareAbort.signal);
+
     onProgress({ stage: "Encrypting...", progress: 0 });
     const prepared = await prepareUpload(
       file,
@@ -182,20 +230,22 @@ export async function nativeUploadDriver(
       },
       previewPromise,
       (index, bytes) =>
-        index < totalSegments
-          ? stageNativeUploadChunk(uploadId, 0, bytes, prepareAbort.signal, index > 0)
-          : stageNativeUploadChunk(uploadId, 1, bytes, prepareAbort.signal),
+        index < totalSegments ? fileStager.add(bytes) : stageNativeUploadChunk(uploadId, 1, bytes, prepareAbort.signal),
       SEGMENT_SIZE,
+      dedupHash,
     );
+    // The last partial buffer; its path is also the file blob's path (every
+    // flush appends to the same destination, so the path is the same each time).
+    const stagedFilePath = await fileStager.flush();
 
     throwIfAborted(prepareAbort.signal);
 
-    if (!prepared.blobRef) {
+    if (!stagedFilePath) {
       throw new Error("Upload staging did not produce a blob for the file");
     }
 
     const blobs: NativeUploadBlob[] = [
-      { path: prepared.blobRef, hash: prepared.blobHash, contentType: "application/octet-stream" },
+      { path: stagedFilePath, hash: prepared.blobHash, contentType: "application/octet-stream" },
     ];
     if (prepared.previewRef && prepared.previewHash) {
       blobs.push({

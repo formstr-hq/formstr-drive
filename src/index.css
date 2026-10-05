@@ -20,6 +20,12 @@ body {
   min-height: 100vh;
   background: var(--color-bg-canvas);
   color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  letter-spacing: var(--letter-spacing-normal);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
 }
 
 #root {
@@ -28,15 +34,33 @@ body {
 
 button {
   font-family: inherit;
-  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
-button:active:not(:disabled) {
-  transform: var(--press-scale);
+/* Remove the 300ms tap delay / double-tap-zoom wait on interactive elements. */
+button,
+[role="button"],
+select,
+label {
+  touch-action: manipulation;
 }
 
-input {
+/* Press-scale only where there is a pointer to hover with. On touch the scale
+   fights the tap/scroll disambiguation and reads as jitter; elements get a
+   background :active tint instead. */
+@media (hover: hover) {
+  button {
+    transition: transform var(--motion-fast) var(--motion-ease);
+  }
+
+  button:active:not(:disabled) {
+    transform: var(--press-scale);
+  }
+}
+
+input, textarea {
   font-family: inherit;
+  user-select: auto;
+  -webkit-user-select: auto;
 }
 
 .app-logo {
@@ -48,7 +72,7 @@ input {
 
 .app-mark {
   display: block;
-  height: 40px;
-  width: 40px;
+  height: 42px;
+  width: 42px;
   flex-shrink: 0;
 }

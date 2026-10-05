@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { loadSharedByMe, revokeShare, type SharedByMeEntry } from '../../services/sharing';
 import { useToast } from '../../hooks/useToast';
 import { useShares } from '../../context/SharesProvider';
+import { Share } from '@capacitor/share';
+import { isNativePlatform } from '../../utils/platform';
 import { formatUnixSeconds } from '../../utils/format';
 import { FolderIcon } from '../icons/Icons';
 import './SharedByMeView.css';
@@ -50,8 +52,15 @@ export const SharedByMeView: React.FC<SharedByMeViewProps> = ({ onBack }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleCopyLink = async (url: string) => {
+  const handleCopyLink = async (url: string, name: string) => {
     try {
+      if (isNativePlatform) {
+        await Share.share({
+          url,
+          title: `Share ${name}`,
+        });
+        return;
+      }
       await navigator.clipboard.writeText(url);
       toast.success('Link copied to clipboard');
     } catch {
@@ -122,9 +131,9 @@ export const SharedByMeView: React.FC<SharedByMeViewProps> = ({ onBack }) => {
                     <>
                       <button
                         className="shared-by-me-copy-btn"
-                        onClick={() => handleCopyLink(share.url)}
+                        onClick={() => handleCopyLink(share.url, share.name)}
                       >
-                        Copy link
+                        {isNativePlatform ? 'Share link' : 'Copy link'}
                       </button>
                       <button
                         className="shared-by-me-revoke-btn"

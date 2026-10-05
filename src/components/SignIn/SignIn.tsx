@@ -65,6 +65,8 @@ interface SignInProps {
   embedded?: boolean;
 }
 
+import { useBackButton } from '../../hooks/useBackButton';
+
 export function SignIn({ embedded = false }: SignInProps) {
   const {
     requestPubkey,
@@ -125,6 +127,12 @@ export function SignIn({ embedded = false }: SignInProps) {
       qrAbortRef.current?.abort();
     };
   }, []);
+
+  useBackButton(() => {
+    if (selectedMethod !== null && !busy) {
+      setSelectedMethod(null);
+    }
+  });
 
   const handleExtensionLogin = async () => {
     setError(null);

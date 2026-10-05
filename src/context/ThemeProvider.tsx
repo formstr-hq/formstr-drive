@@ -48,6 +48,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Resolve mode -> actual theme, and follow the OS only while on "system".
   useEffect(() => {
     if (mode !== "system") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setTheme(mode);
       return;
     }

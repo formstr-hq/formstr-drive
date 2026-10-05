@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { App as CapApp } from "@capacitor/app";
 import { BlossomServerProvider } from "./Provider/BlossomServerProvider";
 import { FileIndexProvider } from "./Provider/FileIndexProvider";
 import { useProfileContext } from "./hooks/useProfileContext";
@@ -85,9 +86,23 @@ function App() {
   );
 
   useEffect(() => {
+    const sub = CapApp.addListener("appUrlOpen", (event) => {
+      try {
+        const url = new URL(event.url);
+        if (url.hash && decodeShareLink(url.hash) !== null) {
+          window.location.hash = url.hash;
+        }
+      } catch {
+        // ignore malformed URLs
+      }
+    });
+
     const onHashChange = () => setIsSharedRoute(decodeShareLink(window.location.hash) !== null);
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      void sub.then((s) => s.remove());
+    };
   }, []);
 
   return (

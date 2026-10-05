@@ -287,11 +287,21 @@ function buildSegmentNonce(index: number, isLast: boolean): Uint8Array {
  * segment format uses the key as-is and gets its per-segment uniqueness
  * entirely from the counter nonce (see {@link buildSegmentNonce}).
  */
-async function importSegmentKey(blobKey: Uint8Array): Promise<CryptoKey> {
+// A file's segments all share one blobKey object, so the CryptoKey is imported
+// once per file instead of once per 64KB segment (16K imports for a 1GB file).
+const segmentKeyCache = new WeakMap<Uint8Array, Promise<CryptoKey>>();
+
+function importSegmentKey(blobKey: Uint8Array): Promise<CryptoKey> {
   if (blobKey.length !== 32) {
-    throw new Error(`blobKey must be 32 bytes, got ${blobKey.length}`);
+    return Promise.reject(new Error(`blobKey must be 32 bytes, got ${blobKey.length}`));
   }
-  return crypto.subtle.importKey("raw", blobKey as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
+  let key = segmentKeyCache.get(blobKey);
+  if (!key) {
+    key = crypto.subtle.importKey("raw", blobKey as BufferSource, "AES-GCM", false, ["encrypt", "decrypt"]);
+    segmentKeyCache.set(blobKey, key);
+    key.catch(() => segmentKeyCache.delete(blobKey));
+  }
+  return key;
 }
 
 /**

@@ -2,6 +2,7 @@ import { isAndroidPlatform } from '../../utils/platform';
 import { openDownloadedFile } from '../../native/driveManifest';
 import type { TransferItem } from '../../transfers/transferStore';
 import { canRetryTransfer } from '../../transfers/transferQueue';
+import { getAndroidUploadFooter } from '../../transfers/appCloseSafety';
 import "./UploadManager.css";
 
 export function TransferManager({
@@ -23,10 +24,12 @@ export function TransferManager({
 
   // Footer copy is platform-specific. On web, background tabs keep transferring,
   // so a persistent "don't close" banner is misleading — the real risk (closing
-  // the tab) is handled by the beforeunload guard, not a banner. Only the app
-  // needs an advisory, and only for uploads (which run in the webview and die if
-  // the app is killed); native downloads survive in the foreground service.
+  // the tab) is handled by the beforeunload guard, not a banner. On Android an
+  // upload only survives closing once it has handed off to the native service,
+  // so the advisory follows each upload's `survivesAppClose` rather than being
+  // a constant; native downloads always survive in the foreground service.
   const showAndroidFooter = isAndroidPlatform && active.length > 0;
+  const uploadFooter = isUpload ? getAndroidUploadFooter(active) : null;
 
   const headerLabel =
     active.length > 0
@@ -51,7 +54,7 @@ export function TransferManager({
         ))}
       </div>
       {showAndroidFooter && (
-        <div className={isUpload ? "transfer-warning" : "transfer-info"}>
+        <div className={uploadFooter?.tone === "warning" ? "transfer-warning" : "transfer-info"}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="12" y1="16" x2="12" y2="12"></line>
@@ -59,7 +62,7 @@ export function TransferManager({
           </svg>
           <span>
             {isUpload
-              ? "Keep the app open — uploading needs it to stay active."
+              ? uploadFooter?.message
               : "Files are downloading. You'll be notified when they complete."}
           </span>
         </div>
@@ -85,8 +88,6 @@ function TransferRow({
   const radius = 10;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percent / 100) * circumference;
-  const totalChunks = transfer.totalChunks || 0;
-  const currentChunk = transfer.currentChunk || 0;
 
   const isTerminal =
     transfer.status === "completed" || transfer.status === "failed" || transfer.status === "cancelled";
@@ -94,35 +95,25 @@ function TransferRow({
   // behind it, so offering Retry there would be a button that does nothing.
   const isRetryable = canRetryTransfer(transfer.id);
 
-  // Upload runs two passes: hash/encrypt then upload. The first pass tops out
-  // around 50%. Driven off progress rather than a fragile stage-string compare.
-  const isHashingPass = isUpload && transfer.status === "running" && percent < 50;
-
-  // A large file can be thousands of segments (64KB each by default) —
-  // rendering one dot per segment would mean thousands of DOM nodes for one
-  // transfer row. Group them into bands of 100 real chunks per displayed dot
-  // instead; the band's status follows whichever of its chunks is furthest
-  // along, so the grid still reads left-to-right as progress.
-  const CHUNKS_PER_DOT = 100;
-  const dotCount = Math.ceil(totalChunks / CHUNKS_PER_DOT);
+  // Dots are driven by percent for the whole transfer. Segment counts only
+  // exist during encryption — the network phase (after the signer prompt, and
+  // all of Android's native phase) reports a bare percent — so a segment-based
+  // grid would vanish mid-upload. Upload runs two passes: encrypt, then send.
+  // On Android the native service takes over at `survivesAppClose`; on web the
+  // encrypt pass ends where the signature wait begins (20%).
+  const PERCENT_DOTS = 20;
+  const WEB_ENCRYPT_PASS_END = 20;
+  const sendPass =
+    !isUpload ||
+    (isAndroidPlatform ? transfer.survivesAppClose === true : percent >= WEB_ENCRYPT_PASS_END);
   const dotClass = (dotIndex: number): string => {
-    const bandStart = dotIndex * CHUNKS_PER_DOT + 1; // 1-based, inclusive
-    const bandEnd = Math.min((dotIndex + 1) * CHUNKS_PER_DOT, totalChunks); // 1-based, inclusive
     if (transfer.status === "completed") return "done";
-    if (isHashingPass) {
-      if (currentChunk > bandEnd) return "hashing-done";
-      if (currentChunk >= bandStart) return "hashing";
-      return "pending";
-    }
-    if (currentChunk > bandEnd) return "done";
-    if (currentChunk >= bandStart) return "uploading";
+    const position = (percent / 100) * PERCENT_DOTS;
+    if (dotIndex + 1 <= position) return sendPass ? "done" : "hashing-done";
+    if (dotIndex < position) return sendPass ? "uploading" : "hashing";
     return "pending";
   };
-  const dotTitle = (dotIndex: number): string => {
-    const bandStart = dotIndex * CHUNKS_PER_DOT + 1;
-    const bandEnd = Math.min((dotIndex + 1) * CHUNKS_PER_DOT, totalChunks);
-    return bandStart === bandEnd ? `Chunk ${bandStart}` : `Chunks ${bandStart}-${bandEnd}`;
-  };
+  const dotTitle = (dotIndex: number): string => `${Math.round(((dotIndex + 1) / PERCENT_DOTS) * 100)}%`;
 
   const stageText =
     transfer.status === "failed"
@@ -130,6 +121,9 @@ function TransferRow({
       : transfer.status === "cancelled"
         ? "Cancelled"
         : transfer.stage || transfer.status;
+  // A running stage gets animated dots (CSS) instead of its own static "...".
+  const isActiveStage = transfer.status === "running" || transfer.status === "pending";
+  const stageLabel = isActiveStage ? stageText.replace(/(\.{2,}|…)$/, "") : stageText;
 
   return (
     <div className={`upload-item transfer-item--${transfer.status}`}>
@@ -152,15 +146,15 @@ function TransferRow({
       <div className="upload-item-info">
         <span className="upload-item-name" title={transfer.fileDetails.name}>{transfer.fileDetails.name}</span>
         <span
-          className={`upload-item-stage${transfer.status === "failed" ? " upload-item-stage--error" : ""}`}
+          className={`upload-item-stage${transfer.status === "failed" ? " upload-item-stage--error" : ""}${isActiveStage ? " upload-item-stage--active" : ""}`}
           title={stageText}
         >
-          {stageText}
+          {stageLabel}
         </span>
 
-        {dotCount > 1 && !isTerminal && (
+        {(!isTerminal || transfer.status === "completed") && (
           <div className="chunk-grid">
-            {Array.from({ length: dotCount }).map((_, i) => (
+            {Array.from({ length: PERCENT_DOTS }).map((_, i) => (
               <div key={i} className={`chunk-indicator ${dotClass(i)}`} title={dotTitle(i)} />
             ))}
           </div>
@@ -175,7 +169,7 @@ function TransferRow({
         </span>
       ) : isTerminal ? null : (
         <div className="upload-progress-wrapper">
-          <svg className="circular-progress" width="28" height="28" viewBox="0 0 24 24">
+          <svg className="circular-progress" width="40" height="40" viewBox="0 0 24 24">
             <circle className="progress-bg" cx="12" cy="12" r={radius} strokeWidth="2" />
             <circle
               className="progress-bar"
