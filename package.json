@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint src/**/* --quiet",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test": "vitest run",
     "preview": "vite preview",
     "android:copy": "pnpm build && pnpm exec cap copy android",
     "android:sync": "pnpm build && pnpm exec cap sync android",
@@ -52,7 +53,8 @@
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "npm:rolldown-vite@7.2.5"
+    "vite": "npm:rolldown-vite@7.2.5",
+    "vitest": "^2.1.8"
   },
   "overrides": {
     "vite": "npm:rolldown-vite@7.2.5"
