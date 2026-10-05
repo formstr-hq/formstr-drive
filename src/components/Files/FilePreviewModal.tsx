@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { isLegacyBlobFormat, type FileMetadata } from '../../types/metadata';
-import { resolvePreviewMode, MAX_PREVIEW_SIZE } from '../../utils/fileTypeHelpers';
+import { resolvePreviewMode, MAX_PREVIEW_SIZE, browserMayPlayVideo, unsupportedVideoMessage, PREVIEW_UNAVAILABLE_MESSAGE } from '../../utils/fileTypeHelpers';
 import { canOpenInNostrDocs, openInNostrDocs } from '../../utils/docsIntegrationHelpers';
 import { downloadAndDecryptFile } from '../../services/downloadFile';
 import { hasServiceWorkerSupport } from '../../services/swStreamDownload';
@@ -71,6 +71,17 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
         return;
       }
 
+      // Don't spend minutes (and GBs) streaming a file the browser has already
+      // said it can't play — e.g. MKV in Firefox, which has no Matroska
+      // demuxer. canPlayType only rules out the container type: an empty
+      // answer is a firm "no", anything else may still fail on its codec
+      // (VideoPreview reports that when it happens).
+      if (mode === "video" && !browserMayPlayVideo(file.type)) {
+        setError(unsupportedVideoMessage(file.name));
+        setLoading(false);
+        return;
+      }
+
       if (canStreamPreview(file, mode)) {
         try {
           // A server that ignores Range would only decode correctly from
@@ -95,7 +106,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
       }
 
       if (file.size > MAX_PREVIEW_SIZE) {
-        setError("File is too large to preview (over 5 MB). Please download it to view.");
+        setError(PREVIEW_UNAVAILABLE_MESSAGE);
         setLoading(false);
         return;
       }
@@ -172,7 +183,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
           )}
 
           {!loading && !error && mode === "video" && blobUrl && (
-            <VideoPreview blobUrl={blobUrl} />
+            <VideoPreview key={blobUrl} blobUrl={blobUrl} />
           )}
 
           {!loading && !error && mode === "pdf" && blobUrl && (

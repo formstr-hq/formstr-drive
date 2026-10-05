@@ -13,8 +13,6 @@ export interface TransferItem {
   status: TransferStatus;
   progress: number; // 0 to 100
   stage?: string;
-  currentChunk?: number;
-  totalChunks?: number;
   error?: string;
   abortController: AbortController;
   // Native (Android) downloads: content:// uri of the finished file, for a

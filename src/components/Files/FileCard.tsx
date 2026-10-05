@@ -1,32 +1,36 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import { type FileMetadata } from '../../types/metadata';
 import { isAndroidPlatform } from "../../utils/platform";
-import { useFileIndex } from '../../hooks/useFileContext';
-import { FilePreviewModal } from "./FilePreviewModal";
-import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode } from '../../utils/fileTypeHelpers';
-import { isLegacyBlobFormat } from '../../types/metadata';
-import { useToast } from '../../hooks/useToast';
+import {
+  getFileIcon,
+  MAX_PREVIEW_SIZE,
+  resolvePreviewMode,
+  browserMayPlayVideo,
+  PREVIEW_UNAVAILABLE_MESSAGE,
+  unsupportedVideoMessage,
+} from '../../utils/fileTypeHelpers';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { formatSize, formatDate, getHostname } from '../../utils/format';
 import { PreviewEyeIcon, ShareIcon } from '../icons/Icons';
-import { queueDownload } from "../../transfers/transferQueue";
-import { ShareModal } from "./ShareModal";
-import { useShares } from "../../context/SharesProvider";
 import { fetchFilePreview, getCachedPreview, type PreviewData } from "../../services/Preview/fetchPreview";
 
-interface FileCardProps {
+export interface FileCardProps {
   file: FileMetadata;
   viewMode?: "grid" | "list";
   selected?: boolean;
-  onToggleSelection?: (hash: string) => void;
+  isSelectionMode?: boolean;
+  isShared?: boolean;
   /** Ids to move when THIS card is dragged — the caller's full multi-selection
-   *  when this card is part of one, otherwise just `[file.id]`. Defaults to
-   *  `[file.id]` so other call sites don't need to opt in. */
+   *  when this card is part of one, otherwise just `[file.id]`. */
   dragIds?: string[];
+  onToggleSelection: (id: string) => void;
+  /** Tap on the card body (outside selection mode) — opens the preview. */
+  onOpen: (file: FileMetadata) => void;
+  /** Opens the actions sheet/popover, anchored to the ⋮ button. */
+  onMenu: (file: FileMetadata, anchor: HTMLElement) => void;
+  onDownload: (file: FileMetadata) => void;
+  onShare: (file: FileMetadata) => void;
 }
-
-
-
 
 function ServerBadge({ server }: { server: string }) {
   return (
@@ -36,45 +40,107 @@ function ServerBadge({ server }: { server: string }) {
   );
 }
 
-export function FileCard({
+export interface CardTapHandlerOptions {
+  isSelectionMode: boolean;
+  fileId: string;
+  onToggleSelection?: (id: string) => void;
+  onOpen: () => void;
+}
+
+/** Drive semantics: in selection mode a tap toggles; otherwise it opens. */
+export function handleCardTapLogic(opts: CardTapHandlerOptions): void {
+  if (opts.isSelectionMode) {
+    opts.onToggleSelection?.(opts.fileId);
+  } else {
+    opts.onOpen();
+  }
+}
+
+export interface CardKeyDownHandlerOptions extends CardTapHandlerOptions {
+  key: string;
+  isDirectTarget: boolean;
+  preventDefault?: () => void;
+}
+
+export function handleCardKeyDownLogic(opts: CardKeyDownHandlerOptions): boolean {
+  if (!opts.isDirectTarget) {
+    return false;
+  }
+  if (opts.key === "Enter" || opts.key === " ") {
+    opts.preventDefault?.();
+    handleCardTapLogic(opts);
+    return true;
+  }
+  return false;
+}
+
+export interface PreviewGateOptions {
+  fileType: string;
+  fileSize: number;
+  isLegacyBlob: boolean;
+  /** Only used to name the format in the "can't play" message. */
+  fileName?: string;
+  maxPreviewSize?: number;
+}
+
+export function canOpenPreview(opts: PreviewGateOptions): { allowed: boolean; reason?: string } {
+  const mode = resolvePreviewMode(opts.fileType);
+  if (mode === "video" && !browserMayPlayVideo(opts.fileType)) {
+    return { allowed: false, reason: unsupportedVideoMessage(opts.fileName ?? "") };
+  }
+  const canStream = (mode === "video" || mode === "pdf") && !opts.isLegacyBlob;
+  const limit = opts.maxPreviewSize ?? MAX_PREVIEW_SIZE;
+  if (!canStream && opts.fileSize > limit) {
+    return {
+      allowed: false,
+      reason: PREVIEW_UNAVAILABLE_MESSAGE,
+    };
+  }
+  return { allowed: true };
+}
+
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP = 10;
+
+const isTouch =
+  isAndroidPlatform ||
+  (typeof window !== "undefined" && "ontouchstart" in window) ||
+  (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0);
+
+/**
+ * Pure presentational card. All dialogs and menus are owned by FileList so a
+ * card never re-renders for index updates that don't touch its own props.
+ */
+export const FileCard = memo(function FileCard({
   file,
   viewMode = "list",
   selected = false,
-  onToggleSelection,
+  isSelectionMode = false,
+  isShared = false,
   dragIds,
+  onToggleSelection,
+  onOpen,
+  onMenu,
+  onDownload,
+  onShare,
 }: FileCardProps) {
-  const { deleteFile, moveFile, folders, renameFile } = useFileIndex();
-  const toast = useToast();
-  // Legacy (no-id) files are filtered out at the index boundary
-  // (fileIndexStore.emit) and never reach this component, so no isLegacy
-  // guard is needed here — file.id is always a resolvable identity.
-  const { isFileShared } = useShares();
-  const isShared = isFileShared(file.id);
-  
-  const isTouch = isAndroidPlatform || ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
   const canDrag = !isTouch;
-
-  const [showMenu, setShowMenu] = useState(false);
-  const [showMoveDialog, setShowMoveDialog] = useState(false);
-  const [showRenameModal, setShowRenameModal] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  const [showPreview, setShowPreview] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
 
   const [previewloaded, setPreviewloaded] = useState(false);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [isHovering, setIsHovering] = useState(false);
-  const renameInputRef = useRef<HTMLInputElement>(null);
 
-  // GIF previews only animate while hovered — shows the static frame
-  // otherwise, matching the still-image behavior of every other file type.
+  const pressTimer = useRef<number | null>(null);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const longPressed = useRef(false);
+
+  // GIF previews only animate while hovered with a real mouse.
   const previewSrc =
     preview?.type === "image/gif" && preview.staticUrl && !isHovering ? preview.staticUrl : preview?.url;
 
   useEffect(() => {
     let cancelled = false;
 
-    // Check cache first — if cached, set immediately without async work
     const cached = file.previewHash ? getCachedPreview(file.previewHash) : undefined;
     if (cached) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
@@ -106,103 +172,95 @@ export function FileCard({
     };
   }, [file]);
 
-  useEffect(() => {
-    if (showRenameModal) {
-      setTimeout(() => {
-        renameInputRef.current?.focus();
-        renameInputRef.current?.select();
-      }, 0);
-    }
-  }, [showRenameModal]);
+  useEffect(() => () => {
+    if (pressTimer.current !== null) window.clearTimeout(pressTimer.current);
+  }, []);
 
-  const handleCardTap = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    handlePreviewClick(e);
+  const cancelPress = () => {
+    if (pressTimer.current !== null) {
+      window.clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+    pressStart.current = null;
   };
 
-  const handlePreviewClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    // Video/PDF on the new blob format can stream via Range requests
-    // (FilePreviewModal / swMediaStream.ts), so the 5MB gate only applies to
-    // modes without a seekable path — surfacing it here, before the modal
-    // opens, avoids the modal opening just to show a one-line notice.
-    const mode = resolvePreviewMode(file.type);
-    const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
-    if (!canStream && file.size > MAX_PREVIEW_SIZE) {
-      toast.error("File is too large to preview (over 5 MB). Please download it.");
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    longPressed.current = false;
+    pressStart.current = { x: e.clientX, y: e.clientY };
+    pressTimer.current = window.setTimeout(() => {
+      pressTimer.current = null;
+      longPressed.current = true;
+      if (navigator.vibrate) navigator.vibrate(10);
+      onToggleSelection(file.id);
+    }, LONG_PRESS_MS);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const s = pressStart.current;
+    if (!s) return;
+    if (Math.abs(e.clientX - s.x) > LONG_PRESS_SLOP || Math.abs(e.clientY - s.y) > LONG_PRESS_SLOP) {
+      cancelPress();
+    }
+  };
+
+  const handleCardTap = () => {
+    // The click that ends a long press must not also open/toggle.
+    if (longPressed.current) {
+      longPressed.current = false;
       return;
     }
-    setShowPreview(true);
+    handleCardTapLogic({
+      isSelectionMode,
+      fileId: file.id,
+      onToggleSelection,
+      onOpen: () => onOpen(file),
+    });
   };
 
-  const handleDownload = () => {
-    // The transfer panel is the source of truth for progress, errors and retry,
-    // so there's no success toast here. Only tell the user when the click was a
-    // no-op because the file is already downloading.
-    const started = queueDownload(file);
-    if (!started) {
-      toast.info("This file is already downloading");
-    }
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    handleCardKeyDownLogic({
+      key: e.key,
+      isDirectTarget: e.target === e.currentTarget,
+      preventDefault: () => e.preventDefault(),
+      isSelectionMode,
+      fileId: file.id,
+      onToggleSelection,
+      onOpen: () => onOpen(file),
+    });
   };
 
-  const handleDelete = async () => {
-    if (confirm(`Delete "${file.name}"?`)) {
-      try {
-        await deleteFile(file.id);
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Delete failed");
-      }
-    }
-    setShowMenu(false);
+  const hoverProps = {
+    onPointerEnter: (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse") setIsHovering(true);
+    },
+    onPointerLeave: (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse") setIsHovering(false);
+    },
   };
 
-  const handleRenameOpen = () => {
-    setRenameValue(file.name);
-    setShowRenameModal(true);
-    setShowMenu(false);
-  };
-
-  const handleRenameSubmit = async () => {
-    const trimmed = renameValue.trim();
-    if (trimmed && trimmed !== file.name) {
-      try {
-        await renameFile(file.id, trimmed);
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Rename failed");
-      }
-    }
-    setShowRenameModal(false);
-  };
-
-  const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") handleRenameSubmit();
-    if (e.key === "Escape") setShowRenameModal(false);
-  };
-
-  const handleMoveClick = () => {
-    setShowMenu(false);
-    setShowMoveDialog(true);
-  };
-
-  const handleMove = async (newFolder: string) => {
-    try {
-      await moveFile(file.id, newFolder);
-      setShowMoveDialog(false);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Move failed");
-    }
-  };
-
-  const handleShareClick = () => {
-    setShowMenu(false);
-    setShowShareModal(true);
+  const gestureProps = {
+    onClick: handleCardTap,
+    onKeyDown: handleKeyDown,
+    onPointerDown: handlePointerDown,
+    onPointerMove: handlePointerMove,
+    onPointerUp: cancelPress,
+    onPointerCancel: cancelPress,
+    onPointerLeave: cancelPress,
+    onContextMenu: isTouch ? (e: React.MouseEvent) => e.preventDefault() : undefined,
+    role: "button" as const,
+    tabIndex: 0,
+    draggable: canDrag,
+    onDragStart: canDrag
+      ? (e: React.DragEvent) => {
+          e.dataTransfer.setData(FILE_HASH_MIME, (dragIds ?? [file.id]).join(","));
+          e.dataTransfer.effectAllowed = "move";
+        }
+      : undefined,
   };
 
   const icon = getFileIcon(file.type);
   const hasPreview = previewloaded && !!preview;
-
-
-
 
   const selectionControl = (
     <label
@@ -212,243 +270,159 @@ export function FileCard({
       <input
         type="checkbox"
         checked={selected}
-        onChange={() => onToggleSelection?.(file.id)}
+        onChange={() => onToggleSelection(file.id)}
         aria-label={`Select ${file.name}`}
       />
       <span className="file-select-box" aria-hidden="true" />
     </label>
   );
 
-  const renameModal = showRenameModal && (
-    <div className="move-dialog-overlay" onClick={() => setShowRenameModal(false)}>
-      <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="move-dialog-header">
-          <h3>Rename File</h3>
-          <button onClick={() => setShowRenameModal(false)}>×</button>
-        </div>
-        <div className="move-dialog-body">
-          <input
-            ref={renameInputRef}
-            type="text"
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={handleRenameKeyDown}
-            className="rename-input"
-          />
-          <div className="rename-dialog-actions">
-            <button onClick={() => setShowRenameModal(false)} className="cancel-btn">
-              Cancel
-            </button>
-            <button onClick={handleRenameSubmit} className="rename-btn">
-              Rename
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+  const stop = (fn: () => void) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    fn();
+  };
+
+  const moreButton = (className: string) => (
+    <button
+      type="button"
+      className={className}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onMenu(file, e.currentTarget);
+      }}
+      title="More"
+      aria-label="More actions"
+      aria-haspopup="menu"
+    >
+      ⋮
+    </button>
   );
 
-  const moveDialog = showMoveDialog && (
-    <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
-      <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="move-dialog-header">
-          <h3>Move to Folder</h3>
-          <button onClick={() => setShowMoveDialog(false)}>×</button>
-        </div>
-        <div className="move-dialog-body">
-          <div className="folder-list-move">
-            {folders.map((folder) => (
-              <button
-                key={folder}
-                className={`folder-option ${folder === file.folder ? "current" : ""}`}
-                onClick={() => handleMove(folder)}
-                disabled={folder === file.folder}
-              >
-                <span className="folder-icon">📁</span>
-                <span className="folder-path">{folder}</span>
-                {folder === file.folder && <span className="current-badge">Current</span>}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
+  const cardClass = (base: string) => `${base}${selected ? " selected" : ""}`;
 
   if (viewMode === "grid") {
     return (
-      <>
-        {showMenu && (
+      <div
+        className={cardClass("file-tile")}
+        {...gestureProps}
+        onPointerEnter={hoverProps.onPointerEnter}
+        onPointerLeave={(e) => {
+          hoverProps.onPointerLeave(e);
+          cancelPress();
+        }}
+      >
+        <div className="file-tile-preview">
+          {selectionControl}
+          {hasPreview ? (
+            <img src={previewSrc} alt={file.name} className="file-tile-img" draggable={false} />
+          ) : null}
           <div
-            className="file-menu-backdrop"
-            onClick={() => setShowMenu(false)}
-          />
-        )}
-        <div
-          className={`file-tile ${showMenu ? "menu-open" : ""} ${selected ? "selected" : ""}`}
-          draggable={canDrag}
-          onDragStart={canDrag ? (e) => {
-            e.dataTransfer.setData(FILE_HASH_MIME, (dragIds ?? [file.id]).join(","));
-            e.dataTransfer.effectAllowed = "move";
-          } : undefined}
-          onClick={handleCardTap}
-          role="button"
-          tabIndex={0}
-          onMouseEnter={() => setIsHovering(true)}
-          onMouseLeave={() => setIsHovering(false)}
-        >
-          {/* Preview area */}
-          <div className={`file-tile-preview ${showMenu ? "menu-open" : ""}`}>
-            {selectionControl}
-            {hasPreview ? (
-              <img src={previewSrc} alt={file.name} className="file-tile-img" />
-            ) : null}
-            <div
-              className="file-tile-icon-fallback"
-              data-type={icon}
-              style={{ display: hasPreview ? "none" : "flex" }}
-            >
-              <span className="file-tile-ext">{icon.toUpperCase()}</span>
-            </div>
-
-            {/* Hover overlay — pure CSS, no JS hover tracking */}
-            <div className="file-tile-overlay">
-              <button
-                className="tile-action-btn"
-                onClick={handlePreviewClick}
-                title="Preview"
-              >
-                <PreviewEyeIcon />
-              </button>
-              <button
-                className="tile-action-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDownload();
-                }}
-                title="Download"
-              >
-                ↓
-              </button>
-              <button
-                className={`tile-action-btn${isShared ? " is-shared" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleShareClick();
-                }}
-                title={isShared ? "Shared — click to manage" : "Share"}
-              >
-                <ShareIcon />
-              </button>
-              <button
-                className="tile-action-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowMenu((prev) => !prev);
-                }}
-                title="More"
-              >
-                ⋮
-              </button>
-
-              {showMenu && (
-                <div className="file-menu tile-menu" onClick={(e) => e.stopPropagation()}>
-                  <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
-                  <button onClick={handleRenameOpen} className="rename-btn">Rename</button>
-                  <button onClick={handleDelete} className="delete-btn">Delete</button>
-                </div>
-              )}
-            </div>
+            className="file-tile-icon-fallback"
+            data-type={icon}
+            style={{ display: hasPreview ? "none" : "flex" }}
+          >
+            <span className="file-tile-ext">{icon.toUpperCase()}</span>
           </div>
 
-          {/* Footer */}
-          <div className="file-tile-footer">
-            <span className="file-tile-name" title={file.name}>{file.name}</span>
-            <span className="file-tile-meta">{formatSize(file.size)} · {formatDate(file.uploadedAt)}</span>
-            <ServerBadge server={file.server} />
+          <div className="file-tile-overlay">
+            <button
+              type="button"
+              className="tile-action-btn tile-action-btn--hover-only"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={stop(() => onOpen(file))}
+              title="Preview"
+              aria-label="Preview"
+            >
+              <PreviewEyeIcon />
+            </button>
+            <button
+              type="button"
+              className="tile-action-btn tile-action-btn--hover-only"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={stop(() => onDownload(file))}
+              title="Download"
+              aria-label="Download"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className={`tile-action-btn tile-action-btn--hover-only${isShared ? " is-shared" : ""}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={stop(() => onShare(file))}
+              title={isShared ? "Shared — click to manage" : "Share"}
+              aria-label="Share"
+            >
+              <ShareIcon />
+            </button>
+            {moreButton("tile-action-btn tile-action-btn--more")}
           </div>
         </div>
-        {showPreview && <FilePreviewModal file={file} onClose={() => setShowPreview(false)} />}
-        {moveDialog}
-        {renameModal}
-        {showShareModal && (
-          <ShareModal target={{ mode: "file", file }} onClose={() => setShowShareModal(false)} />
-        )}
-      </>
+
+        <div className="file-tile-footer">
+          <span className="file-tile-name" title={file.name}>{file.name}</span>
+          <span className="file-tile-meta">{formatSize(file.size)} · {formatDate(file.uploadedAt)}</span>
+          <ServerBadge server={file.server} />
+        </div>
+      </div>
     );
   }
 
-  // List view
   return (
-    <>
-      {showMenu && <div className="file-menu-backdrop" onClick={() => setShowMenu(false)} />}
-      <div
-        className={`file-card ${selected ? "selected" : ""}`}
-        draggable={canDrag}
-        onDragStart={canDrag ? (e) => {
-          e.dataTransfer.setData(FILE_HASH_MIME, (dragIds ?? [file.id]).join(","));
-          e.dataTransfer.effectAllowed = "move";
-        } : undefined}
-        onClick={handleCardTap}
-        role="button"
-        tabIndex={0}
-        onMouseEnter={() => setIsHovering(true)}
-        onMouseLeave={() => setIsHovering(false)}
-      >
-        {selectionControl}
-        {previewloaded && preview ? (
-          <div className="file-icon" data-type={icon}>
-            <img src={previewSrc} alt="" />
-          </div>
-        ) : (
-          <div className="file-icon" data-type={icon}>
-            {icon.toUpperCase()}
-          </div>
-        )}
-        <div className="file-info">
-          <span className="file-name" title={file.name}>{file.name}</span>
-          <span className="file-meta">
-            {formatSize(file.size)} · {formatDate(file.uploadedAt)}
-            <ServerBadge server={file.server} />
-          </span>
-        </div>
-        <div className="file-actions">
-          <button className="action-btn" onClick={(e) => { e.stopPropagation(); handleDownload(); }} title="Download">
-            ↓
-          </button>
-          <button
-            className="action-btn"
-            onClick={handlePreviewClick} // already has stopPropagation
-            title="Preview"
-          >
-            <PreviewEyeIcon />
-          </button>
-          <button
-            className={`action-btn${isShared ? " is-shared" : ""}`}
-            onClick={(e) => { e.stopPropagation(); handleShareClick(); }}
-            title={isShared ? "Shared — click to manage" : "Share"}
-          >
-            <ShareIcon />
-          </button>
-          <button className="action-btn menu-btn" onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu); }} title="More">
-            ⋮
-          </button>
-          {showMenu && (
-            <div className="file-menu" onClick={(e) => e.stopPropagation()}>
-              <button onClick={handleMoveClick} className="move-btn">Move to Folder</button>
-              <button onClick={handleRenameOpen} className="rename-btn">Rename</button>
-              <button onClick={handleDelete} className="delete-btn">Delete</button>
-            </div>
-          )}
-        </div>
+    <div
+      className={cardClass("file-card")}
+      {...gestureProps}
+      onPointerEnter={hoverProps.onPointerEnter}
+      onPointerLeave={(e) => {
+        hoverProps.onPointerLeave(e);
+        cancelPress();
+      }}
+    >
+      {selectionControl}
+      <div className="file-icon" data-type={icon}>
+        {hasPreview ? <img src={previewSrc} alt="" draggable={false} /> : icon.toUpperCase()}
       </div>
-      {showPreview && <FilePreviewModal file={file} onClose={() => setShowPreview(false)} />}
-      {moveDialog}
-      {renameModal}
-      {showShareModal && (
-        <ShareModal target={{ mode: "file", file }} onClose={() => setShowShareModal(false)} />
-      )}
-    </>
+      <div className="file-info">
+        <span className="file-name" title={file.name}>{file.name}</span>
+        <span className="file-meta">
+          {formatSize(file.size)} · {formatDate(file.uploadedAt)}
+          <ServerBadge server={file.server} />
+        </span>
+      </div>
+      <div className="file-actions">
+        <button
+          type="button"
+          className="action-btn action-btn--hover-only"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={stop(() => onDownload(file))}
+          title="Download"
+          aria-label="Download"
+        >
+          ↓
+        </button>
+        <button
+          type="button"
+          className="action-btn action-btn--hover-only"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={stop(() => onOpen(file))}
+          title="Preview"
+          aria-label="Preview"
+        >
+          <PreviewEyeIcon />
+        </button>
+        <button
+          type="button"
+          className={`action-btn action-btn--hover-only${isShared ? " is-shared" : ""}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={stop(() => onShare(file))}
+          title={isShared ? "Shared — click to manage" : "Share"}
+          aria-label="Share"
+        >
+          <ShareIcon />
+        </button>
+        {moreButton("action-btn menu-btn")}
+      </div>
+    </div>
   );
-}
+});

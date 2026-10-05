@@ -2,26 +2,37 @@
   height: 100%;
   overflow-y: auto;
   min-height: 0;
-  /* Let the browser keep native vertical panning everywhere except the one
-     downward-at-top gesture the component itself calls preventDefault() for,
-     and suppress the OS/WebView's own overscroll-refresh glow so only this
-     indicator shows. */
+  position: relative;
+  /* Keep native vertical panning; the component only calls preventDefault()
+     for the downward-at-top gesture. Suppress the WebView's own overscroll
+     glow so only this indicator shows. */
   overscroll-behavior-y: contain;
   touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
-.pull-to-refresh-indicator-track {
+/* Floats over the content (translated, never in flow) so pulling never
+   triggers layout. Parked above the viewport until a pull starts. */
+.pull-to-refresh-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  transition: opacity 120ms ease-out;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-44px);
+  will-change: transform;
+  z-index: var(--z-raised);
 }
 
 .pull-to-refresh-spinner {
   width: 22px;
   height: 22px;
-  border-radius: var(--radius-full);
+  border-radius: 50%;
   border: 2.5px solid var(--color-accent-subtle);
   border-top-color: var(--color-accent);
   box-sizing: border-box;

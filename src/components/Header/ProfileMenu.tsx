@@ -1,4 +1,10 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  formatLimit,
+  getServerLimitsSnapshot,
+  lookupLimit,
+  subscribeServerLimits,
+} from "../../services/serverLimits";
 import { NostrAvatar } from "./NostrAvatar";
 import { AddAccountModal } from "./AddAccountModal";
 import { useProfileContext } from "../../hooks/useProfileContext";
@@ -86,6 +92,7 @@ export function ProfileMenu() {
     useProfileContext();
   const { theme, toggleTheme, palette, setPalette } = useTheme();
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
+  const serverLimits = useSyncExternalStore(subscribeServerLimits, getServerLimitsSnapshot);
   const [open, setOpen] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
@@ -246,6 +253,10 @@ export function ProfileMenu() {
                 <option key={s.url} value={s.url}>
                   {getHostname(s.url)}
                   {s.source !== "default" ? ` (${s.source})` : ""}
+                  {(() => {
+                    const limit = lookupLimit(serverLimits, s.url);
+                    return limit ? ` · max ${formatLimit(limit)}` : "";
+                  })()}
                 </option>
               ))}
             </select>

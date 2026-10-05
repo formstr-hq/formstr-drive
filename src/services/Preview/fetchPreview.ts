@@ -17,6 +17,32 @@ export interface PreviewData {
 // avoids re-fetching (and re-decrypting) the same thumbnail twice. Keyed by
 // previewHash → PreviewData.
 const previewCache = new Map<string, PreviewData>();
+const inFlightRequests = new Map<string, Promise<PreviewData | null>>();
+
+export const MAX_CONCURRENT_PREVIEWS = 4;
+let activePreviewRequests = 0;
+const previewQueue: Array<() => void> = [];
+
+async function acquirePreviewSlot(): Promise<void> {
+  if (activePreviewRequests < MAX_CONCURRENT_PREVIEWS) {
+    activePreviewRequests++;
+    return;
+  }
+  return new Promise<void>((resolve) => {
+    previewQueue.push(() => {
+      activePreviewRequests++;
+      resolve();
+    });
+  });
+}
+
+function releasePreviewSlot(): void {
+  activePreviewRequests--;
+  const next = previewQueue.shift();
+  if (next) {
+    next();
+  }
+}
 
 /** Synchronous cache peek, so a caller can render an already-fetched preview
  *  immediately in the same tick instead of waiting a microtask on
@@ -24,6 +50,21 @@ const previewCache = new Map<string, PreviewData>();
  *  loading state when navigating between folders / re-mounting a card). */
 export function getCachedPreview(previewHash: string): PreviewData | undefined {
   return previewCache.get(previewHash);
+}
+
+/** Returns the current state of the preview concurrency pool (for tests/monitoring). */
+export function getPreviewQueueStatus(): { active: number; queued: number; maxConcurrent: number } {
+  return {
+    active: activePreviewRequests,
+    queued: previewQueue.length,
+    maxConcurrent: MAX_CONCURRENT_PREVIEWS,
+  };
+}
+
+/** Clears the preview cache and in-flight requests (useful for tests and logout). */
+export function clearPreviewCache(): void {
+  previewCache.clear();
+  inFlightRequests.clear();
 }
 
 /** Draws `blobUrl`'s current (first) frame to a canvas and re-exports it as a
@@ -65,28 +106,48 @@ export async function fetchFilePreview(file: FileMetadata): Promise<PreviewData 
   const cached = previewCache.get(file.previewHash);
   if (cached) return cached;
 
-  const client = new BlossomClient(file.server);
-  const uint8arr = await client.download(file.previewHash);
-  const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
-  const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
+  const inFlight = inFlightRequests.get(file.previewHash);
+  if (inFlight) return inFlight;
 
-  const arr = new Uint8Array(decrypted);
-  const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
-
-  const blob = new Blob([decrypted as BlobPart], { type: mimeType });
-  const imageUrl = URL.createObjectURL(blob);
-
-  let staticUrl: string | undefined;
-  if (mimeType === "image/gif") {
+  const previewHash = file.previewHash;
+  const taskPromise = (async (): Promise<PreviewData | null> => {
+    await acquirePreviewSlot();
     try {
-      staticUrl = await extractStaticFrame(imageUrl);
-    } catch (e) {
-      console.warn("Failed to extract a static frame for GIF preview; it will always animate", e);
+      // Re-check cache in case it was resolved while waiting in queue
+      const cachedAfterWait = previewCache.get(previewHash);
+      if (cachedAfterWait) return cachedAfterWait;
+
+      const client = new BlossomClient(file.server);
+      const uint8arr = await client.download(previewHash);
+      const ciphertext = new TextDecoder().decode(uint8arr as Uint8Array<ArrayBuffer>);
+      const decrypted = await decryptFileWithKey(ciphertext, file.encryptionKey);
+
+      const arr = new Uint8Array(decrypted);
+      const mimeType = detectMimeTypeFromMagicBytes(arr) || "image/webp";
+
+      const blob = new Blob([decrypted as BlobPart], { type: mimeType });
+      const imageUrl = URL.createObjectURL(blob);
+
+      let staticUrl: string | undefined;
+      if (mimeType === "image/gif") {
+        try {
+          staticUrl = await extractStaticFrame(imageUrl);
+        } catch (e) {
+          console.warn("Failed to extract a static frame for GIF preview; it will always animate", e);
+        }
+      }
+
+      const data: PreviewData = { url: imageUrl, type: mimeType, staticUrl };
+
+      previewCache.set(previewHash, data);
+      return data;
+    } finally {
+      releasePreviewSlot();
     }
-  }
+  })().finally(() => {
+    inFlightRequests.delete(previewHash);
+  });
 
-  const data: PreviewData = { url: imageUrl, type: mimeType, staticUrl };
-
-  previewCache.set(file.previewHash, data);
-  return data;
+  inFlightRequests.set(previewHash, taskPromise);
+  return taskPromise;
 }

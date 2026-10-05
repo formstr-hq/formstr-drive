@@ -1,4 +1,5 @@
 import { withTimeout } from "./transfers/withTimeout";
+import { parseMaxBytes, recordServerLimit } from "./services/serverLimits";
 
 export class BlossomError extends Error {
   isCorsError: boolean;
@@ -394,7 +395,12 @@ export class BlossomClient {
     // caller run this through the same classifyUploadFailure() used for a
     // real upload attempt, so e.g. a 413 here reads as "too large" instead of
     // a generic network failure.
-    return { ok: false, reason: res.headers.get("X-Reason") || res.statusText, status: res.status };
+    const reason = res.headers.get("X-Reason") || res.statusText;
+    if (res.status === 413) {
+      const max = parseMaxBytes(reason);
+      if (max) recordServerLimit(this.baseUrl, max);
+    }
+    return { ok: false, reason, status: res.status };
   }
 
   /**

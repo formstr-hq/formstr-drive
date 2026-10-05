@@ -1,6 +1,6 @@
 import { useFileIndex } from '../../hooks/useFileContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import DriveMark from "../../assets/drive-mark.svg";
+import { DriveMark } from "../icons/DriveMark";
 import { ProfileMenu } from './ProfileMenu';
 import { useProfileContext } from '../../hooks/useProfileContext';
 import { MenuOutlined } from "@ant-design/icons";
@@ -57,7 +57,7 @@ export function Header({ onMenuClick }: HeaderProps) {
               onClick={onMenuClick}
             />
         )}
-        <img src={DriveMark} alt="Form* Drive" className="app-mark" />
+        <DriveMark className="app-mark" />
         <Breadcrumb currentFolder={currentFolder} onNavigate={setCurrentFolder} />
       </div>
 

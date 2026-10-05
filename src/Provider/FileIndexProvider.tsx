@@ -21,7 +21,7 @@ import {
 import { useProfileContext } from "../hooks/useProfileContext";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import { useBlossomServer } from "../hooks/useBlossomServer";
-import { useFileMutations } from "../hooks/useFileMutations";
+import { useFileMutations, type DeleteResult } from "../hooks/useFileMutations";
 import { useMetadataOutboxDrain } from "../hooks/useMetadataOutboxDrain";
 import { useNativeManifestSync } from "../hooks/useNativeManifestSync";
 import { useNativeTransferAdoption } from "../hooks/useNativeTransferAdoption";
@@ -91,8 +91,8 @@ export interface FileIndexContextType {
    *  actual message, not a generic line. Null otherwise. */
   degradedMessage: string | null;
   error: string | null;
-  deleteFile: (hash: string) => Promise<void>;
-  deleteFiles: (hashes: string[]) => Promise<void>;
+  deleteFile: (hash: string) => Promise<DeleteResult>;
+  deleteFiles: (hashes: string[]) => Promise<DeleteResult>;
   moveFile: (hash: string, newFolder: string) => Promise<void>;
   moveFiles: (hashes: string[], newFolder: string) => Promise<void>;
   renameFile: (hash: string, newName: string) => Promise<void>;

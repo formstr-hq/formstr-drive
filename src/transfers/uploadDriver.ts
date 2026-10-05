@@ -3,7 +3,7 @@ import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
 import { uploadFile as chunkedUploadFile, computePlaintextHash, type UploadProgressInfo } from "../services/uploadFile";
 import { previewFile } from "../services/Preview/previewManager";
-import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive } from "../services/fileIndex";
+import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive, hasSameSizeFile } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
 import {
@@ -35,14 +35,23 @@ export async function uploadDriver(
     // re-upload of identical content — only the plaintext hash can. Checked
     // before kicking off preview generation so a duplicate never pays for
     // work whose result gets thrown away.
-    onProgress({ stage: "Checking for duplicates...", progress: 0 });
-    const plaintextHash = await computePlaintextHash(file, signal);
-    const candidate = findDuplicateByHash(plaintextHash);
-    // findDuplicateByHash is a pure local-index lookup — confirm the blob it
-    // points at is actually still on the server before reusing it. Skipping
-    // this would let a stale/deleted blob mint a new metadata entry that's
-    // broken from the moment it's created (see fileIndex.ts's doc comment).
-    const duplicate = candidate && (await duplicateBlobIsLive(candidate)) ? candidate : undefined;
+    // Only pay for the full-file hash when some indexed file has this exact
+    // size — byte-identical content can't differ in size, so a unique size
+    // means no possible duplicate. The hash is reused by the upload below
+    // (so it isn't computed twice) and the encrypt pass computes it itself
+    // when this check is skipped.
+    let plaintextHash: string | undefined;
+    let duplicate: FileMetadata | undefined;
+    if (hasSameSizeFile(file.size)) {
+      onProgress({ stage: "Checking for duplicates...", progress: 0 });
+      plaintextHash = await computePlaintextHash(file, signal);
+      const candidate = findDuplicateByHash(plaintextHash);
+      // findDuplicateByHash is a pure local-index lookup — confirm the blob it
+      // points at is actually still on the server before reusing it. Skipping
+      // this would let a stale/deleted blob mint a new metadata entry that's
+      // broken from the moment it's created (see fileIndex.ts's doc comment).
+      duplicate = candidate && (await duplicateBlobIsLive(candidate)) ? candidate : undefined;
+    }
 
     if (duplicate) {
       onProgress({ stage: "Saving metadata...", progress: 90 });
@@ -99,7 +108,9 @@ export async function uploadDriver(
         }
       },
       signal,
-      previewPromise
+      previewPromise,
+      undefined,
+      plaintextHash,
     );
 
     onProgress({ stage: "Saving metadata...", progress: 98 });

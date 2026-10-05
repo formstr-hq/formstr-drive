@@ -1,3 +1,4 @@
+import { probeServerLimit } from "../services/serverLimits";
 import {
   createContext,
   useState,
@@ -197,6 +198,15 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     return unobserveServerList;
   }, [pubkey, restoring]);
 
+  // Custom servers whose probe was inconclusive (offline when added, a timeout)
+  // get another try. probeServerLimit no-ops for any server with a known limit
+  // or a conclusive earlier probe, so this costs nothing in the steady state.
+  useEffect(() => {
+    for (const server of servers) {
+      if (server.source === "custom") void probeServerLimit(server.url);
+    }
+  }, [servers]);
+
   const addCustomServer = useCallback((url: string) => {
     const normalizedUrl = normalizeServerUrl(url);
 
@@ -217,6 +227,9 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
       return next;
     });
     setSelectedServer(normalizedUrl);
+
+    // One-time, cached, signer-free probe so the picker can show its cap.
+    void probeServerLimit(normalizedUrl);
 
     // Publish the updated list so other devices pick it up. Deliberately not
     // awaited and never rethrown: the server is already usable locally, and a

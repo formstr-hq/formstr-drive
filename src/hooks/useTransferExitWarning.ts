@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getTransfers } from "../transfers/transferStore";
 import { isAndroidPlatform } from "../utils/platform";
+import { transferSurvivesAppClose } from "../transfers/appCloseSafety";
 
 /**
  * Warns before the tab/window closes while transfers are still in flight and
@@ -18,10 +19,7 @@ export function useTransferExitWarning(): void {
         (t) => t.status === "running" || t.status === "pending",
       );
       if (active.length === 0) return;
-      const allSurvive = active.every(
-        (t) =>
-          isAndroidPlatform && (t.type === "download" || t.survivesAppClose === true),
-      );
+      const allSurvive = active.every((t) => transferSurvivesAppClose(t, isAndroidPlatform));
       if (allSurvive) return;
       e.preventDefault();
       e.returnValue = "";

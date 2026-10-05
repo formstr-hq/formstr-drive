@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useFileIndex } from '../../hooks/useFileContext';
 import { useToast } from '../../hooks/useToast';
-import { FileCard } from "./FileCard";
+import { FileCard, canOpenPreview } from "./FileCard";
+import { PREVIEW_UNAVAILABLE_MESSAGE } from "../../utils/fileTypeHelpers";
+import { FileActionSheet } from "./FileActionSheet";
+import { FilePreviewModal } from "./FilePreviewModal";
+import { ShareModal } from "./ShareModal";
+import { useShares } from "../../context/SharesProvider";
+import { queueDownload } from "../../transfers/transferQueue";
+import { getCachedPreview } from "../../services/Preview/fetchPreview";
+import { isLegacyBlobFormat } from "../../types/metadata";
 import { UploadZone } from '../Upload/UploadZone';
 import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon } from '../icons/Icons';
 
@@ -11,6 +19,61 @@ import { FILE_HASH_MIME } from '../../utils/constants';
 import { refreshDriveKeyring } from '../../services/driveKey';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { isAndroidPlatform } from '../../utils/platform';
+
+import type { FileMetadata } from '../../types/metadata';
+
+export const PAGE_SIZE = 40;
+
+export function calculateDisplayedFiles(files: FileMetadata[], visibleCount: number): FileMetadata[] {
+  return files.slice(0, visibleCount);
+}
+
+export function advanceVisibleCount(currentCount: number, totalCount: number, pageSize: number = PAGE_SIZE): number {
+  return Math.min(currentCount + pageSize, totalCount);
+}
+
+export function shouldResetPagination(
+  prevFolder: string,
+  newFolder: string,
+  prevQuery: string,
+  newQuery: string,
+  prevSort: SortKey,
+  newSort: SortKey
+): boolean {
+  return prevFolder !== newFolder || prevQuery !== newQuery || prevSort !== newSort;
+}
+
+export function filterAndSortFiles(
+  files: FileMetadata[],
+  folder: string,
+  normalizedQuery: string,
+  sortKey: SortKey
+): FileMetadata[] {
+  const matches = files
+    .filter((f) => f.folder === folder)
+    .filter((f) => f.name.toLowerCase().includes(normalizedQuery));
+
+  return [...matches].sort((a, b) => {
+    switch (sortKey) {
+      case "name":
+        return a.name.localeCompare(b.name);
+      case "oldest":
+        return a.uploadedAt - b.uploadedAt;
+      case "largest":
+        return b.size - a.size;
+      case "smallest":
+        return a.size - b.size;
+      case "newest":
+      default:
+        return b.uploadedAt - a.uploadedAt;
+    }
+  });
+}
+
+export function pruneSelectedHashes(prevSelected: Set<string>, validHashes: Set<string>): Set<string> {
+  const next = new Set(Array.from(prevSelected).filter((hash) => validHashes.has(hash)));
+  return next.size === prevSelected.size ? prevSelected : next;
+}
 
 export function FileList() {
   const {
@@ -23,10 +86,19 @@ export function FileList() {
     degradedMessage,
     deleteFiles,
     moveFiles,
+    deleteFile,
+    moveFile,
+    renameFile,
     refresh,
   } = useFileIndex();
   const toast = useToast();
+  const { isFileShared } = useShares();
+  const [menuTarget, setMenuTarget] = useState<{ file: FileMetadata; anchor: HTMLElement } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: "preview" | "share" | "move" | "rename"; file: FileMetadata } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [selectedFileHashes, setSelectedFileHashes] = useState<Set<string>>(new Set());
@@ -34,8 +106,22 @@ export function FileList() {
   const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
-  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const normalizedQuery = debouncedQuery.trim().toLowerCase();
   const isGridView = viewMode === "grid";
+
+  // Reset pagination when folder, debounced search query, or sort order changes
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [currentFolder, normalizedQuery, sortKey]);
 
   const currentFolders = useMemo(
     () =>
@@ -46,26 +132,35 @@ export function FileList() {
   );
 
   const currentFiles = useMemo(() => {
-    const matches = files
-      .filter((f) => f.folder === currentFolder)
-      .filter((f) => f.name.toLowerCase().includes(normalizedQuery));
-
-    return [...matches].sort((a, b) => {
-      switch (sortKey) {
-        case "name":
-          return a.name.localeCompare(b.name);
-        case "oldest":
-          return a.uploadedAt - b.uploadedAt;
-        case "largest":
-          return b.size - a.size;
-        case "smallest":
-          return a.size - b.size;
-        case "newest":
-        default:
-          return b.uploadedAt - a.uploadedAt;
-      }
-    });
+    return filterAndSortFiles(files, currentFolder, normalizedQuery, sortKey);
   }, [files, currentFolder, normalizedQuery, sortKey]);
+
+  const displayedFiles = useMemo(
+    () => calculateDisplayedFiles(currentFiles, visibleCount),
+    [currentFiles, visibleCount]
+  );
+
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (visibleCount >= currentFiles.length) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((prev) => advanceVisibleCount(prev, currentFiles.length, PAGE_SIZE));
+        }
+      },
+      { rootMargin: "250px" }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [visibleCount, currentFiles.length]);
+
   const currentFileHashes = useMemo(
     () => new Set(currentFiles.map((file) => file.id)),
     [currentFiles]
@@ -80,17 +175,7 @@ export function FileList() {
   const hasItems = currentFolders.length > 0 || currentFiles.length > 0;
 
   useEffect(() => {
-    setSelectedFileHashes((prev) => {
-      const next = new Set(
-        Array.from(prev).filter((hash) => currentFileHashes.has(hash))
-      );
-
-      if (next.size === prev.size) {
-        return prev;
-      }
-
-      return next;
-    });
+    setSelectedFileHashes((prev) => pruneSelectedHashes(prev, currentFileHashes));
   }, [currentFileHashes]);
 
   useEffect(() => {
@@ -100,7 +185,7 @@ export function FileList() {
     }
   }, [selectedCount]);
 
-  const toggleFileSelection = (hash: string) => {
+  const toggleFileSelection = useCallback((hash: string) => {
     setSelectedFileHashes((prev) => {
       const next = new Set(prev);
       if (next.has(hash)) {
@@ -110,7 +195,12 @@ export function FileList() {
       }
       return next;
     });
-  };
+  }, []);
+
+  const multiDragIds = useMemo(
+    () => (selectedFileHashes.size > 1 ? Array.from(selectedFileHashes) : undefined),
+    [selectedFileHashes]
+  );
 
   const handleToggleSelectAll = () => {
     setSelectedFileHashes(() => {
@@ -131,15 +221,30 @@ export function FileList() {
     setShowDeleteDialog(true);
   };
 
+  // The files are already gone by the time this runs — it only says that a
+  // share link outlived one of them, so it can't be an error that aborts the
+  // delete flow (which would leave the selection and dialog stuck open).
+  const warnUnrevokedShares = useCallback(
+    (names: string[]) => {
+      if (names.length > 0) {
+        toast.error(
+          `Deleted, but the share link for ${names.join(", ")} couldn't be revoked — revoke it from "Shared by me".`,
+        );
+      }
+    },
+    [toast],
+  );
+
   const handleBulkDelete = async () => {
     if (selectedCount === 0) return;
 
     setBulkAction("delete");
 
     try {
-      await deleteFiles(selectedFiles.map((file) => file.id));
+      const { unrevokedShares } = await deleteFiles(selectedFiles.map((file) => file.id));
       setSelectedFileHashes(new Set());
       setShowDeleteDialog(false);
+      warnUnrevokedShares(unrevokedShares);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Bulk delete failed");
     } finally {
@@ -170,6 +275,150 @@ export function FileList() {
       setBulkAction(null);
     }
   };
+
+  // Per-file actions: one instance shared by every card.
+  const closeMenu = useCallback(() => setMenuTarget(null), []);
+  const closeDialog = useCallback(() => setDialog(null), []);
+
+  const openMenu = useCallback((file: FileMetadata, anchor: HTMLElement) => {
+    setMenuTarget({ file, anchor });
+  }, []);
+
+  const openPreview = useCallback(
+    (file: FileMetadata) => {
+      // Video/PDF on the new blob format stream via Range requests, so the
+      // 5MB gate only applies to modes without a seekable path.
+      const gate = canOpenPreview({
+        fileType: file.type,
+        fileSize: file.size,
+        isLegacyBlob: isLegacyBlobFormat(file),
+        fileName: file.name,
+      });
+      if (!gate.allowed) {
+        toast.error(gate.reason ?? PREVIEW_UNAVAILABLE_MESSAGE);
+        return;
+      }
+      setDialog({ kind: "preview", file });
+    },
+    [toast],
+  );
+
+  const downloadFile = useCallback(
+    (file: FileMetadata) => {
+      // The transfer panel owns progress and errors; only speak up when the
+      // click was a no-op because the file is already downloading.
+      if (!queueDownload(file)) toast.info("This file is already downloading");
+    },
+    [toast],
+  );
+
+  const shareFile = useCallback((file: FileMetadata) => setDialog({ kind: "share", file }), []);
+  const moveFileDialog = useCallback((file: FileMetadata) => setDialog({ kind: "move", file }), []);
+  const renameFileDialog = useCallback((file: FileMetadata) => {
+    setRenameValue(file.name);
+    setDialog({ kind: "rename", file });
+  }, []);
+
+  const deleteOne = useCallback(
+    async (file: FileMetadata) => {
+      if (!confirm(`Delete "${file.name}"?`)) return;
+      try {
+        const { unrevokedShares } = await deleteFile(file.id);
+        warnUnrevokedShares(unrevokedShares);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Delete failed");
+      }
+    },
+    [deleteFile, toast, warnUnrevokedShares],
+  );
+
+  const submitRename = async () => {
+    if (dialog?.kind !== "rename") return;
+    const trimmed = renameValue.trim();
+    const target = dialog.file;
+    setDialog(null);
+    if (trimmed && trimmed !== target.name) {
+      try {
+        await renameFile(target.id, trimmed);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Rename failed");
+      }
+    }
+  };
+
+  const submitMove = async (folder: string) => {
+    if (dialog?.kind !== "move") return;
+    try {
+      await moveFile(dialog.file.id, folder);
+      setDialog(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Move failed");
+    }
+  };
+
+  useEffect(() => {
+    if (dialog?.kind !== "rename") return;
+    const t = setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [dialog?.kind]);
+
+  const renameModal = dialog?.kind === "rename" && (
+    <div className="move-dialog-overlay" onClick={closeDialog}>
+      <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="move-dialog-header">
+          <h3>Rename File</h3>
+          <button onClick={closeDialog}>×</button>
+        </div>
+        <div className="move-dialog-body">
+          <input
+            ref={renameInputRef}
+            type="text"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submitRename();
+              if (e.key === "Escape") closeDialog();
+            }}
+            className="rename-input"
+          />
+          <div className="rename-dialog-actions">
+            <button onClick={closeDialog} className="cancel-btn">Cancel</button>
+            <button onClick={() => void submitRename()} className="rename-btn">Rename</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const singleMoveDialog = dialog?.kind === "move" && (
+    <div className="move-dialog-overlay" onClick={closeDialog}>
+      <div className="move-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="move-dialog-header">
+          <h3>Move to Folder</h3>
+          <button onClick={closeDialog}>×</button>
+        </div>
+        <div className="move-dialog-body">
+          <div className="folder-list-move">
+            {folders.map((folder) => (
+              <button
+                key={folder}
+                className={`folder-option ${folder === dialog.file.folder ? "current" : ""}`}
+                onClick={() => void submitMove(folder)}
+                disabled={folder === dialog.file.folder}
+              >
+                <span className="folder-icon">📁</span>
+                <span className="folder-path">{folder}</span>
+                {folder === dialog.file.folder && <span className="current-badge">Current</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   const bulkMoveDialog = showMoveDialog && (
     <div className="move-dialog-overlay" onClick={() => setShowMoveDialog(false)}>
@@ -448,7 +697,7 @@ export function FileList() {
               );
             })}
 
-            {currentFiles.map((file, index) => (
+            {displayedFiles.map((file, index) => (
               <FileCard
                 // Legacy files (pre-dating the random id) all have id === undefined —
                 // falling back to `file.id` alone would give every such row the exact
@@ -459,17 +708,28 @@ export function FileList() {
                 file={file}
                 viewMode={viewMode}
                 selected={selectedFileHashes.has(file.id)}
+                isShared={isFileShared(file.id)}
                 onToggleSelection={toggleFileSelection}
+                onOpen={openPreview}
+                onMenu={openMenu}
+                onDownload={downloadFile}
+                onShare={shareFile}
+                isSelectionMode={selectedCount > 0}
                 // If this card is part of a multi-selection, dragging it should move
                 // the WHOLE selection, matching standard file-manager behavior — not
                 // just the one card that happened to receive the native dragstart.
-                dragIds={
-                  selectedFileHashes.has(file.id) && selectedFileHashes.size > 1
-                    ? Array.from(selectedFileHashes)
-                    : [file.id]
-                }
+                dragIds={selectedFileHashes.has(file.id) ? multiDragIds : undefined}
               />
             ))}
+            {visibleCount < currentFiles.length && (
+              <div
+                ref={sentinelRef}
+                className="file-list-sentinel"
+                data-testid="file-list-sentinel"
+                style={{ height: 20, width: "100%", opacity: 0, pointerEvents: "none" }}
+                aria-hidden="true"
+              />
+            )}
           </div>
         )}
     </>
@@ -521,6 +781,32 @@ export function FileList() {
       )}
       {bulkDeleteDialog}
       {bulkMoveDialog}
+      {menuTarget && (
+        <FileActionSheet
+          file={menuTarget.file}
+          anchor={menuTarget.anchor}
+          thumbUrl={
+            menuTarget.file.previewHash
+              ? (getCachedPreview(menuTarget.file.previewHash)?.staticUrl ??
+                 getCachedPreview(menuTarget.file.previewHash)?.url)
+              : undefined
+          }
+          isShared={isFileShared(menuTarget.file.id)}
+          onClose={closeMenu}
+          onView={() => openPreview(menuTarget.file)}
+          onDownload={() => downloadFile(menuTarget.file)}
+          onShare={() => shareFile(menuTarget.file)}
+          onMove={() => moveFileDialog(menuTarget.file)}
+          onRename={() => renameFileDialog(menuTarget.file)}
+          onDelete={() => void deleteOne(menuTarget.file)}
+        />
+      )}
+      {dialog?.kind === "preview" && <FilePreviewModal file={dialog.file} onClose={closeDialog} />}
+      {dialog?.kind === "share" && (
+        <ShareModal target={{ mode: "file", file: dialog.file }} onClose={closeDialog} />
+      )}
+      {singleMoveDialog}
+      {renameModal}
     </div>
   );
 }

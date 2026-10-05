@@ -12,7 +12,9 @@
   border-radius: var(--radius-lg);
   overflow: visible;
   background: var(--color-bg-surface);
-  cursor: default;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
   transition: box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
   position: relative;
 }
@@ -43,10 +45,6 @@
   }
 }
 
-.file-tile.menu-open {
-  z-index: 50;
-}
-
 /* Square preview */
 .file-tile-preview {
   position: relative;
@@ -58,10 +56,6 @@
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-}
-
-.file-tile-preview.menu-open {
-  overflow: visible;
 }
 
 .file-tile-img {
@@ -141,11 +135,6 @@
   }
 }
 
-.file-tile.menu-open .file-tile-overlay {
-  opacity: 1;
-  pointer-events: auto;
-}
-
 .tile-action-btn {
   /* Sits on the image scrim above, so it stays a literal light chip
      regardless of theme — same reasoning as .file-tile-overlay. */
@@ -172,14 +161,6 @@
 .tile-action-btn:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.tile-menu {
-  top: calc(100% + 8px);
-  bottom: auto;
-  right: -18px;
-  margin: 0;
-  z-index: 60;
 }
 
 /* Footer */
@@ -217,34 +198,40 @@
   .file-select {
     opacity: 0.6;
   }
-  
+
   /* Make the touch target for checkboxes bigger on mobile */
   .file-select::after {
     content: "";
     position: absolute;
-    inset: -12px;
+    inset: -14px;
   }
 
-  /* Always show the 3-dot menu button on touch devices */
+  /* Only the 3-dot button shows on touch; the sheet carries every action. */
   .file-tile-overlay {
     opacity: 1;
-    background: transparent; /* don't darken the whole image */
+    background: transparent;
     pointer-events: none;
   }
-  
-  /* Hide hover-only buttons on touch to avoid clutter */
-  .tile-action-btn[title="Preview"],
-  .tile-action-btn[title="Download"],
-  .tile-action-btn[title="Share"] {
+
+  .tile-action-btn--hover-only {
     display: none;
   }
-  
-  .tile-action-btn[title="More"] {
-    opacity: 1;
+
+  .tile-action-btn--more {
     pointer-events: auto;
+    width: 36px;
+    height: 36px;
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border);
-    box-shadow: var(--shadow-sm);
+    border-radius: 50%;
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* 44px hit area around the 36px visual */
+  .tile-action-btn--more::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
   }
 }

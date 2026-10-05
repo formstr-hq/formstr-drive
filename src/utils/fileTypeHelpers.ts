@@ -1,6 +1,7 @@
 export type PreviewMode = "image" | "video" | "pdf" | "text" | "unsupported";
 
 export const MAX_PREVIEW_SIZE = 5 * 1024 * 1024; // 5 MB
+export const PREVIEW_UNAVAILABLE_MESSAGE = "Preview isn't available for this file. Download it to view.";
 
 export function resolvePreviewMode(fileType: string): PreviewMode {
   const normalizedType = fileType.toLowerCase();
@@ -23,6 +24,31 @@ export function resolvePreviewMode(fileType: string): PreviewMode {
   }
 
   return "unsupported";
+}
+
+// Containers that mainstream browsers don't demux. canPlayType is only trusted
+// for these: for other types an empty answer is unreliable (e.g. Firefox says ""
+// for video/quicktime though many .mov files play), so those are just tried.
+const OFTEN_UNSUPPORTED_VIDEO = /matroska|x-msvideo|x-flv|x-ms-wmv/i;
+
+/**
+ * False only when `fileType` is a container browsers commonly can't play AND
+ * this browser's `canPlayType` firmly rules it out. Anything else, including
+ * no DOM or no type, is "maybe" — a supported container can still fail on its
+ * codec, which the player reports itself.
+ */
+export function browserMayPlayVideo(fileType: string): boolean {
+  if (!fileType || typeof document === "undefined") return true;
+  if (!OFTEN_UNSUPPORTED_VIDEO.test(fileType)) return true;
+  return document.createElement("video").canPlayType(fileType) !== "";
+}
+
+export function unsupportedVideoMessage(fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  const ext = dot > 0 && dot < fileName.length - 1 ? fileName.slice(dot) : "";
+  return ext
+    ? `This browser can't play ${ext} videos. Download the file to watch it in a media player.`
+    : "This browser can't play this video format. Download the file to watch it in a media player.";
 }
 
 /**

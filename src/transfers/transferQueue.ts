@@ -155,14 +155,14 @@ async function runDownload(id: string, job: DownloadJob) {
   const onProgress = (info: {
     progress?: number;
     stage?: string;
-    currentChunk?: number;
-    totalChunks?: number;
   }) => {
+    // One continuous 0-100 for the whole upload (encrypt, sign, send, publish):
+    // retries, "connecting" and stage-only updates re-report an earlier value or
+    // none at all, which must never rewind the bar or empty the dots.
+    const previous = getTransfer(id)?.progress ?? 0;
     updateTransfer(id, {
-      progress: info.progress ?? 0,
+      progress: Math.max(previous, info.progress ?? 0),
       stage: info.stage,
-      currentChunk: info.currentChunk,
-      totalChunks: info.totalChunks,
     });
   };
 
@@ -200,15 +200,15 @@ async function runUpload(id: string, job: UploadJob): Promise<FileMetadata> {
   const onProgress = (info: {
     progress?: number;
     stage?: string;
-    currentChunk?: number;
-    totalChunks?: number;
     survivesAppClose?: boolean;
   }) => {
+    // One continuous 0-100 for the whole upload (encrypt, sign, send, publish):
+    // retries, "connecting" and stage-only updates re-report an earlier value or
+    // none at all, which must never rewind the bar or empty the dots.
+    const previous = getTransfer(id)?.progress ?? 0;
     updateTransfer(id, {
-      progress: info.progress ?? 0,
+      progress: Math.max(previous, info.progress ?? 0),
       stage: info.stage,
-      currentChunk: info.currentChunk,
-      totalChunks: info.totalChunks,
       ...(info.survivesAppClose !== undefined
         ? { survivesAppClose: info.survivesAppClose }
         : {}),
@@ -274,8 +274,6 @@ export function retryTransfer(id: string): boolean {
     progress: 0,
     stage: undefined,
     error: undefined,
-    currentChunk: undefined,
-    totalChunks: undefined,
     // Fresh controller: the old one was already aborted/consumed.
     abortController: new AbortController(),
   });

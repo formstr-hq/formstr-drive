@@ -5,7 +5,7 @@ import { downloadFileToDownloads } from "../../native/driveManifest";
 import { isAndroidPlatform } from "../../utils/platform";
 import { isLegacyBlobFormat, type FileMetadata } from "../../types/metadata";
 import { formatSize, formatUnixSeconds } from "../../utils/format";
-import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode } from "../../utils/fileTypeHelpers";
+import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode, PREVIEW_UNAVAILABLE_MESSAGE, browserMayPlayVideo } from "../../utils/fileTypeHelpers";
 import { fetchFilePreview, getCachedPreview, type PreviewData } from "../../services/Preview/fetchPreview";
 import { FilePreviewModal } from "../Files/FilePreviewModal";
 import { useToast } from "../../hooks/useToast";
@@ -57,6 +57,7 @@ function SharedFileThumbnail({ file, onOpen }: { file: FileMetadata; onOpen: () 
   };
 
   const icon = getFileIcon(file.type);
+  const isVideo = resolvePreviewMode(file.type) === "video";
   if (!preview) {
     return (
       <div
@@ -68,7 +69,7 @@ function SharedFileThumbnail({ file, onOpen }: { file: FileMetadata; onOpen: () 
         onKeyDown={handleKeyDown}
         title="Preview"
       >
-        {icon.toUpperCase()}
+        {isVideo ? <span className="shared-play-badge" aria-hidden="true" /> : icon.toUpperCase()}
       </div>
     );
   }
@@ -83,6 +84,7 @@ function SharedFileThumbnail({ file, onOpen }: { file: FileMetadata; onOpen: () 
       title="Preview"
     >
       <img src={preview.staticUrl ?? preview.url} alt="" />
+      {isVideo && <span className="shared-play-badge" aria-hidden="true" />}
     </div>
   );
 }
@@ -118,7 +120,7 @@ export function SharedView() {
     const mode = resolvePreviewMode(file.type);
     const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
     if (!canStream && file.size > MAX_PREVIEW_SIZE) {
-      toast.error("File is too large to preview (over 5 MB). Please download it.");
+      toast.error(PREVIEW_UNAVAILABLE_MESSAGE);
       return;
     }
     setPreviewFile(file);
@@ -222,6 +224,11 @@ export function SharedView() {
   };
 
   const fileRow = (file: FileMetadata) => {
+    const mode = resolvePreviewMode(file.type);
+    // Say so when the file can be opened in the page: a bare Download button
+    // reads as "download only", though video/PDF stream from the share itself.
+    const canPreview =
+      mode !== "unsupported" && (mode !== "video" || browserMayPlayVideo(file.type));
     return (
       <div className="shared-file-row" key={file.id}>
         <SharedFileThumbnail file={file} onOpen={() => handleOpenPreview(file)} />
@@ -231,13 +238,20 @@ export function SharedView() {
             {formatSize(file.size)} · {file.type || "file"}
           </span>
         </div>
-        <button
-          className="shared-download-btn"
-          onClick={() => handleDownload(file)}
-          disabled={downloadingId !== null}
-        >
-          {downloadingId === file.id ? progress?.stage ?? "Downloading…" : "Download"}
-        </button>
+        <div className="shared-file-actions">
+          {canPreview && (
+            <button className="shared-preview-btn" onClick={() => handleOpenPreview(file)}>
+              {mode === "video" ? "▶ Play" : "Preview"}
+            </button>
+          )}
+          <button
+            className="shared-download-btn"
+            onClick={() => handleDownload(file)}
+            disabled={downloadingId !== null}
+          >
+            {downloadingId === file.id ? progress?.stage ?? "Downloading…" : "Download"}
+          </button>
+        </div>
       </div>
     );
   };
