@@ -23,7 +23,7 @@ export const MAX_CONCURRENT_PREVIEWS = 4;
 let activePreviewRequests = 0;
 const previewQueue: Array<() => void> = [];
 
-async function acquirePreviewSlot(): Promise<void> {
+function acquirePreviewSlot(): Promise<void> | void {
   if (activePreviewRequests < MAX_CONCURRENT_PREVIEWS) {
     activePreviewRequests++;
     return;
@@ -65,6 +65,8 @@ export function getPreviewQueueStatus(): { active: number; queued: number; maxCo
 export function clearPreviewCache(): void {
   previewCache.clear();
   inFlightRequests.clear();
+  activePreviewRequests = 0;
+  previewQueue.length = 0;
 }
 
 /** Draws `blobUrl`'s current (first) frame to a canvas and re-exports it as a
@@ -100,18 +102,19 @@ async function extractStaticFrame(blobUrl: string): Promise<string> {
  * `encryptionKey` (already present in `file` once its metadata is decrypted)
  * — safe to call from the public SharedView as well as the signed-in drive.
  */
-export async function fetchFilePreview(file: FileMetadata): Promise<PreviewData | null> {
-  if (!file.previewHash) return null;
+export function fetchFilePreview(file: FileMetadata): Promise<PreviewData | null> {
+  if (!file.previewHash) return Promise.resolve(null);
 
   const cached = previewCache.get(file.previewHash);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
 
   const inFlight = inFlightRequests.get(file.previewHash);
   if (inFlight) return inFlight;
 
   const previewHash = file.previewHash;
+  const slotWait = acquirePreviewSlot();
   const taskPromise = (async (): Promise<PreviewData | null> => {
-    await acquirePreviewSlot();
+    if (slotWait) await slotWait;
     try {
       // Re-check cache in case it was resolved while waiting in queue
       const cachedAfterWait = previewCache.get(previewHash);

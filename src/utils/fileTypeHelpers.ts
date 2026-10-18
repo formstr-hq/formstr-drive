@@ -1,14 +1,33 @@
-export type PreviewMode = "image" | "video" | "pdf" | "text" | "unsupported";
+export type PreviewMode = "image" | "video" | "pdf" | "text" | "html" | "docx" | "unsupported";
 
 export const MAX_PREVIEW_SIZE = 5 * 1024 * 1024; // 5 MB
 export const PREVIEW_UNAVAILABLE_MESSAGE = "Preview isn't available for this file. Download it to view.";
 
-export function resolvePreviewMode(fileType: string): PreviewMode {
-  const normalizedType = fileType.toLowerCase();
+export function resolvePreviewMode(fileType: string, fileName?: string): PreviewMode {
+  const normalizedType = (fileType || "").toLowerCase();
+  const lowerName = (fileName || "").toLowerCase();
+
+  if (
+    normalizedType === "text/html" ||
+    normalizedType === "application/xhtml+xml" ||
+    lowerName.endsWith(".html") ||
+    lowerName.endsWith(".htm")
+  ) {
+    return "html";
+  }
+
+  if (
+    normalizedType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    normalizedType === "application/msword" ||
+    lowerName.endsWith(".docx") ||
+    lowerName.endsWith(".doc")
+  ) {
+    return "docx";
+  }
 
   if (normalizedType.startsWith("image/")) return "image";
   if (normalizedType.startsWith("video/")) return "video";
-  if (normalizedType === "application/pdf") return "pdf";
+  if (normalizedType === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
 
   if (
     normalizedType.startsWith("text/") ||
@@ -18,7 +37,10 @@ export function resolvePreviewMode(fileType: string): PreviewMode {
     normalizedType === "application/x-javascript" ||
     normalizedType === "application/yaml" ||
     normalizedType === "application/x-yaml" ||
-    normalizedType === "text/markdown"
+    normalizedType === "text/markdown" ||
+    lowerName.endsWith(".txt") ||
+    lowerName.endsWith(".md") ||
+    lowerName.endsWith(".json")
   ) {
     return "text";
   }
@@ -74,12 +96,15 @@ export function detectMimeTypeFromMagicBytes(arr: Uint8Array): string {
   return mimeType;
 }
 
-export function getFileIcon(type: string): string {
-  if (type.startsWith("image/")) return "img";
-  if (type.startsWith("video/")) return "vid";
-  if (type.startsWith("audio/")) return "aud";
-  if (type === "application/pdf") return "pdf";
-  if (type.includes("zip") || type.includes("archive")) return "zip";
-  if (type.includes("text") || type.includes("json")) return "txt";
+export function getFileIcon(type: string, name?: string): string {
+  const lowerName = (name || "").toLowerCase();
+  const normalizedType = (type || "").toLowerCase();
+  if (normalizedType.startsWith("image/")) return "img";
+  if (normalizedType.startsWith("video/")) return "vid";
+  if (normalizedType.startsWith("audio/")) return "aud";
+  if (normalizedType === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
+  if (normalizedType === "text/html" || lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return "html";
+  if (normalizedType.includes("zip") || normalizedType.includes("archive")) return "zip";
+  if (normalizedType.includes("text") || normalizedType.includes("json") || lowerName.endsWith(".txt") || lowerName.endsWith(".md")) return "txt";
   return "file";
 }

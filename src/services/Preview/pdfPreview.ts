@@ -1,6 +1,6 @@
-import pdfjsLib from "./pdfWorker";
-
 export async function generatePdfThumbnail(file: File): Promise<Uint8Array> {
+    const pdfjsLibModule = await import("./pdfWorker");
+    const pdfjsLib = pdfjsLibModule.default;
     const arrayBuffer = await file.arrayBuffer();
 
     let pdf: Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;

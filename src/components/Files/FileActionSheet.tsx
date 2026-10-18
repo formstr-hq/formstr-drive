@@ -30,6 +30,7 @@ export function FileActionSheet({
   thumbUrl,
   onClose,
   onView,
+  onOpenInPages,
   onDownload,
   onShare,
   onMove,
@@ -101,6 +102,7 @@ export function FileActionSheet({
         <FileMenu
           isShared={isShared}
           onView={run(onView)}
+          onOpenInPages={onOpenInPages ? run(onOpenInPages) : undefined}
           onDownload={run(onDownload)}
           onShare={run(onShare)}
           onMove={run(onMove)}

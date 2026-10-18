@@ -1,18 +1,26 @@
 import { useEffect, useState } from "react";
 import { isLegacyBlobFormat, type FileMetadata } from '../../types/metadata';
 import { resolvePreviewMode, MAX_PREVIEW_SIZE, browserMayPlayVideo, unsupportedVideoMessage, PREVIEW_UNAVAILABLE_MESSAGE } from '../../utils/fileTypeHelpers';
-import { canOpenInNostrDocs, openInNostrDocs } from '../../utils/docsIntegrationHelpers';
+import { canOpenInPages, openFileInPages } from '../../utils/docsIntegrationHelpers';
 import { downloadAndDecryptFile } from '../../services/downloadFile';
 import { hasServiceWorkerSupport } from '../../services/swStreamDownload';
 import { openMediaSession, type MediaSession } from '../../services/swMediaStream';
 import { probeRangeSupport } from '../../services/rangeRead';
 import { useToast } from '../../hooks/useToast';
+import { useBackButton } from '../../hooks/useBackButton';
+import { ImagePreview } from '../preview/ImagePreview';
+import { VideoPreview } from '../preview/VideoPreview';
+import { PdfPreview } from '../preview/PdfPreview';
+import { TextPreview } from '../preview/TextPreview';
+import { HtmlPreview } from '../preview/HtmlPreview';
+import { DocxPreview } from '../preview/DocxPreview';
+import { ExternalLinkIcon } from '../icons/Icons';
 
 /**
  * Video/PDF are the only modes with a seekable streaming path (see
  * swMediaStream.ts / rangeRead.ts) — any NIP-FS segment decrypts in
  * isolation, so a Range request maps cleanly onto a plaintext byte range.
- * Images and text stay on the whole-file path: they're rendered once, not
+ * Images, text and HTML stay on the whole-file path: they're rendered once, not
  * scrubbed, so there's nothing seeking would buy them.
  *
  * Gated on `file.size > MAX_PREVIEW_SIZE`: a file the whole-file path can
@@ -35,11 +43,6 @@ interface FilePreviewModalProps {
   file: FileMetadata;
   onClose: () => void;
 }
-import { useBackButton } from '../../hooks/useBackButton';
-import { ImagePreview } from '../preview/ImagePreview';
-import { VideoPreview } from '../preview/VideoPreview';
-import { PdfPreview } from '../preview/PdfPreview';
-import { TextPreview } from '../preview/TextPreview';
 
 export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   useBackButton(onClose);
@@ -48,10 +51,11 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
+  const [docxBytes, setDocxBytes] = useState<Uint8Array | null>(null);
   const [pagesHint, setPagesHint] = useState<string | null>(null);
 
-  const mode = resolvePreviewMode(file.type);
-  const supportsNostrDocsDeepLink = canOpenInNostrDocs(file);
+  const mode = resolvePreviewMode(file.type, file.name);
+  const supportsPages = canOpenInPages(file);
 
 
 
@@ -65,6 +69,7 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
       setError(null);
       setBlobUrl(null);
       setTextContent(null);
+      setDocxBytes(null);
 
       if (mode === "unsupported") {
         setLoading(false);
@@ -116,6 +121,20 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
 
         if (cancelled) return;
 
+        if (mode === "html") {
+          const blob = new Blob([decryptedBytes as BlobPart], { type: "text/html;charset=utf-8" });
+          createdUrl = URL.createObjectURL(blob);
+          setBlobUrl(createdUrl);
+          const decoded = new TextDecoder().decode(decryptedBytes);
+          setTextContent(decoded);
+          return;
+        }
+
+        if (mode === "docx") {
+          setDocxBytes(decryptedBytes);
+          return;
+        }
+
         if (mode === "text") {
           const decoded = new TextDecoder().decode(decryptedBytes);
           setTextContent(decoded);
@@ -127,7 +146,11 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
         setBlobUrl(createdUrl);
       } catch (e) {
         if (cancelled) return;
-        const message = e instanceof Error ? e.message : "Failed to load preview";
+        const msg = e instanceof Error ? e.message : String(e);
+        const isNotFound = /404|not found/i.test(msg);
+        const message = isNotFound
+          ? "This file is no longer available (it may have been deleted by the owner)."
+          : (e instanceof Error ? e.message : "Failed to load preview");
         setError(message);
         toast.error(message);
       } finally {
@@ -148,6 +171,34 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
     };
   }, [file, mode, toast]);
 
+  const handleOpenInPages = async () => {
+    try {
+      await openFileInPages(file, {
+        textContent,
+        notify: (hint) => {
+          setPagesHint(hint);
+          toast.info(hint);
+        },
+      });
+    } catch {
+      toast.error("Failed to open file in Formstr Pages");
+    }
+  };
+
+  const handleOpenInNewTab = () => {
+    if (blobUrl) {
+      window.open(blobUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (textContent !== null) {
+      const mime = mode === "html" ? "text/html;charset=utf-8" : "text/plain;charset=utf-8";
+      const blob = new Blob([textContent], { type: mime });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+  };
+
   return (
     <div className="preview-modal-overlay" onClick={onClose}>
       <div className="preview-modal" data-surface="inverse" onClick={(e) => e.stopPropagation()}>
@@ -156,7 +207,31 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
             <h3 className="preview-modal-title" title={file.name}>{file.name}</h3>
             <span className="preview-modal-subtitle">{file.type || "Unknown type"}</span>
           </div>
-          <button className="preview-modal-close" onClick={onClose} aria-label="Close preview">X</button>
+          <div className="preview-modal-header-actions">
+            {supportsPages && (
+              <button
+                type="button"
+                className="preview-header-pages-btn"
+                onClick={handleOpenInPages}
+                title="Open in Formstr Pages"
+              >
+                <img src="/pages-favicon.svg" alt="" width={18} height={18} />
+                <span>Open in Pages</span>
+              </button>
+            )}
+            {(blobUrl || textContent !== null) && (
+              <button
+                type="button"
+                className="preview-header-tab-btn"
+                onClick={handleOpenInNewTab}
+                title="Open in new tab"
+                aria-label="Open in new tab"
+              >
+                <ExternalLinkIcon />
+              </button>
+            )}
+            <button className="preview-modal-close" onClick={onClose} aria-label="Close preview">×</button>
+          </div>
         </div>
 
         <div className="preview-modal-body">
@@ -167,11 +242,11 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
           {!loading && !error && mode === "unsupported" && (
             <div className="preview-modal-state">
               This file type is uploaded successfully, but in-app preview is not available yet.
-              {supportsNostrDocsDeepLink && (
+              {supportsPages && (
                 <>
                   <br />
-                  <button className="preview-open-docs-btn" onClick={() => openInNostrDocs(file)}>
-                    Open in Nostr Docs
+                  <button className="preview-open-docs-btn" onClick={handleOpenInPages}>
+                    Open in Formstr Pages
                   </button>
                 </>
               )}
@@ -190,8 +265,24 @@ export function FilePreviewModal({ file, onClose }: FilePreviewModalProps) {
             <PdfPreview blobUrl={blobUrl} name={file.name} />
           )}
 
+          {!loading && !error && mode === "docx" && docxBytes !== null && (
+            <DocxPreview
+              data={docxBytes}
+              onOpenInPages={handleOpenInPages}
+            />
+          )}
+
+          {!loading && !error && mode === "html" && textContent !== null && (
+            <HtmlPreview htmlContent={textContent} name={file.name} blobUrl={blobUrl} />
+          )}
+
           {!loading && !error && mode === "text" && textContent !== null && (
-            <TextPreview textContent={textContent} pagesHint={pagesHint} setPagesHint={setPagesHint} />
+            <TextPreview
+              textContent={textContent}
+              pagesHint={pagesHint}
+              setPagesHint={setPagesHint}
+              onOpenInPages={handleOpenInPages}
+            />
           )}
         </div>
       </div>

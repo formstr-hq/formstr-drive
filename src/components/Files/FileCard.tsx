@@ -84,7 +84,7 @@ export interface PreviewGateOptions {
 }
 
 export function canOpenPreview(opts: PreviewGateOptions): { allowed: boolean; reason?: string } {
-  const mode = resolvePreviewMode(opts.fileType);
+  const mode = resolvePreviewMode(opts.fileType, opts.fileName);
   if (mode === "video" && !browserMayPlayVideo(opts.fileType)) {
     return { allowed: false, reason: unsupportedVideoMessage(opts.fileName ?? "") };
   }

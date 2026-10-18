@@ -14,6 +14,7 @@ import { UploadZone } from '../Upload/UploadZone';
 import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon } from '../icons/Icons';
 
 import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../utils/folder';
+import { canOpenInPages, openFileInPages } from '../../utils/docsIntegrationHelpers';
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { refreshDriveKeyring } from '../../services/driveKey';
@@ -318,6 +319,19 @@ export function FileList() {
     setRenameValue(file.name);
     setDialog({ kind: "rename", file });
   }, []);
+
+  const handleOpenInPages = useCallback(
+    async (file: FileMetadata) => {
+      try {
+        await openFileInPages(file, {
+          notify: (msg) => toast.info(msg),
+        });
+      } catch {
+        toast.error("Failed to open file in Formstr Pages");
+      }
+    },
+    [toast],
+  );
 
   const deleteOne = useCallback(
     async (file: FileMetadata) => {
@@ -794,6 +808,11 @@ export function FileList() {
           isShared={isFileShared(menuTarget.file.id)}
           onClose={closeMenu}
           onView={() => openPreview(menuTarget.file)}
+          onOpenInPages={
+            canOpenInPages(menuTarget.file)
+              ? () => void handleOpenInPages(menuTarget.file)
+              : undefined
+          }
           onDownload={() => downloadFile(menuTarget.file)}
           onShare={() => shareFile(menuTarget.file)}
           onMove={() => moveFileDialog(menuTarget.file)}
