@@ -2,7 +2,7 @@ import { generateSecretKey } from "nostr-tools";
 import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
 import { uploadFile as chunkedUploadFile, computePlaintextHash, type UploadProgressInfo } from "../services/uploadFile";
-import { previewFile } from "../services/Preview/previewManager";
+import { startThumbnail } from "../services/thumbnails/generate";
 import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive, hasSameSizeFile } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
@@ -79,10 +79,7 @@ export async function uploadDriver(
       return metadata;
     }
 
-    const previewPromise = previewFile(file).catch((e: unknown) => {
-      console.warn("Background preview generation failed", e);
-      return null;
-    });
+    const previewPromise = startThumbnail(file, signal);
 
     // Only the very first tick before uploadFile()'s own stage reporting takes
     // over ("Encrypting...", "Uploading...", "Connecting...", "Retrying...",

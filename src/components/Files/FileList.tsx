@@ -296,7 +296,9 @@ export function FileList() {
         fileName: file.name,
       });
       if (!gate.allowed) {
-        toast.error(gate.reason ?? PREVIEW_UNAVAILABLE_MESSAGE);
+        const message = gate.reason ?? PREVIEW_UNAVAILABLE_MESSAGE;
+        if (gate.severity === "info") toast.info(message);
+        else toast.error(message);
         return;
       }
       setDialog({ kind: "preview", file });

@@ -1,51 +1,23 @@
+import { fileKind, type FileKind } from "../services/thumbnails/kinds";
+
 export type PreviewMode = "image" | "video" | "pdf" | "text" | "html" | "docx" | "unsupported";
 
 export const MAX_PREVIEW_SIZE = 5 * 1024 * 1024; // 5 MB
 export const PREVIEW_UNAVAILABLE_MESSAGE = "Preview isn't available for this file. Download it to view.";
 
 export function resolvePreviewMode(fileType: string, fileName?: string): PreviewMode {
-  const normalizedType = (fileType || "").toLowerCase();
-  const lowerName = (fileName || "").toLowerCase();
-
-  if (
-    normalizedType === "text/html" ||
-    normalizedType === "application/xhtml+xml" ||
-    lowerName.endsWith(".html") ||
-    lowerName.endsWith(".htm")
-  ) {
-    return "html";
+  const kind = fileKind({ type: fileType, name: fileName });
+  switch (kind) {
+    case "image":
+    case "video":
+    case "pdf":
+    case "text":
+    case "html":
+    case "docx":
+      return kind as PreviewMode;
+    default:
+      return "unsupported";
   }
-
-  if (
-    normalizedType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    normalizedType === "application/msword" ||
-    lowerName.endsWith(".docx") ||
-    lowerName.endsWith(".doc")
-  ) {
-    return "docx";
-  }
-
-  if (normalizedType.startsWith("image/")) return "image";
-  if (normalizedType.startsWith("video/")) return "video";
-  if (normalizedType === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
-
-  if (
-    normalizedType.startsWith("text/") ||
-    normalizedType === "application/json" ||
-    normalizedType === "application/xml" ||
-    normalizedType === "application/javascript" ||
-    normalizedType === "application/x-javascript" ||
-    normalizedType === "application/yaml" ||
-    normalizedType === "application/x-yaml" ||
-    normalizedType === "text/markdown" ||
-    lowerName.endsWith(".txt") ||
-    lowerName.endsWith(".md") ||
-    lowerName.endsWith(".json")
-  ) {
-    return "text";
-  }
-
-  return "unsupported";
 }
 
 // Containers that mainstream browsers don't demux. canPlayType is only trusted
@@ -63,6 +35,13 @@ export function browserMayPlayVideo(fileType: string): boolean {
   if (!fileType || typeof document === "undefined") return true;
   if (!OFTEN_UNSUPPORTED_VIDEO.test(fileType)) return true;
   return document.createElement("video").canPlayType(fileType) !== "";
+}
+
+/** Short notice for a file type the app has no viewer for, naming the extension when there is one. */
+export function unsupportedTypeMessage(fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  const ext = dot > 0 && dot < fileName.length - 1 ? fileName.slice(dot).toLowerCase() : "";
+  return ext ? `Preview isn't available for ${ext} files.` : "Preview isn't available for this file type.";
 }
 
 export function unsupportedVideoMessage(fileName: string): string {
@@ -96,15 +75,19 @@ export function detectMimeTypeFromMagicBytes(arr: Uint8Array): string {
   return mimeType;
 }
 
+const ICON_BY_KIND: Record<FileKind, string> = {
+  image: "img",
+  video: "vid",
+  audio: "aud",
+  pdf: "pdf",
+  html: "html",
+  docx: "doc",
+  office: "doc",
+  archive: "zip",
+  text: "txt",
+  other: "file",
+};
+
 export function getFileIcon(type: string, name?: string): string {
-  const lowerName = (name || "").toLowerCase();
-  const normalizedType = (type || "").toLowerCase();
-  if (normalizedType.startsWith("image/")) return "img";
-  if (normalizedType.startsWith("video/")) return "vid";
-  if (normalizedType.startsWith("audio/")) return "aud";
-  if (normalizedType === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
-  if (normalizedType === "text/html" || lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return "html";
-  if (normalizedType.includes("zip") || normalizedType.includes("archive")) return "zip";
-  if (normalizedType.includes("text") || normalizedType.includes("json") || lowerName.endsWith(".txt") || lowerName.endsWith(".md")) return "txt";
-  return "file";
+  return ICON_BY_KIND[fileKind({ type, name })];
 }

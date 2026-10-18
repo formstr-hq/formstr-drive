@@ -107,3 +107,30 @@ describe("FileCard Real Tap & Interaction Controller Logic", () => {
     });
   });
 });
+
+describe("canOpenPreview (unsupported types)", () => {
+  const base = { fileSize: 1024, isLegacyBlob: false };
+
+  it("blocks types with no viewer, with a short notice naming the extension", () => {
+    const result = canOpenPreview({ ...base, fileType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileName: "deck.PPTX" });
+    expect(result.allowed).toBe(false);
+    expect(result.severity).toBe("info");
+    expect(result.reason).toBe("Preview isn't available for .pptx files.");
+  });
+
+  it("uses a generic notice when the file has no extension", () => {
+    const result = canOpenPreview({ ...base, fileType: "application/octet-stream", fileName: "blob" });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe("Preview isn't available for this file type.");
+  });
+
+  it("still opens the modal for files Pages can open, which carries that button", () => {
+    expect(canOpenPreview({ ...base, fileType: "application/vnd.oasis.opendocument.text", fileName: "notes.odt" }).allowed).toBe(true);
+  });
+
+  it("keeps size errors as errors, not info", () => {
+    const result = canOpenPreview({ fileType: "image/png", fileSize: 9 * 1024 * 1024, isLegacyBlob: false, fileName: "a.png" });
+    expect(result.allowed).toBe(false);
+    expect(result.severity).toBeUndefined();
+  });
+});

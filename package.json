@@ -33,6 +33,7 @@
     "docx-preview": "^0.4.1",
     "gifenc": "1.0.3",
     "heic2any": "^0.0.4",
+    "mediabunny": "1.61.0",
     "nostr-signer-capacitor-plugin": "^0.0.5",
     "nostr-tools": "^2.20.0",
     "pdfjs-dist": "^5.5.207",

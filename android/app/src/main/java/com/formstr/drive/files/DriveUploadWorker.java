@@ -73,8 +73,12 @@ public final class DriveUploadWorker {
     public interface Listener {
         void onProgress(int percent);
 
-        /** @param server the Blossom server every blob landed on. */
-        void onComplete(String server);
+        /**
+         * @param server the Blossom server every blob landed on.
+         * @param previewSkipped true when the optional thumbnail blob failed and was
+         *        dropped, so the metadata published omits {@code previewHash}.
+         */
+        void onComplete(String server, boolean previewSkipped);
 
         /**
          * @param server non-null only when every blob uploaded successfully and
@@ -121,6 +125,9 @@ public final class DriveUploadWorker {
         }
     }
 
+    /** Suffix of the metadata-event key holding the variant without {@code previewHash}. */
+    public static final String NO_PREVIEW_SUFFIX = "#no-preview";
+
     private final List<String> servers;
     private final List<Blob> blobs;
     private final String authHeader;
@@ -129,6 +136,8 @@ public final class DriveUploadWorker {
     private final List<String> relays;
     private final AtomicBoolean cancelled;
     private final Listener listener;
+    /** Set when an optional blob (the thumbnail) failed on the server that took the file. */
+    private boolean previewSkipped;
 
     public DriveUploadWorker(
             List<String> servers,
@@ -161,7 +170,14 @@ public final class DriveUploadWorker {
                 return;
             }
 
-            String eventJson = metadataEventsByServer.get(usedServer);
+            // A thumbnail that never landed must not stay referenced by the published
+            // metadata, so prefer the pre-signed variant that omits previewHash.
+            String eventJson = previewSkipped
+                    ? metadataEventsByServer.get(usedServer + NO_PREVIEW_SUFFIX)
+                    : null;
+            if (eventJson == null) {
+                eventJson = metadataEventsByServer.get(usedServer);
+            }
             if (eventJson == null) {
                 listener.onError("No metadata event was prepared for " + usedServer, usedServer, null);
                 return;
@@ -177,7 +193,7 @@ public final class DriveUploadWorker {
                 return;
             }
 
-            listener.onComplete(usedServer);
+            listener.onComplete(usedServer, previewSkipped);
         } catch (CancelledException e) {
             listener.onCancelled();
         } catch (Exception e) {
@@ -203,6 +219,7 @@ public final class DriveUploadWorker {
                 return null;
             }
 
+            previewSkipped = false;
             try {
                 int totalBlobs = blobs.size();
                 for (int i = 0; i < totalBlobs; i++) {
@@ -219,9 +236,10 @@ public final class DriveUploadWorker {
                         if (!blob.optional) {
                             throw error;
                         }
-                        // Best-effort blob: log by moving on. The file's own
-                        // chunks are what matter, and a missing preview only
-                        // means the thumbnail won't render.
+                        // Best-effort blob: the file's own chunks are what matter.
+                        // Remember the skip so the metadata published afterwards
+                        // does not reference a thumbnail that was never stored.
+                        previewSkipped = true;
                         listener.onProgress(((blobIndex + 1) * 100) / totalBlobs);
                     }
                 }

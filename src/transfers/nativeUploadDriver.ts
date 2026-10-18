@@ -3,7 +3,7 @@ import { bytesToHex } from "nostr-tools/utils";
 import { generateFileId, type FileMetadata } from "../types/metadata";
 import { prepareUpload, SEGMENT_SIZE, computePlaintextHash } from "../services/uploadFile";
 import { segmentCount } from "../crypto";
-import { previewFile } from "../services/Preview/previewManager";
+import { startThumbnail } from "../services/thumbnails/generate";
 import {
   buildSignedMetadataEvent,
   recordPublishedMetadata,
@@ -24,6 +24,7 @@ import { describeAllServersFailed } from "../services/uploadErrors";
 import {
   cancelNativeUpload,
   ensureNotificationPermission,
+  NATIVE_NO_PREVIEW_SUFFIX,
   stageNativeUploadChunk,
   startNativeUpload,
   startNativeUploadService,
@@ -192,16 +193,15 @@ export async function nativeUploadDriver(
 
   let queuedEvent: Event | null = null;
   let metadataByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
+  // Same events with previewHash omitted: what gets published when the thumbnail blob fails.
+  let noPreviewByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
 
   try {
     onProgress({ stage: "Reading file...", progress: 0 });
 
     // Kicked off here and awaited inside prepareUpload only after the chunk
     // loop, so preview generation overlaps encryption (same as uploadFile).
-    const previewPromise = previewFile(file).catch((e: unknown) => {
-      console.warn("Background preview generation failed", e);
-      return null;
-    });
+    const previewPromise = startThumbnail(file, prepareAbort.signal);
 
     const privateKeyHex = bytesToHex(generateSecretKey());
 
@@ -296,12 +296,26 @@ export async function nativeUploadDriver(
     // matching the server the blobs actually landed on — the whole reason a
     // background upload can fall back without a signer being available.
     metadataByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
+    noPreviewByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
     const metadataEvents: NativeUploadMetadataEvent[] = [];
     for (const server of servers) {
       const metadata: FileMetadata = { ...baseMetadata, server, servers: [server] };
       const event = await buildSignedMetadataEvent(metadata);
       metadataByServer.set(server, { metadata, event });
       metadataEvents.push({ server, eventJson: JSON.stringify(event) });
+
+      if (prepared.previewHash) {
+        // The thumbnail blob is best-effort natively. If it fails, the worker
+        // publishes this variant so the file never references a missing thumbnail.
+        const withoutPreview: FileMetadata = { ...metadata };
+        delete withoutPreview.previewHash;
+        const plainEvent = await buildSignedMetadataEvent(withoutPreview);
+        noPreviewByServer.set(server, { metadata: withoutPreview, event: plainEvent });
+        metadataEvents.push({
+          server: `${server}${NATIVE_NO_PREVIEW_SUFFIX}`,
+          eventJson: JSON.stringify(plainEvent),
+        });
+      }
     }
 
     // Queue the primary variant before handing off: if the app dies, or the
@@ -315,7 +329,9 @@ export async function nativeUploadDriver(
     // those apart at drain time: the file's blob must actually exist on the
     // primary server before this entry is ever auto-published, or a
     // cancelled/incomplete upload would silently surface as a finished file.
-    queuedEvent = metadataByServer.get(servers[0])!.event;
+    // Queue the variant WITHOUT previewHash: if the app dies mid-upload and the worker
+    // dropped the thumbnail, a relaunch must never republish a reference to it.
+    queuedEvent = (noPreviewByServer.get(servers[0]) ?? metadataByServer.get(servers[0])!).event;
     await replaceQueuedMetadataEvent(queuedEvent, file.name, {
       server: servers[0],
       hash: prepared.blobHash,
@@ -332,8 +348,9 @@ export async function nativeUploadDriver(
       survivesAppClose: true,
     });
     let usedServer: string;
+    let previewSkipped = false;
     try {
-      ({ server: usedServer } = await startNativeUpload(
+      ({ server: usedServer, previewSkipped = false } = await startNativeUpload(
         {
           uploadId,
           servers,
@@ -366,7 +383,14 @@ export async function nativeUploadDriver(
       ]);
     }
 
-    const winner = metadataByServer.get(usedServer) ?? metadataByServer.get(servers[0])!;
+    const primaryWinner = metadataByServer.get(usedServer) ?? metadataByServer.get(servers[0])!;
+    const winner =
+      (previewSkipped ? noPreviewByServer.get(usedServer) : undefined) ?? primaryWinner;
+    if (queuedEvent && queuedEvent.id !== winner.event.id) {
+      // The queued entry is a different variant than the one just published.
+      await dequeueMetadataEvent(queuedEvent).catch(() => {});
+      queuedEvent = null;
+    }
 
     // Show the file immediately instead of waiting for its own event to round-
     // trip back through the relay subscription — the same optimistic reflection
@@ -396,7 +420,9 @@ export async function nativeUploadDriver(
         // Blobs are on Blossom and only the relay publish failed: keep the
         // event queued, corrected to the server that actually accepted them,
         // so the outbox drain finishes the job later.
-        await replaceQueuedMetadataEvent(landed.event, file.name).catch(() => {});
+        // Without knowing whether the thumbnail landed, prefer the variant that omits it.
+        const safe = noPreviewByServer.get(blobsLandedOn!) ?? landed;
+        await replaceQueuedMetadataEvent(safe.event, file.name).catch(() => {});
       } else {
         // The blobs never landed (or we can't know that they did), so a queued
         // metadata event would publish a file the user can't download. Drop it

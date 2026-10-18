@@ -1,16 +1,12 @@
 import type { FileMetadata } from "../types/metadata";
+import { fileKind } from "../services/thumbnails/kinds";
 
+/** Word-processing documents Pages can open: docx/doc plus OpenDocument text. */
 export function isOfficeDoc(file: { type?: string; name?: string }): boolean {
-  const normalizedType = (file.type || "").toLowerCase();
-  const lowerName = (file.name || "").toLowerCase();
-
   return (
-    normalizedType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    normalizedType === "application/msword" ||
-    normalizedType === "application/vnd.oasis.opendocument.text" ||
-    lowerName.endsWith(".docx") ||
-    lowerName.endsWith(".doc") ||
-    lowerName.endsWith(".odt")
+    fileKind(file) === "docx" ||
+    (file.type ?? "").toLowerCase() === "application/vnd.oasis.opendocument.text" ||
+    /\.odt$/i.test(file.name ?? "")
   );
 }
 
