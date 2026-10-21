@@ -77,3 +77,29 @@ input, textarea {
   width: 42px;
   flex-shrink: 0;
 }
+
+.app-mark-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The suite asterisk sits on the front document; only that corner opens the
+   drawer. The rest of the mark stays a static logo. */
+.app-mark-suite-trigger {
+  position: absolute;
+  left: 40%;
+  top: 2%;
+  width: 26%;
+  height: 38%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.app-mark-suite-trigger:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

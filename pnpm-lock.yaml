@@ -29,6 +29,9 @@ importers:
       '@capacitor/share':
         specifier: ^8.0.1
         version: 8.0.1(@capacitor/core@8.3.1)
+      '@formstr/common-ui':
+        specifier: ^0.1.0
+        version: 0.1.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@formstr/local-relay':
         specifier: ^0.4.2
         version: 0.4.2(typescript@5.9.3)
@@ -472,6 +475,12 @@ packages:
   '@eslint/plugin-kit@0.4.1':
     resolution: {integrity: sha512-43/qtrDUokr7LJqoF2c3+RInu/t4zfrpYdoSDfYyhg52rwLV6TnOvdG4fXm7IkSB3wErkcmJS9iEhjVtOSEjjA==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@formstr/common-ui@0.1.0':
+    resolution: {integrity: sha512-IpN/zONr5FHa/7euGCqXTQlu15hr+5VTjzKIE1uYYUbti121jASaGNW/jFD+Jt7I2+jNqiWLaIaPGnM4pPo6oQ==}
+    peerDependencies:
+      react: '>=18'
+      react-dom: '>=18'
 
   '@formstr/local-relay@0.4.2':
     resolution: {integrity: sha512-qqAVgg9+U3VU5wtDCF61A28mpHvRNNBtICn/lSrXhzLZPes2SwA8mcI+8vbbmdO57y8DwNIAfhs71ea9sfNKMw==}
@@ -3281,6 +3290,11 @@ snapshots:
     dependencies:
       '@eslint/core': 0.17.0
       levn: 0.4.1
+
+  '@formstr/common-ui@0.1.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
+    dependencies:
+      react: 19.2.3
+      react-dom: 19.2.3(react@19.2.3)
 
   '@formstr/local-relay@0.4.2(typescript@5.9.3)':
     dependencies:
