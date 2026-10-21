@@ -511,17 +511,31 @@ async function decryptDriveKeyPayload(
   return [secretKeyHex, ...previousKeys].map((k) => k.toLowerCase());
 }
 
+// Decrypts in progress, so two reads that receive the same version at the
+// same time (the local store and a relay, on a cold start) share one signer
+// request instead of each asking.
+const decryptInFlight = new Map<string, Promise<string[] | null>>();
+
 async function decryptVersion(s: Session, content: string, signer: Signer): Promise<string[] | null> {
   const key = memoKey(s.pubkey, content);
   if (decryptMemo.has(key)) return decryptMemo.get(key) ?? null;
-  try {
-    const secrets = await decryptDriveKeyPayload(content, signer, s.pubkey);
-    decryptMemo.set(key, secrets);
-    return secrets;
-  } catch (e) {
-    console.warn("[DriveKey] Failed to decrypt a Drive Key version", e);
-    return null;
-  }
+  const pending = decryptInFlight.get(key);
+  if (pending) return pending;
+
+  const attempt = (async () => {
+    try {
+      const secrets = await decryptDriveKeyPayload(content, signer, s.pubkey);
+      decryptMemo.set(key, secrets);
+      return secrets;
+    } catch (e) {
+      console.warn("[DriveKey] Failed to decrypt a Drive Key version", e);
+      return null;
+    } finally {
+      decryptInFlight.delete(key);
+    }
+  })();
+  decryptInFlight.set(key, attempt);
+  return attempt;
 }
 
 /** Adds `secrets` (active-first, as one version names them) to the union.
@@ -727,7 +741,14 @@ async function resolveDriveKeyStatus(
   for (const { content, created_at } of await loadPayloadCache(pubkey)) {
     await ingestPayload(s, content, created_at, signer);
   }
+
+  // Cold start (nothing usable cached on this device): ask the local store and
+  // every relay at the same time instead of one after the other. Both only
+  // fold versions into the union, so the order they land in can't change
+  // the outcome — only how long it takes.
+  let relayRead: Promise<RelayState[]> | null = null;
   if (s.entries.length === 0) {
+    relayRead = readRelayStates(s, signer);
     for (const event of await fetchLocalDriveKeyEvents(pubkey)) await ingestEvent(s, event, signer);
   }
 
@@ -735,11 +756,12 @@ async function resolveDriveKeyStatus(
   if (s.entries.length > 0) {
     status = { kind: "ready", keyring: [...s.entries] };
   } else {
-    const states = await readRelayStates(s, signer);
+    const states = await relayRead!;
     status =
       s.entries.length > 0
         ? { kind: "ready", keyring: [...s.entries] }
         : await classifyEmptyKeyring(s, states, { ignoreDeviceHistory: options.ignoreDeviceHistory ?? false });
+    relayRead = null;
   }
 
   if (session !== s) return status; // signed out / switched mid-resolve
@@ -751,7 +773,24 @@ async function resolveDriveKeyStatus(
     s.statusAt = Date.now();
   }
   console.log(`[DriveKey] Keyring ready with ${s.entries.length} key(s)`);
-  if (status.kind === "ready" && !s.sync.inFlight && !s.sync.timer) scheduleSync(s, 0);
+
+  if (relayRead) {
+    // The local store answered first. Let the relay read finish in the
+    // background — it can only add keys — then sync from there, rather than
+    // starting a second relay read alongside it.
+    const afterRead = keyringSignature(s);
+    void relayRead.then(
+      () => {
+        if (session !== s) return;
+        persist(s);
+        announceIfChanged(s, afterRead);
+        if (!s.sync.inFlight && !s.sync.timer) scheduleSync(s, 0);
+      },
+      () => {},
+    );
+  } else if (status.kind === "ready" && !s.sync.inFlight && !s.sync.timer) {
+    scheduleSync(s, 0);
+  }
   return status;
 }
 
