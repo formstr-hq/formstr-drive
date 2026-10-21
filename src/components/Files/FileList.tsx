@@ -16,7 +16,7 @@ import { SearchIcon, GridViewIcon, ListViewIcon, FolderIcon } from '../icons/Ico
 import { isDirectChildFolder, getFolderName, getFolderItemCount } from '../../utils/folder';
 import { type SortKey, SORT_LABEL } from '../../utils/constants';
 import { FILE_HASH_MIME } from '../../utils/constants';
-import { refreshDriveKeyring } from '../../services/driveKey';
+import { refreshDriveKeyring, startNewDriveKey } from '../../services/driveKey';
 import { PullToRefresh } from '../ui/PullToRefresh';
 import { isAndroidPlatform } from '../../utils/platform';
 
@@ -75,6 +75,59 @@ export function pruneSelectedHashes(prevSelected: Set<string>, validHashes: Set<
   return next.size === prevSelected.size ? prevSelected : next;
 }
 
+/**
+ * The way out of "seen-on-device": this device used a Drive Key for this
+ * account, but no relay that answers has it any more, so nothing is created
+ * automatically. Starting a new one is safe (it's only written to relays that
+ * just answered "none", and the old key is merged back in if it ever turns
+ * up) — but files under the old key stay hidden until then, so it asks first.
+ */
+function StartNewDriveKey({ onStarted }: { onStarted: () => Promise<void> | void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!confirming) {
+    return (
+      <button className="empty-state-retry" onClick={() => setConfirming(true)}>
+        Start a new Drive Key
+      </button>
+    );
+  }
+
+  return (
+    <div className="empty-state-confirm">
+      <p className="empty-hint">
+        Files saved under your previous Drive Key stay hidden until that key is found again. If it
+        turns up on a relay later, it's merged back in automatically and those files reappear.
+      </p>
+      <button
+        className="empty-state-retry"
+        disabled={starting}
+        onClick={() => {
+          setStarting(true);
+          setError(null);
+          void startNewDriveKey().then((result) => {
+            setStarting(false);
+            if (result.ok) {
+              setConfirming(false);
+              void onStarted();
+            } else {
+              setError(result.reason);
+            }
+          });
+        }}
+      >
+        {starting ? "Starting…" : "Yes, start a new Drive Key"}
+      </button>
+      <button className="empty-state-retry" disabled={starting} onClick={() => setConfirming(false)}>
+        Cancel
+      </button>
+      {error && <p className="empty-hint">{error}</p>}
+    </div>
+  );
+}
+
 export function FileList() {
   const {
     files,
@@ -84,6 +137,7 @@ export function FileList() {
     driveStatus,
     degradedReason,
     degradedMessage,
+    degradedIssue,
     deleteFiles,
     moveFiles,
     deleteFile,
@@ -612,27 +666,26 @@ export function FileList() {
               </p>
               <p className="empty-hint">
                 {degradedReason === "uncertain"
-                  ? "This resolves automatically once the network is reachable — nothing will be lost " +
-                    "or created in the meantime."
+                  ? "Retrying automatically — nothing will be lost or created in the meantime."
                   : "Check your connection and retry, or open the drive on a device that already has " +
                     "the right key."}
               </p>
               <button
                 className="empty-state-retry"
                 onClick={() => {
-                  // refresh() alone only re-declares the file-index interest —
-                  // it does nothing for the more common cause of "degraded",
-                  // which is the Drive Key resolution itself being stuck (see
-                  // refreshDriveKeyring's doc comment: once resolved, nothing
-                  // otherwise ever rechecks relays for the rest of the tab's
-                  // life). Both together cover "the key was the problem" and
+                  // refresh() re-declares the file-index interest, which also
+                  // re-resolves an unresolved Drive Key; refreshDriveKeyring
+                  // re-reads every relay for an already-resolved keyring (e.g.
+                  // files missing because a key is still on a relay that was
+                  // down). Both together cover "the key was the problem" and
                   // "the file-index subscription was the problem".
-                  void refreshDriveKeyring();
+                  void refreshDriveKeyring({ force: true });
                   void refresh();
                 }}
               >
                 Retry
               </button>
+              {degradedIssue === "seen-on-device" && <StartNewDriveKey onStarted={refresh} />}
             </div>
           ) : (
             <div className="empty-state">

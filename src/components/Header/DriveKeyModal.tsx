@@ -120,7 +120,7 @@ export function DriveKeyModal({ onClose }: DriveKeyModalProps) {
             </div>
             {importError && <p className="drive-key-modal-error">{importError}</p>}
             {importedOk && (
-              <p className="drive-key-modal-hint">Imported. Reload the page to see files under it.</p>
+              <p className="drive-key-modal-hint">Imported. Files under it will appear shortly.</p>
             )}
           </div>
         </div>
