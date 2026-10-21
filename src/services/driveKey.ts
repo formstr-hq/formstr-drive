@@ -216,6 +216,7 @@ signerManager.onChange((pubkey) => {
     if (session.sync.timer) clearTimeout(session.sync.timer);
     session = null;
     inFlightResolve = null;
+    lastSetupStep = null;
   }
   if (!pubkey) {
     decryptMemo.clear();
@@ -239,6 +240,42 @@ export function onDriveKeysChanged(fn: () => void): () => void {
 
 function notifyDriveKeysChanged(): void {
   driveKeysChangedListeners.forEach((l) => l());
+}
+
+// -----------------------------------------------------------------------------
+// First-run setup progress, for the "Setting up your drive" onboarding. Only a
+// cold start reports anything (nothing usable cached on this device: a new
+// account, or an existing one on a new device); a warm start resolves from
+// the cache instantly and stays silent. Steps are deliberately generic.
+// -----------------------------------------------------------------------------
+export type DriveKeySetupStep =
+  // Looking for an existing Drive Key (local store + every relay).
+  | "checking"
+  // One was found.
+  | "found"
+  // None exists; creating the first one.
+  | "creating"
+  | "ready"
+  // Couldn't finish (unresolved, or creating failed) — the drive's own
+  // degraded state takes over from here.
+  | "stopped";
+
+const setupProgressListeners = new Set<(step: DriveKeySetupStep) => void>();
+let lastSetupStep: DriveKeySetupStep | null = null;
+
+export function onDriveKeySetupProgress(fn: (step: DriveKeySetupStep) => void): () => void {
+  setupProgressListeners.add(fn);
+  return () => setupProgressListeners.delete(fn);
+}
+
+/** The most recent step this sign-in, for a listener that subscribes late. */
+export function getDriveKeySetupStep(): DriveKeySetupStep | null {
+  return lastSetupStep;
+}
+
+function emitSetupProgress(step: DriveKeySetupStep): void {
+  lastSetupStep = step;
+  setupProgressListeners.forEach((l) => l(step));
 }
 
 function keyringSignature(s: Session): string {
@@ -747,7 +784,9 @@ async function resolveDriveKeyStatus(
   // fold versions into the union, so the order they land in can't change
   // the outcome — only how long it takes.
   let relayRead: Promise<RelayState[]> | null = null;
-  if (s.entries.length === 0) {
+  const cold = s.entries.length === 0;
+  if (cold) {
+    emitSetupProgress("checking");
     relayRead = readRelayStates(s, signer);
     for (const event of await fetchLocalDriveKeyEvents(pubkey)) await ingestEvent(s, event, signer);
   }
@@ -773,6 +812,16 @@ async function resolveDriveKeyStatus(
     s.statusAt = Date.now();
   }
   console.log(`[DriveKey] Keyring ready with ${s.entries.length} key(s)`);
+
+  if (cold) {
+    if (status.kind === "ready") {
+      emitSetupProgress("found");
+      emitSetupProgress("ready");
+    } else if (status.kind === "unresolved") {
+      emitSetupProgress("stopped");
+    }
+    // "empty-confirmed": creating follows, and createFirstKey reports it.
+  }
 
   if (relayRead) {
     // The local store answered first. Let the relay read finish in the
@@ -1095,6 +1144,7 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
 
       const secretKeyHex = bytesToHex(generateSecretKey());
       console.log("[DriveKey] Creating a new Drive Key");
+      emitSetupProgress("creating");
       const event = await buildDriveKeyEvent(signer, pubkey, secretKeyHex, [], nextCreatedAt(s));
       const before = keyringSignature(s);
       const accepted = await writeVersion(s, event, status.emptyRelays, signer);
@@ -1105,6 +1155,7 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
       s.status = { kind: "ready", keyring: [...s.entries] };
       s.statusAt = Date.now();
       announceIfChanged(s, before);
+      emitSetupProgress("ready");
 
       // Relays that didn't answer get the key on a later sync — or, if one
       // was holding an older key after all, that key is merged in then.
@@ -1113,6 +1164,7 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
     });
   } catch (e) {
     console.warn("[DriveKey] Failed to create a Drive Key", e);
+    emitSetupProgress("stopped");
     return {
       ok: false,
       reason: e instanceof Error ? e.message : "Couldn't create your Drive Key.",
