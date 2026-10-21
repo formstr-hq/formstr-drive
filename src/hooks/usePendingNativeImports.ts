@@ -5,7 +5,6 @@ import {
   removePendingNativeImport,
 } from "../native/driveManifest";
 import { queueUpload } from "../transfers/transferQueue";
-import { getUploadCandidateServers, type ServerInfo } from "../Provider/BlossomServerProvider";
 
 interface PendingNativeImportsOptions {
   isSignedIn: boolean;
@@ -15,10 +14,9 @@ interface PendingNativeImportsOptions {
   /** True only once the file index is fully trustworthy (driveStatus ===
    *  "ready" in FileIndexProvider). */
   indexReady: boolean;
-  selectedServer: string;
-  /** Every configured server, so an import that fails on `selectedServer` can
-   *  fall back to another candidate (see getUploadCandidateServers). */
-  servers: ServerInfo[];
+  /** The account's chosen storage server; null until one is configured, in
+   *  which case imports wait. */
+  selectedServer: string | null;
   onError: (message: string) => void;
 }
 
@@ -38,13 +36,12 @@ export function usePendingNativeImports({
   settingsLoaded,
   indexReady,
   selectedServer,
-  servers,
   onError,
 }: PendingNativeImportsOptions): void {
   const processingRef = useRef(false);
 
   const processPendingImports = useCallback(async () => {
-    if (!isSignedIn || !pubkey || !indexReady) {
+    if (!isSignedIn || !pubkey || !indexReady || !selectedServer) {
       return;
     }
 
@@ -79,7 +76,7 @@ export function usePendingNativeImports({
             importedFile,
             selectedServer,
             importPayload.folderPath,
-            getUploadCandidateServers(selectedServer, servers),
+            [selectedServer],
             {
               onComplete: () => {
                 void removePendingNativeImport(importPayload.id);
@@ -99,7 +96,7 @@ export function usePendingNativeImports({
     } finally {
       processingRef.current = false;
     }
-  }, [indexReady, isSignedIn, onError, pubkey, selectedServer, servers]);
+  }, [indexReady, isSignedIn, onError, pubkey, selectedServer]);
 
   useEffect(() => {
     if (

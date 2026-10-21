@@ -224,6 +224,13 @@
   padding: 0 var(--space-5);
 }
 
+.profile-menu-hint {
+  margin: 0;
+  padding: 0 var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
 .profile-menu-add-server {
   display: flex;
   gap: var(--space-2);

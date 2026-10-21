@@ -33,7 +33,7 @@ const PALETTE_SWATCH: Record<Palette, string> = {
 
 function getHostname(url: string): string {
   try {
-    return new URL(url).hostname;
+    return new URL(url).host;
   } catch {
     return url;
   }
@@ -91,12 +91,10 @@ export function ProfileMenu() {
   const { pubkey, logout, requestPubkey, accounts, switchAccount, removeAccount } =
     useProfileContext();
   const { theme, toggleTheme, palette, setPalette } = useTheme();
-  const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
+  const { servers, selectedServer, setSelectedServer, openServerSetup } = useBlossomServer();
   const serverLimits = useSyncExternalStore(subscribeServerLimits, getServerLimitsSnapshot);
   const [open, setOpen] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
-  const [customUrl, setCustomUrl] = useState("");
-  const [customServerError, setCustomServerError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -126,17 +124,6 @@ export function ProfileMenu() {
     },
     [removeAccount]
   );
-
-  const handleAddCustomServer = () => {
-    if (!customUrl.trim()) return;
-    try {
-      addCustomServer(customUrl);
-      setCustomUrl("");
-      setCustomServerError(null);
-    } catch (e) {
-      setCustomServerError(e instanceof Error ? e.message : "Invalid server URL");
-    }
-  };
 
   return (
     <div className="profile-menu" ref={rootRef}>
@@ -243,42 +230,35 @@ export function ProfileMenu() {
           </div>
 
           <div className="profile-menu-section">
-            <p className="profile-menu-label">Upload to</p>
-            <select
-              className="profile-menu-row-btn profile-menu-select"
-              value={selectedServer}
-              onChange={(e) => setSelectedServer(e.target.value)}
-            >
-              {servers.map((s) => (
-                <option key={s.url} value={s.url}>
-                  {getHostname(s.url)}
-                  {s.source !== "default" ? ` (${s.source})` : ""}
-                  {(() => {
-                    const limit = lookupLimit(serverLimits, s.url);
-                    return limit ? ` · max ${formatLimit(limit)}` : "";
-                  })()}
-                </option>
-              ))}
-            </select>
-            <div className="profile-menu-add-server">
-              <input
-                className="profile-menu-row-btn"
-                type="text"
-                value={customUrl}
-                onChange={(e) => {
-                  setCustomUrl(e.target.value);
-                  setCustomServerError(null);
-                }}
-                placeholder="Add server..."
-                onKeyDown={(e) => e.key === "Enter" && handleAddCustomServer()}
-              />
-              <button className="profile-menu-add-server-btn" onClick={handleAddCustomServer}>
-                +
-              </button>
-            </div>
-            {customServerError && (
-              <p className="profile-menu-error">{customServerError}</p>
+            <p className="profile-menu-label">Storage server</p>
+            {selectedServer ? (
+              <select
+                className="profile-menu-row-btn profile-menu-select"
+                value={selectedServer}
+                onChange={(e) => setSelectedServer(e.target.value)}
+              >
+                {servers.map((s) => (
+                  <option key={s.url} value={s.url}>
+                    {getHostname(s.url)}
+                    {(() => {
+                      const limit = lookupLimit(serverLimits, s.url);
+                      return limit ? ` · max ${formatLimit(limit)}` : "";
+                    })()}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="profile-menu-hint">No storage server chosen yet.</p>
             )}
+            <button
+              className="profile-menu-row-btn"
+              onClick={() => {
+                openServerSetup();
+                setOpen(false);
+              }}
+            >
+              {selectedServer ? "Manage servers…" : "Choose a storage server…"}
+            </button>
           </div>
 
         </div>

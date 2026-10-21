@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   type ReactNode,
 } from "react";
 import { dataLayer, type Event } from "@formstr/local-relay";
@@ -15,44 +16,51 @@ import {
 import { observeServerList, publishServerList } from "../services/blossomServerList";
 import { useProfileContext } from "../hooks/useProfileContext";
 
-const DEFAULT_SERVERS = [
+/**
+ * Drive has no built-in storage servers. Where an account's files are stored is
+ * the user's own choice: the first time there is none, Drive asks. Files are
+ * encrypted before upload, but the server still sees the encrypted blobs, the
+ * account's public key and request timing — not something to decide silently.
+ *
+ * Nothing here falls back to another server: an upload goes to the selected
+ * one, and if that fails it fails (with the server's reason) so the user can
+ * fix or change it.
+ */
+
+/** The servers earlier versions shipped as defaults. Used only to recognise an
+ *  old stored selection that the user never actually made. */
+const LEGACY_DEFAULT_SERVERS = [
   "https://nostr.download",
   "https://blossom.data.haus",
   "https://blossom.primal.net",
   "https://blossom.oxtr.dev",
 ];
 
+const MAX_SUGGESTIONS = 6;
+
 export interface ServerInfo {
   url: string;
-  source: "default" | "relay" | "custom";
-}
-
-/**
- * The candidate list for automatic upload fallback: the selected server
- * first, then the user's other known DEFAULT/custom servers. Deliberately
- * excludes relay-discovered ("relay" source) servers unless one is already
- * the selection — those are arbitrary third-party URLs the user never
- * reviewed, and while file content is end-to-end encrypted before upload, the
- * BUD-02 auth event still exposes the identity pubkey, blob hash, and timing
- * to whatever server receives it. Automatically fanning that out beyond the
- * trusted (default + user-added) set isn't a call this function should make
- * on its own.
- */
-export function getUploadCandidateServers(
-  selectedServer: string,
-  servers: ServerInfo[],
-): string[] {
-  const rest = servers
-    .filter((s) => s.source !== "relay" && s.url !== selectedServer)
-    .map((s) => s.url);
-  return [selectedServer, ...rest];
 }
 
 export interface BlossomServerContextType {
+  /** This account's own storage servers. Empty until the user adds one. */
   servers: ServerInfo[];
-  selectedServer: string;
+  /** Where uploads go, or null when none is configured yet. */
+  selectedServer: string | null;
   setSelectedServer: (url: string) => void;
-  addCustomServer: (url: string) => void;
+  /** Adds a server and makes it the selected one. Throws on an invalid URL. */
+  addServer: (url: string) => void;
+  removeServer: (url: string) => void;
+  /** Servers announced on relays (kind 36363). Offered as suggestions only —
+   *  never selected or used without the user adding them. */
+  suggestions: string[];
+  /** This account's server settings have loaded. */
+  settingsLoaded: boolean;
+  /** Signed in, settings loaded, and no server configured. */
+  needsServerSetup: boolean;
+  setupOpen: boolean;
+  openServerSetup: () => void;
+  closeServerSetup: () => void;
   loading: boolean;
   error: string | null;
 }
@@ -60,7 +68,7 @@ export interface BlossomServerContextType {
 export const BlossomServerContext =
   createContext<BlossomServerContextType | null>(null);
 
-function normalizeServerUrl(url: string) {
+export function normalizeServerUrl(url: string) {
   let normalizedUrl = url.trim();
   if (
     !normalizedUrl.startsWith("http://") &&
@@ -74,21 +82,22 @@ function normalizeServerUrl(url: string) {
 
 export function BlossomServerProvider({ children }: { children: ReactNode }) {
   const { pubkey, restoring } = useProfileContext();
-  const [servers, setServers] = useState<ServerInfo[]>(
-    DEFAULT_SERVERS.map((url) => ({ url, source: "default" })),
-  );
-  const [selectedServer, setSelectedServer] = useState(DEFAULT_SERVERS[0]);
+  const [servers, setServers] = useState<ServerInfo[]>([]);
+  const [selectedServer, setSelectedServerState] = useState<string | null>(null);
+  const [discovered, setDiscovered] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Whose custom servers and selection `servers` / `selectedServer` currently
-  // hold. They belong to one account: a server added or synced for one identity
-  // must never show up under — or, worse, be published in the server list of —
+  const [setupOpen, setSetupOpen] = useState(false);
+  // Whose servers and selection `servers` / `selectedServer` currently hold.
+  // They belong to one account: a server added or synced for one identity must
+  // never show up under — or, worse, be published in the server list of —
   // another identity on the same device.
   const [settingsOwner, setSettingsOwner] = useState<string | null>(null);
+  // Accounts the prompt has already been shown for this session, so closing it
+  // with "Not now" isn't followed by it popping straight back up.
+  const [promptedFor, setPromptedFor] = useState<Set<string>>(() => new Set());
 
-  // Public Blossom server lists (kind 36363) — discovery, the same for everyone.
-  // Cache replay makes them available instantly on repeat loads and the live
-  // tail keeps finding new ones; deduped against whatever is already listed.
+  // Public Blossom server announcements (kind 36363): suggestions only.
   useEffect(() => {
     let cancelled = false;
     const handle = dataLayer.observe([{ kinds: [36363], limit: 50 }], {
@@ -97,9 +106,7 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
         const dTag = event.tags.find((t) => t[0] === "d");
         if (!dTag?.[1]) return;
         const url = normalizeServerUrl(dTag[1]);
-        setServers((prev) =>
-          prev.some((s) => s.url === url) ? prev : [...prev, { url, source: "relay" }],
-        );
+        setDiscovered((prev) => (prev.includes(url) ? prev : [...prev, url]));
       },
       onEose: () => {
         if (!cancelled) setLoading(false);
@@ -111,16 +118,15 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // This account's own custom servers and selected server. Stored per identity
+  // This account's own servers and selection. Stored per identity
   // ({ [pubkey]: … }); the first release kept one device-wide value, which
   // belongs to whichever account is active the first time it's read.
   useEffect(() => {
     if (restoring) return;
     if (!pubkey) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when the active account changes
       setSettingsOwner(null);
-      setServers((prev) => prev.filter((s) => s.source !== "custom"));
-      setSelectedServer(DEFAULT_SERVERS[0]);
+      setServers([]);
+      setSelectedServerState(null);
       return;
     }
 
@@ -136,27 +142,24 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
           }
           return undefined;
         };
-        const customUrls = pick<string[]>(storedCustom, Array.isArray) ?? [];
-        const selected = normalizeServerUrl(
-          pick<string>(storedSelected, (v) => typeof v === "string") ?? DEFAULT_SERVERS[0],
-        );
+        const urls = (pick<string[]>(storedCustom, Array.isArray) ?? [])
+          .filter((u) => typeof u === "string")
+          .map(normalizeServerUrl);
+        const storedUrl = pick<string>(storedSelected, (v) => typeof v === "string");
+        let selected = storedUrl ? normalizeServerUrl(storedUrl) : undefined;
+        // An old selection that is one of the servers earlier versions shipped
+        // as defaults, and that the user never added themselves, was never a
+        // choice — it was the default. Treat it as not configured.
+        if (selected && LEGACY_DEFAULT_SERVERS.includes(selected) && !urls.includes(selected)) {
+          selected = undefined;
+        }
+        // A server the user did pick but that isn't in their list yet joins it.
+        if (selected && !urls.includes(selected)) urls.push(selected);
+        if (!selected && urls.length > 0) selected = urls[0];
         if (cancelled) return;
 
-        const custom = customUrls.map((url) => ({
-          url: normalizeServerUrl(url),
-          source: "custom" as const,
-        }));
-        const ensured =
-          custom.some((c) => c.url === selected) || DEFAULT_SERVERS.includes(selected)
-            ? custom
-            : [...custom, { url: selected, source: "custom" as const }];
-
-        setServers((prev) => {
-          const kept = prev.filter((s) => s.source !== "custom");
-          const known = new Set(kept.map((s) => s.url));
-          return [...kept, ...ensured.filter((c) => !known.has(c.url))];
-        });
-        setSelectedServer(selected);
+        setServers(urls.map((url) => ({ url })));
+        setSelectedServerState(selected ?? null);
         setSettingsOwner(pubkey);
       } catch (e) {
         console.error("Failed to load server settings:", e);
@@ -173,28 +176,19 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   }, [pubkey, restoring]);
 
   // The user's own BUD-03 server list (kind 10063), so a server added on one
-  // device shows up on all of them. Kept in its own effect, gated on `pubkey`
-  // rather than read once via signerManager.getPubkey() at mount: the effect
-  // above runs before the signer has necessarily finished restoring a session
-  // (this provider mounts alongside ProfileProvider, not after it settles), so
-  // a synchronous read here would silently see `undefined` on most cold
-  // starts and never subscribe for the rest of the session. Depending on
-  // `pubkey` instead means this activates the moment it's actually known, and
-  // correctly re-subscribes under a switched account's own list.
+  // device shows up on all of them. Gated on `pubkey` (not read once at mount):
+  // the signer may not have finished restoring yet, and it must re-subscribe
+  // under a switched account's own list.
   useEffect(() => {
     if (restoring || !pubkey || settingsOwner !== pubkey) return;
 
     const unobserveServerList = observeServerList(pubkey, (syncedUrls) => {
       setServers((prev) => {
         const known = new Set(prev.map((s) => s.url));
-        // Merged as "custom" because that's what it is — a server this user
-        // deliberately chose, not an arbitrary third-party URL discovered
-        // from the network — which also makes it eligible for upload
-        // fallback (see getUploadCandidateServers).
         const additions = syncedUrls
           .map(normalizeServerUrl)
           .filter((url) => !known.has(url))
-          .map((url) => ({ url, source: "custom" as const }));
+          .map((url) => ({ url }));
         return additions.length > 0 ? [...prev, ...additions] : prev;
       });
     });
@@ -202,48 +196,71 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     return unobserveServerList;
   }, [pubkey, restoring, settingsOwner]);
 
-  // Custom servers whose probe was inconclusive (offline when added, a timeout)
-  // get another try. probeServerLimit no-ops for any server with a known limit
-  // or a conclusive earlier probe, so this costs nothing in the steady state.
+  // A synced server arriving on a device with nothing selected becomes the
+  // selection: the user chose it on another device.
   useEffect(() => {
-    for (const server of servers) {
-      if (server.source === "custom") void probeServerLimit(server.url);
-    }
+    if (settingsOwner !== pubkey || selectedServer || servers.length === 0) return;
+    setSelectedServerState(servers[0]!.url);
+  }, [servers, selectedServer, settingsOwner, pubkey]);
+
+  // Servers whose probe was inconclusive (offline when added, a timeout) get
+  // another try. probeServerLimit no-ops for any server with a known limit or
+  // a conclusive earlier probe, so this costs nothing in the steady state.
+  useEffect(() => {
+    for (const server of servers) void probeServerLimit(server.url);
   }, [servers]);
 
-  const addCustomServer = useCallback((url: string) => {
-    const normalizedUrl = normalizeServerUrl(url);
-
-    try {
-      new URL(normalizedUrl);
-    } catch {
-      throw new Error(`"${url}" is not a valid server URL`);
-    }
-
-    let nextCustomUrls: string[] = [];
-    setServers((prev) => {
-      if (prev.some((s) => s.url === normalizedUrl)) {
-        nextCustomUrls = prev.filter((s) => s.source === "custom").map((s) => s.url);
-        return prev;
-      }
-      const next: ServerInfo[] = [...prev, { url: normalizedUrl, source: "custom" }];
-      nextCustomUrls = next.filter((s) => s.source === "custom").map((s) => s.url);
-      return next;
-    });
-    setSelectedServer(normalizedUrl);
-
-    // One-time, cached, signer-free probe so the picker can show its cap.
-    void probeServerLimit(normalizedUrl);
-
+  const publish = useCallback((urls: string[]) => {
     // Publish the updated list so other devices pick it up. Deliberately not
-    // awaited and never rethrown: the server is already usable locally, and a
-    // relay hiccup must not make "add server" appear to fail. The warning is
-    // the signal that cross-device sync specifically didn't happen.
-    void publishServerList([normalizedUrl, ...nextCustomUrls.filter((u) => u !== normalizedUrl)])
-      .catch((e) => {
-        console.warn("[BlossomServers] Could not sync server list to relays", e);
-      });
+    // awaited and never rethrown: the change is already in effect locally, and
+    // a relay hiccup must not make it appear to fail.
+    void publishServerList(urls).catch((e) => {
+      console.warn("[BlossomServers] Could not sync server list to relays", e);
+    });
   }, []);
+
+  const addServer = useCallback(
+    (url: string) => {
+      const normalizedUrl = normalizeServerUrl(url);
+
+      try {
+        const parsed = new URL(normalizedUrl);
+        if (!parsed.hostname.includes(".") && parsed.hostname !== "localhost") {
+          throw new Error("invalid host");
+        }
+      } catch {
+        throw new Error(`"${url.trim()}" is not a valid server URL`);
+      }
+
+      const next = servers.some((s) => s.url === normalizedUrl)
+        ? servers
+        : [...servers, { url: normalizedUrl }];
+      setServers(next);
+      setSelectedServerState(normalizedUrl);
+
+      // One-time, cached, signer-free probe so the picker can show its cap.
+      void probeServerLimit(normalizedUrl);
+      publish(next.map((s) => s.url));
+    },
+    [servers, publish],
+  );
+
+  const removeServer = useCallback(
+    (url: string) => {
+      const next = servers.filter((s) => s.url !== url);
+      setServers(next);
+      setSelectedServerState((current) => (current === url ? (next[0]?.url ?? null) : current));
+      publish(next.map((s) => s.url));
+    },
+    [servers, publish],
+  );
+
+  const setSelectedServer = useCallback(
+    (url: string) => {
+      if (servers.some((s) => s.url === url)) setSelectedServerState(url);
+    },
+    [servers],
+  );
 
   const saveForAccount = useCallback(async (key: string, value: unknown) => {
     if (!pubkey) return;
@@ -263,13 +280,33 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!pubkey || settingsOwner !== pubkey) return;
-
-    const customServerUrls = servers
-      .filter((server) => server.source === "custom")
-      .map((server) => server.url);
-
-    void saveForAccount(STORAGE_KEYS.CUSTOM_SERVERS, customServerUrls);
+    void saveForAccount(STORAGE_KEYS.CUSTOM_SERVERS, servers.map((s) => s.url));
   }, [servers, settingsOwner, pubkey, saveForAccount]);
+
+  const settingsLoaded = !!pubkey && settingsOwner === pubkey;
+  const needsServerSetup = settingsLoaded && !selectedServer;
+
+  // Ask once per account per session, shortly after the drive has had a moment
+  // to come up, instead of over the top of the sign-in.
+  useEffect(() => {
+    if (!needsServerSetup || !pubkey || promptedFor.has(pubkey)) return;
+    const timer = setTimeout(() => {
+      setPromptedFor((prev) => new Set(prev).add(pubkey));
+      setSetupOpen(true);
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [needsServerSetup, pubkey, promptedFor]);
+
+  const suggestions = useMemo(
+    () =>
+      discovered
+        .filter((url) => !servers.some((s) => s.url === url))
+        .slice(0, MAX_SUGGESTIONS),
+    [discovered, servers],
+  );
+
+  const openServerSetup = useCallback(() => setSetupOpen(true), []);
+  const closeServerSetup = useCallback(() => setSetupOpen(false), []);
 
   return (
     <BlossomServerContext.Provider
@@ -277,7 +314,14 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
         servers,
         selectedServer,
         setSelectedServer,
-        addCustomServer,
+        addServer,
+        removeServer,
+        suggestions,
+        settingsLoaded,
+        needsServerSetup,
+        setupOpen,
+        openServerSetup,
+        closeServerSetup,
         loading,
         error,
       }}
