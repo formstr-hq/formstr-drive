@@ -29,7 +29,8 @@ export interface ServerInfo {
 
 /**
  * The candidate list for automatic upload fallback: the selected server
- * first, then the user's other known DEFAULT/custom servers. Deliberately
+ * first, then the user's other custom servers, then the built-in defaults.
+ * Deliberately
  * excludes relay-discovered ("relay" source) servers unless one is already
  * the selection — those are arbitrary third-party URLs the user never
  * reviewed, and while file content is end-to-end encrypted before upload, the
@@ -42,9 +43,14 @@ export function getUploadCandidateServers(
   selectedServer: string,
   servers: ServerInfo[],
 ): string[] {
-  const rest = servers
-    .filter((s) => s.source !== "relay" && s.url !== selectedServer)
-    .map((s) => s.url);
+  const others = servers.filter((s) => s.source !== "relay" && s.url !== selectedServer);
+  // The user's own servers come before the built-in defaults: if the chosen
+  // server can't take an upload, the next place to try is another one they
+  // added, not whichever default happens to be first in the list.
+  const rest = [
+    ...others.filter((s) => s.source === "custom"),
+    ...others.filter((s) => s.source !== "custom"),
+  ].map((s) => s.url);
   return [selectedServer, ...rest];
 }
 

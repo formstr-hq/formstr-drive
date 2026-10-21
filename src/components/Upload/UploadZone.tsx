@@ -3,6 +3,15 @@ import { useFileIndex } from '../../hooks/useFileContext';
 import { useBlossomServer } from '../../hooks/useBlossomServer';
 import { getUploadCandidateServers } from '../../Provider/BlossomServerProvider';
 import { queueUpload } from '../../transfers/transferQueue';
+import { useToast } from '../../hooks/useToast';
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 interface UploadZoneProps {
   /** True while the drive is in a "degraded" (uncertain Drive Key / partial
@@ -18,6 +27,7 @@ interface UploadZoneProps {
 export function UploadZone({ disabled = false }: UploadZoneProps) {
   const { currentFolder } = useFileIndex();
   const { selectedServer, servers } = useBlossomServer();
+  const toast = useToast();
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -28,10 +38,22 @@ export function UploadZone({ disabled = false }: UploadZoneProps) {
       // transfer panel is the source of truth for progress, errors and retry.
       const candidateServers = getUploadCandidateServers(selectedServer, servers);
       for (const file of Array.from(files)) {
-        queueUpload(file, selectedServer, currentFolder, candidateServers);
+        queueUpload(file, selectedServer, currentFolder, candidateServers, {
+          // Uploads fall back to another server when the selected one can't take
+          // the file (size cap, auth, unreachable). Without a word, that looks
+          // like the selection being ignored — so say where it actually went.
+          onComplete: (metadata) => {
+            if (metadata.server && metadata.server !== selectedServer) {
+              toast.info(
+                `${hostOf(selectedServer)} couldn't take "${file.name}", so it was saved on ${hostOf(metadata.server)} instead.`,
+                { duration: 9000 },
+              );
+            }
+          },
+        });
       }
     },
-    [disabled, selectedServer, servers, currentFolder]
+    [disabled, selectedServer, servers, currentFolder, toast]
   );
 
   const handleDrop = useCallback(
