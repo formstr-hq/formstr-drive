@@ -1,7 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { useFileIndex } from '../../hooks/useFileContext';
 import { useBlossomServer } from '../../hooks/useBlossomServer';
-import { getUploadCandidateServers } from '../../Provider/BlossomServerProvider';
 import { queueUpload } from '../../transfers/transferQueue';
 
 interface UploadZoneProps {
@@ -17,21 +16,27 @@ interface UploadZoneProps {
 
 export function UploadZone({ disabled = false }: UploadZoneProps) {
   const { currentFolder } = useFileIndex();
-  const { selectedServer, servers } = useBlossomServer();
+  const { selectedServer, openServerChooser } = useBlossomServer();
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
     (files: FileList) => {
       if (disabled) return;
+      // No server is chosen until the user chooses one - ask first.
+      if (!selectedServer) {
+        openServerChooser();
+        return;
+      }
       // Enqueue every file; the queue serializes uploads (concurrency 1) and the
       // transfer panel is the source of truth for progress, errors and retry.
-      const candidateServers = getUploadCandidateServers(selectedServer, servers);
+      // Only the selected server is tried: there is no silent fallback, so a
+      // failed upload reports that server's own reason.
       for (const file of Array.from(files)) {
-        queueUpload(file, selectedServer, currentFolder, candidateServers);
+        queueUpload(file, selectedServer, currentFolder);
       }
     },
-    [disabled, selectedServer, servers, currentFolder]
+    [disabled, selectedServer, currentFolder, openServerChooser]
   );
 
   const handleDrop = useCallback(
@@ -60,6 +65,11 @@ export function UploadZone({ disabled = false }: UploadZoneProps) {
 
   const handleClick = () => {
     if (disabled) return;
+    // Don't open the file picker just to refuse the files afterwards.
+    if (!selectedServer) {
+      openServerChooser();
+      return;
+    }
     fileInputRef.current?.click();
   };
 

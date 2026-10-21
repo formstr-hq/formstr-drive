@@ -46,10 +46,15 @@ export const ServerSelector: React.FC = () => {
       <div className="server-controls">
         <select
           id="server-select"
-          value={selectedServer}
+          value={selectedServer ?? ""}
           onChange={(e) => setSelectedServer(e.target.value)}
           disabled={loading}
         >
+          {!selectedServer && (
+            <option value="" disabled>
+              Choose a server…
+            </option>
+          )}
           {servers.map((server) => (
             <option key={server.url} value={server.url}>
               {server.url}{getSourceLabel(server.source)}
