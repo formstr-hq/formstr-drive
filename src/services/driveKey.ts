@@ -197,6 +197,7 @@ function newSession(pubkey: string): Session {
 }
 
 function getSession(pubkey: string): Session {
+  knownAccounts.add(pubkey);
   if (!session || session.pubkey !== pubkey) {
     if (session?.sync.timer) clearTimeout(session.sync.timer);
     session = newSession(pubkey);
@@ -209,8 +210,8 @@ function currentSession(): Session | null {
   return session && pubkey && session.pubkey === pubkey ? session : null;
 }
 
-// Drop the session on sign-out or account switch; clear the on-device caches
-// on sign-out.
+// Drop the session on sign-out or account switch. When an identity is removed
+// from this device, drop only ITS cached keys — never another account's.
 signerManager.onChange((pubkey) => {
   if (session && session.pubkey !== pubkey) {
     if (session.sync.timer) clearTimeout(session.sync.timer);
@@ -218,12 +219,34 @@ signerManager.onChange((pubkey) => {
     inFlightResolve = null;
     lastSetupStep = null;
   }
-  if (!pubkey) {
-    decryptMemo.clear();
-    void removeStoredItem(STORAGE_KEYS.DRIVE_KEY_CACHE);
-    void removeStoredItem(STORAGE_KEYS.DRIVE_PUBKEY_CACHE);
-  }
+  if (!pubkey) decryptMemo.clear();
+  void forgetRemovedAccounts();
 });
+
+const knownAccounts = new Set<string>();
+
+async function forgetRemovedAccounts(): Promise<void> {
+  const present = new Set(signerManager.listAccounts().map((a) => a.pubkey));
+  const removed = [...knownAccounts].filter((pk) => !present.has(pk));
+  present.forEach((pk) => knownAccounts.add(pk));
+  if (removed.length === 0) return;
+  removed.forEach((pk) => knownAccounts.delete(pk));
+
+  for (const [key, legacyField] of [
+    [STORAGE_KEYS.DRIVE_KEY_CACHE, "payloads"],
+    [STORAGE_KEYS.DRIVE_PUBKEY_CACHE, "drivePubkeys"],
+  ] as const) {
+    try {
+      const stored = await getStoredItem<unknown>(key, null);
+      const accounts = readAllAccountEntries<unknown>(stored, legacyField);
+      removed.forEach((pk) => delete accounts[pk]);
+      if (Object.keys(accounts).length === 0) await removeStoredItem(key);
+      else await setStoredItem(key, { version: 2, accounts });
+    } catch (e) {
+      console.warn("[DriveKey] Failed to clear a removed account's cache", e);
+    }
+  }
+}
 
 // -----------------------------------------------------------------------------
 // "The drive pubkey set changed" signal. Callers that declare a standing
@@ -346,6 +369,34 @@ async function withDriveKeyWriteLock<T>(pubkey: string, fn: () => Promise<T>): P
 // can never block or break the "fetch keys, then fetch files" flow.
 // -----------------------------------------------------------------------------
 
+// Both caches hold one entry PER identity, so using account B never overwrites
+// what this device remembers about account A (a single slot did, which sent a
+// set-up account back through first-run setup and erased the evidence that
+// this device had used Drive for it). Layout: { version: 2, accounts: {
+// [identityPubkey]: entry } }. The old single-slot shape, { pubkey, ...entry },
+// is read as that one identity's entry and rewritten as v2 on the next save.
+type AccountCache<T> = { version: 2; accounts: Record<string, T> };
+
+function readAccountEntry<T>(stored: unknown, pubkey: string, legacyField: string): T | undefined {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return undefined;
+  const obj = stored as { version?: number; accounts?: Record<string, T>; pubkey?: string };
+  if (obj.version === 2 && obj.accounts && typeof obj.accounts === "object") return obj.accounts[pubkey];
+  if (obj.pubkey === pubkey) return (stored as Record<string, unknown>)[legacyField] as T | undefined;
+  return undefined;
+}
+
+/** Every identity's entry, normalised to v2 (a legacy single slot becomes one entry). */
+function readAllAccountEntries<T>(stored: unknown, legacyField: string): Record<string, T> {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const obj = stored as { version?: number; accounts?: Record<string, T>; pubkey?: string };
+  if (obj.version === 2 && obj.accounts && typeof obj.accounts === "object") return { ...obj.accounts };
+  if (typeof obj.pubkey === "string") {
+    const entry = (stored as Record<string, unknown>)[legacyField] as T | undefined;
+    return entry === undefined ? {} : { [obj.pubkey]: entry };
+  }
+  return {};
+}
+
 async function loadPayloadCache(pubkey: string): Promise<CachedPayload[]> {
   const stored = await withTimeout(
     getStoredItem<unknown>(STORAGE_KEYS.DRIVE_KEY_CACHE, null),
@@ -353,23 +404,13 @@ async function loadPayloadCache(pubkey: string): Promise<CachedPayload[]> {
     null,
   );
 
-  if (
-    stored &&
-    typeof stored === "object" &&
-    !Array.isArray(stored) &&
-    (stored as { pubkey?: string }).pubkey === pubkey &&
-    Array.isArray((stored as { payloads?: unknown }).payloads)
-  ) {
-    return (stored as { payloads: unknown[] }).payloads
-      .map((item) =>
-        typeof item === "string"
-          ? { content: item, created_at: 0 }
-          : (item as CachedPayload),
-      )
-      .filter((p) => p && typeof p.content === "string");
-  }
-
-  return [];
+  const payloads = readAccountEntry<unknown[]>(stored, pubkey, "payloads");
+  if (!Array.isArray(payloads)) return [];
+  return payloads
+    .map((item) =>
+      typeof item === "string" ? { content: item, created_at: 0 } : (item as CachedPayload),
+    )
+    .filter((p) => p && typeof p.content === "string");
 }
 
 /**
@@ -401,11 +442,11 @@ async function persistPayloads(s: Session): Promise<void> {
     }
 
     if (keep.length === 0) return;
-    await withTimeout(
-      setStoredItem(STORAGE_KEYS.DRIVE_KEY_CACHE, { pubkey: s.pubkey, payloads: keep }),
-      CACHE_IO_TIMEOUT_MS,
-      undefined,
-    );
+    const stored = await withTimeout(getStoredItem<unknown>(STORAGE_KEYS.DRIVE_KEY_CACHE, null), CACHE_IO_TIMEOUT_MS, null);
+    const accounts = readAllAccountEntries<unknown[]>(stored, "payloads");
+    accounts[s.pubkey] = keep;
+    const next: AccountCache<unknown[]> = { version: 2, accounts };
+    await withTimeout(setStoredItem(STORAGE_KEYS.DRIVE_KEY_CACHE, next), CACHE_IO_TIMEOUT_MS, undefined);
   } catch (e) {
     console.warn("[DriveKey] Failed to write local key cache", e);
   }
@@ -428,11 +469,11 @@ async function saveCachedDrivePubkeys(identityPubkey: string, drivePubkeys: stri
   try {
     const everSeen = await getCachedDrivePubkeys(identityPubkey);
     const union = Array.from(new Set([...everSeen, ...drivePubkeys]));
-    await withTimeout(
-      setStoredItem(STORAGE_KEYS.DRIVE_PUBKEY_CACHE, { pubkey: identityPubkey, drivePubkeys: union }),
-      CACHE_IO_TIMEOUT_MS,
-      undefined,
-    );
+    const stored = await withTimeout(getStoredItem<unknown>(STORAGE_KEYS.DRIVE_PUBKEY_CACHE, null), CACHE_IO_TIMEOUT_MS, null);
+    const accounts = readAllAccountEntries<string[]>(stored, "drivePubkeys");
+    accounts[identityPubkey] = union;
+    const next: AccountCache<string[]> = { version: 2, accounts };
+    await withTimeout(setStoredItem(STORAGE_KEYS.DRIVE_PUBKEY_CACHE, next), CACHE_IO_TIMEOUT_MS, undefined);
   } catch (e) {
     console.warn("[DriveKey] Failed to write drive pubkey cache", e);
   }
@@ -447,19 +488,8 @@ export async function getCachedDrivePubkeys(identityPubkey: string): Promise<str
     null,
   );
 
-  if (
-    stored &&
-    typeof stored === "object" &&
-    !Array.isArray(stored) &&
-    (stored as { pubkey?: string }).pubkey === identityPubkey &&
-    Array.isArray((stored as { drivePubkeys?: unknown }).drivePubkeys)
-  ) {
-    return (stored as { drivePubkeys: unknown[] }).drivePubkeys.filter(
-      (p): p is string => typeof p === "string",
-    );
-  }
-
-  return [];
+  const pubkeys = readAccountEntry<unknown[]>(stored, identityPubkey, "drivePubkeys");
+  return Array.isArray(pubkeys) ? pubkeys.filter((p): p is string => typeof p === "string") : [];
 }
 
 function persist(s: Session): void {
@@ -785,8 +815,13 @@ async function resolveDriveKeyStatus(
   // the outcome — only how long it takes.
   let relayRead: Promise<RelayState[]> | null = null;
   const cold = s.entries.length === 0;
+  // The onboarding is for an account this device has never set up. An account
+  // it has (a key created or cached here before) that merely isn't decrypted
+  // yet — signer still locked or slow — gets the normal loading and degraded
+  // screens, not "Setting up your drive".
+  const firstRun = cold && !(await hasUsedDriveOnThisDevice(pubkey));
   if (cold) {
-    emitSetupProgress("checking");
+    if (firstRun) emitSetupProgress("checking");
     relayRead = readRelayStates(s, signer);
     for (const event of await fetchLocalDriveKeyEvents(pubkey)) await ingestEvent(s, event, signer);
   }
@@ -813,7 +848,7 @@ async function resolveDriveKeyStatus(
   }
   console.log(`[DriveKey] Keyring ready with ${s.entries.length} key(s)`);
 
-  if (cold) {
+  if (firstRun) {
     if (status.kind === "ready") {
       emitSetupProgress("found");
       emitSetupProgress("ready");
