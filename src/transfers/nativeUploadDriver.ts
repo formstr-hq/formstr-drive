@@ -7,7 +7,6 @@ import { previewFile } from "../services/Preview/previewManager";
 import {
   buildSignedMetadataEvent,
   recordPublishedMetadata,
-  saveFileMetadata,
   findDuplicateByHash,
   hasSameSizeFile,
   duplicateBlobIsLive,
@@ -21,7 +20,7 @@ import { createAuthEvent, BACKGROUND_UPLOAD_AUTH_EXPIRATION_SECONDS } from "../a
 import { APP_RELAYS, defaultRelays, mergeRelayLists } from "../utils/common";
 import { isAbortError } from "../utils/abortError";
 import { signerManager } from "../signer/manager";
-import { describeAllServersFailed } from "../services/uploadErrors";
+import { describeAllServersFailed, DuplicateUploadError } from "../services/uploadErrors";
 import {
   cancelNativeUpload,
   ensureNotificationPermission,
@@ -127,26 +126,16 @@ export async function nativeUploadDriver(
   if (hasSameSizeFile(file.size)) {
     onProgress({ stage: "Checking for duplicates...", progress: 0 });
     dedupHash = await computePlaintextHash(file, signal);
-    const dedupCandidate = findDuplicateByHash(dedupHash);
+    const dedupCandidate = findDuplicateByHash(dedupHash, servers[0]);
     // findDuplicateByHash is a pure local-index lookup — confirm the blob it
     // points at is actually still on the server before reusing it. See
     // uploadDriver.ts's identical check / fileIndex.ts's doc comment.
     duplicate = dedupCandidate && (await duplicateBlobIsLive(dedupCandidate)) ? dedupCandidate : undefined;
   }
   if (duplicate) {
-    const metadata: FileMetadata = {
-      ...duplicate,
-      id: generateFileId(),
-      name: file.name,
-      folder: targetFolder,
-      uploadedAt: Date.now(),
-    };
-    const publishResult = await saveFileMetadata(metadata);
-    if (publishResult.accepted < publishResult.total) {
-      console.warn(`[Upload] Metadata saved to ${publishResult.accepted}/${publishResult.total} relays`);
-    }
-    onProgress({ stage: "Upload complete", progress: 100 });
-    return metadata;
+    // Already on this server (see uploadDriver.ts): say so, don't mint a second
+    // entry for the same blob.
+    throw new DuplicateUploadError(duplicate.name, servers[0]);
   }
 
   const uploadId = crypto.randomUUID();

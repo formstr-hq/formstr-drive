@@ -11,6 +11,30 @@ import { BlossomError } from "../blossom";
  * DriveUploadWorker.java's PERMANENT_FAILURE_STATUS).
  */
 
+/**
+ * The file being uploaded is already in the drive on the server it would be
+ * uploaded to. Not a failure of the server — nothing is uploaded and no second
+ * entry is created; callers show it as "already exists" rather than as an
+ * upload error with advice to pick another server.
+ */
+export class DuplicateUploadError extends Error {
+  readonly existingName: string;
+  readonly server: string;
+
+  constructor(existingName: string, server: string) {
+    let host = server;
+    try {
+      host = new URL(server).host;
+    } catch {
+      // not a URL - show it as given
+    }
+    super(`"${existingName}" already exists in your drive on ${host}.`);
+    this.name = "DuplicateUploadError";
+    this.existingName = existingName;
+    this.server = server;
+  }
+}
+
 export type UploadFailureKind =
   | "rejected-too-large"
   | "rejected-auth"
