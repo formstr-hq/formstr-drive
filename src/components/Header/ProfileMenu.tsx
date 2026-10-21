@@ -246,9 +246,14 @@ export function ProfileMenu() {
             <p className="profile-menu-label">Upload to</p>
             <select
               className="profile-menu-row-btn profile-menu-select"
-              value={selectedServer}
+              value={selectedServer ?? ""}
               onChange={(e) => setSelectedServer(e.target.value)}
             >
+              {!selectedServer && (
+                <option value="" disabled>
+                  Choose a server…
+                </option>
+              )}
               {servers.map((s) => (
                 <option key={s.url} value={s.url}>
                   {getHostname(s.url)}
