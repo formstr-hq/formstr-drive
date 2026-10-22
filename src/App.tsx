@@ -17,6 +17,7 @@ import { DownloadManager } from './components/Upload/DownloadManager';
 import { ToastProvider } from "./context/ToastProvider";
 import { ThemeProvider } from "./context/ThemeProvider";
 import { AntdThemeBridge } from "./components/ui/AntdThemeBridge";
+import { AppDeskProvider } from "./Provider/AppDeskProvider";
 import { SharedView } from "./components/Shared/SharedView";
 import { SharesProvider } from "./context/SharesProvider";
 import { decodeShareLink } from "./services/sharing";
@@ -108,21 +109,23 @@ function App() {
   return (
     <ThemeProvider>
       <AntdThemeBridge>
-        <ToastProvider>
-          {isSharedRoute ? (
-            <SharedView />
-          ) : (
-            <ProfileProvider>
-              <BlossomServerProvider>
-                <FileIndexProvider>
-                  <SharesProvider>
-                    <DriveLayout />
-                  </SharesProvider>
-                </FileIndexProvider>
-              </BlossomServerProvider>
-            </ProfileProvider>
-          )}
-        </ToastProvider>
+        <AppDeskProvider>
+          <ToastProvider>
+            {isSharedRoute ? (
+              <SharedView />
+            ) : (
+              <ProfileProvider>
+                <BlossomServerProvider>
+                  <FileIndexProvider>
+                    <SharesProvider>
+                      <DriveLayout />
+                    </SharesProvider>
+                  </FileIndexProvider>
+                </BlossomServerProvider>
+              </ProfileProvider>
+            )}
+          </ToastProvider>
+        </AppDeskProvider>
       </AntdThemeBridge>
     </ThemeProvider>
   );

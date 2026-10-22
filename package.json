@@ -25,6 +25,7 @@
     "@capacitor/keyboard": "^8.0.5",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/share": "^8.0.1",
+    "@formstr/common-ui": "^0.1.2",
     "@formstr/local-relay": "^0.4.2",
     "@formstr/signer": "^0.2.2",
     "@khadarvsk/capacitor-secure-storage": "^0.0.1",
