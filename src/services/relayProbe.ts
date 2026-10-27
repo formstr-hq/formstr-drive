@@ -48,7 +48,7 @@ const FAKE_EOSE_DISABLED_MS = 10 * 60_000;
 
 async function readRelay(
   url: string,
-  filter: Filter,
+  filters: Filter[],
   timeoutMs: number,
   onauth: AuthSigner | undefined,
 ): Promise<RelayReading> {
@@ -60,7 +60,7 @@ async function readRelay(
 
   const answer = new Promise<RelayReading>((resolve) => {
     const open = (retriedAfterAuth: boolean) => {
-      sub = relay.subscribe([filter], {
+      sub = relay.subscribe(filters, {
         eoseTimeout: FAKE_EOSE_DISABLED_MS,
         onevent: (event) => events.push(event),
         oneose: () => resolve(reading(true)),
@@ -107,15 +107,17 @@ async function readRelay(
   }
 }
 
-/** Reads `filter` from every relay in `relays` in parallel, reporting each
- *  relay's answer separately. Never rejects. */
+/** Reads `filter` (or several, in one subscription) from every relay in
+ *  `relays` in parallel, reporting each relay's answer separately. Never
+ *  rejects. */
 export async function readRelays(
-  filter: Filter,
+  filter: Filter | Filter[],
   relays: string[],
   options: { timeoutMs: number; onauth?: AuthSigner },
 ): Promise<RelayReading[]> {
+  const filters = Array.isArray(filter) ? filter : [filter];
   return Promise.all(
-    relays.map((url) => readRelay(url, filter, options.timeoutMs, options.onauth)),
+    relays.map((url) => readRelay(url, filters, options.timeoutMs, options.onauth)),
   );
 }
 

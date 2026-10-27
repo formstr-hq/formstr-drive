@@ -58,6 +58,12 @@ const RELAY_IO_TIMEOUT_MS = 8000;
 // least one of these, so at least this many of them must genuinely answer
 // "no Drive Key here" before a first one is created.
 const CREATE_QUORUM_RELAYS = APP_RELAYS.map(normalizeRelayUrl);
+// A write relay from the identity's own NIP-65 list that stayed silent gets one
+// longer second chance before a first key is created (nothing is ever written
+// to a relay that didn't answer, so a relay that stays silent can't be
+// overwritten — it just doesn't block creation forever, which a dead relay in
+// someone's list otherwise would).
+const WRITE_RELAY_RECHECK_MS = 12_000;
 const MIN_EMPTY_QUORUM_ANSWERS = 2;
 
 // Background sync cadence. A sync runs once per sign-in, again when the app
@@ -156,6 +162,8 @@ interface Session {
   newestEvent: Event | null;
   maxSeenCreatedAt: number;
   sawUnreadableVersion: boolean;
+  /** The identity's own write relays (NIP-65), as last read from the relays. */
+  writeRelays: string[];
   /** Every encrypted version seen this session (content → created_at). */
   payloads: Map<string, number>;
   status: DriveKeyStatus | null;
@@ -188,6 +196,7 @@ function newSession(pubkey: string): Session {
     newestEvent: null,
     maxSeenCreatedAt: 0,
     sawUnreadableVersion: false,
+    writeRelays: [],
     payloads: new Map(),
     status: null,
     statusAt: 0,
@@ -626,20 +635,26 @@ async function fetchLocalDriveKeyEvents(pubkey: string): Promise<NostrEvent[]> {
   });
 }
 
-/** Every relay this identity's Drive Key could be on: everything this app
- *  publishes to, plus the identity's own NIP-65 write relays if a relay list
- *  for it is already in the local store (cache-only — never waits). */
+/** The `write` relays named in a kind-10002 relay list. */
+function writeRelaysOf(event: { tags: string[][] } | null | undefined): string[] {
+  return (event?.tags ?? [])
+    .filter((t) => t[0] === "r" && typeof t[1] === "string" && (t[2] === undefined || t[2] === "write"))
+    .map((t) => t[1]!)
+    .filter((url) => url.startsWith("wss://") || url.startsWith("ws://"));
+}
+
+/** Every relay this identity's Drive Key could be on, as far as is known
+ *  without asking: everything this app publishes to, plus the identity's
+ *  write relays if its relay list is already in the local store (cache-only).
+ *  readRelayStates then reads the relay list from the relays themselves, so a
+ *  fresh device doesn't depend on that cache. */
 async function driveKeyRelays(pubkey: string): Promise<string[]> {
   const relayList = await withTimeout(
     dataLayer.fetchReplaceable(RELAY_LIST_KIND, pubkey),
     CACHE_IO_TIMEOUT_MS,
     null,
   );
-  const writeRelays = (relayList?.tags ?? [])
-    .filter((t) => t[0] === "r" && typeof t[1] === "string" && (t[2] === undefined || t[2] === "write"))
-    .map((t) => t[1]!)
-    .filter((url) => url.startsWith("wss://") || url.startsWith("ws://"));
-  return mergeRelayLists(APP_RELAYS, defaultRelays, writeRelays);
+  return mergeRelayLists(APP_RELAYS, defaultRelays, writeRelaysOf(relayList));
 }
 
 /** What one relay holds right now, as far as a write decision is concerned. */
@@ -653,15 +668,58 @@ interface RelayState {
   secrets: Set<string>;
 }
 
-/** Reads every relay directly and folds every version into the union. */
+/**
+ * Reads every relay directly and folds every version into the union.
+ *
+ * One subscription per relay asks for the Drive Key AND the identity's
+ * relay list (kind 10002), so the relay list comes from the network instead of
+ * a cache a fresh device doesn't have, at no extra round trip. Any write relay
+ * that list names and that wasn't already asked is read too, and — only when
+ * no key has turned up, i.e. when the answer matters for creating one — a
+ * write relay that stayed silent gets one longer second chance.
+ */
 async function readRelayStates(s: Session, signer: Signer): Promise<RelayState[]> {
-  const readings: RelayReading[] = await readRelays(driveKeyFilter(s.pubkey), await driveKeyRelays(s.pubkey), {
-    timeoutMs: RELAY_IO_TIMEOUT_MS,
-    onauth: authSigner(signer),
-  });
+  const onauth = authSigner(signer);
+  const baseRelays = await driveKeyRelays(s.pubkey);
+  const relayListFilter: Filter = { kinds: [RELAY_LIST_KIND], authors: [s.pubkey] };
+
+  const readings = new Map<string, RelayReading>();
+  const keep = (list: RelayReading[]) => list.forEach((r) => readings.set(normalizeRelayUrl(r.relay), r));
+  keep(await readRelays([driveKeyFilter(s.pubkey), relayListFilter], baseRelays, { timeoutMs: RELAY_IO_TIMEOUT_MS, onauth }));
+
+  // The identity's own relay list: newest version any relay returned.
+  const lists = [...readings.values()]
+    .flatMap((r) => r.events)
+    .filter((e) => e.kind === RELAY_LIST_KIND && e.pubkey === s.pubkey)
+    .sort((a, b) => b.created_at - a.created_at);
+  if (lists[0]) {
+    s.writeRelays = writeRelaysOf(lists[0]);
+    // So a later cache-only read (and the next cold start) already knows them.
+    dataLayer.addEvent(lists[0]);
+  }
+  const writeSet = new Set(s.writeRelays.map(normalizeRelayUrl));
+
+  const unread = s.writeRelays.filter((url) => !readings.has(normalizeRelayUrl(url)));
+  if (unread.length > 0) {
+    keep(await readRelays(driveKeyFilter(s.pubkey), unread, { timeoutMs: RELAY_IO_TIMEOUT_MS, onauth }));
+  }
+
+  const keyFound = [...readings.values()].some((r) => r.events.some((e) => isDriveKeyEvent(e, s.pubkey)));
+  if (!keyFound) {
+    const silentWrite = [...readings.values()].filter((r) => !r.answered && writeSet.has(normalizeRelayUrl(r.relay)));
+    if (silentWrite.length > 0) {
+      keep(
+        await readRelays(
+          driveKeyFilter(s.pubkey),
+          silentWrite.map((r) => r.relay),
+          { timeoutMs: WRITE_RELAY_RECHECK_MS, onauth },
+        ),
+      );
+    }
+  }
 
   const states: RelayState[] = [];
-  for (const reading of readings) {
+  for (const reading of readings.values()) {
     const events = reading.events.filter((e) => isDriveKeyEvent(e, s.pubkey));
     const state: RelayState = {
       relay: reading.relay,
@@ -683,7 +741,8 @@ async function readRelayStates(s: Session, signer: Signer): Promise<RelayState[]
   const silent = states.filter((r) => !r.answered).map((r) => r.relay);
   console.log(
     `[DriveKey] Relay read: key on ${withKey.length} [${withKey.join(", ")}]; none on ${empty.length} ` +
-      `[${empty.join(", ")}]; no answer from ${silent.length} [${silent.join(", ")}]`,
+      `[${empty.join(", ")}]; no answer from ${silent.length} [${silent.join(", ")}]` +
+      (s.writeRelays.length ? `; your write relays: [${s.writeRelays.join(", ")}]` : ""),
   );
   return states;
 }
