@@ -6,7 +6,6 @@ export const defaultRelays = [
   "wss://relay.nostr.wirednet.jp/",
   "wss://nostr-01.yakihonne.com",
   "wss://relay.snort.social",
-  "wss://relay.nostr.band",
   "wss://nostr21.com",
 ];
 
@@ -14,7 +13,6 @@ export const defaultRelays = [
 export const APP_RELAYS = [
   "wss://relay.formstr.app",
   "wss://relay.damus.io",
-  "wss://relay.nostr.band",
   "wss://nos.lol",
 ];
 
