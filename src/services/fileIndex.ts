@@ -398,9 +398,12 @@ export function observeFileIndex(
 ): () => void {
   const statusPromise: Promise<DriveKeyStatus> = getDriveKeyStatus().catch((e) => {
     console.warn("[FileIndex] Could not obtain Drive Key status", e);
-    return { kind: "unresolved", reason: "Couldn't check your Drive Key." } as DriveKeyStatus;
+    return { kind: "unresolved", reason: "Couldn't check your Drive Key.", issue: "checking" } as DriveKeyStatus;
   });
-  const driveKeysPromise: Promise<Uint8Array[]> = statusPromise.then((status) =>
+  // Replaced whenever the keyring changes (see onDriveKeysChanged below) — a
+  // key created or merged in after this subscription started must decrypt
+  // the events that arrive from then on, not only the earlier failures.
+  let driveKeysPromise: Promise<Uint8Array[]> = statusPromise.then((status) =>
     status.kind === "ready" ? status.keyring.map((entry) => entry.conversationKey) : [],
   );
   // Report the moment resolution settles — success or failure, we're no
@@ -552,6 +555,21 @@ export function observeFileIndex(
     void getDriveKeyPubkeys().then(subscribeAuthors).catch((e) => {
       console.warn("[FileIndex] Could not resolve updated Drive Key pubkeys", e);
     });
+
+    // New events decrypt under the new keyring, and the UI learns the drive
+    // is now ready (e.g. a first key was just created, or a sync recovered
+    // one while the drive was showing as unresolved).
+    const freshStatus = getDriveKeyStatus();
+    driveKeysPromise = freshStatus.then(
+      (status) => (status.kind === "ready" ? status.keyring.map((entry) => entry.conversationKey) : []),
+      () => [],
+    );
+    void freshStatus.then(
+      (status) => {
+        if (!stopped) handlers.onKeyStatus?.(status);
+      },
+      () => {},
+    );
 
     // A key that arrives AFTER an event already failed to decrypt under it —
     // the exact case this whole listener exists for: getting subscribeAuthors

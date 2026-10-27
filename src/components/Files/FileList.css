@@ -149,7 +149,7 @@
   color: var(--color-text-muted);
 }
 
-.empty-state.error-state p:first-child {
+.empty-state.error-state > p:first-child {
   color: var(--color-danger-strong, var(--color-text-secondary));
   font-weight: var(--font-weight-medium);
 }
@@ -193,4 +193,21 @@
     width: 100%;
     justify-content: flex-start;
   }
+}
+
+.empty-state-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-6);
+  max-width: 32rem;
+  margin: var(--space-8) auto 0;
+}
+
+.empty-state-confirm .empty-hint {
+  flex-basis: 100%;
+}
+
+.empty-state-confirm .empty-state-retry {
+  margin-top: 0;
 }

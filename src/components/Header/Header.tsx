@@ -4,6 +4,7 @@ import { DriveMark } from "../icons/DriveMark";
 import { ProfileMenu } from './ProfileMenu';
 import { useProfileContext } from '../../hooks/useProfileContext';
 import { MenuOutlined } from "@ant-design/icons";
+import { useAppDesk } from "@formstr/common-ui";
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -48,6 +49,7 @@ export function Header({ onMenuClick }: HeaderProps) {
   const { isSignedIn, requestPubkey } = useProfileContext();
   const { currentFolder, setCurrentFolder } = useFileIndex();
   const isMobile = useIsMobile();
+  const openDesk = useAppDesk();
 
   return (
     <header className="app-header">
@@ -57,7 +59,19 @@ export function Header({ onMenuClick }: HeaderProps) {
               onClick={onMenuClick}
             />
         )}
-        <DriveMark className="app-mark" />
+        <span className="app-mark-wrap">
+          <DriveMark className="app-mark" />
+          <button
+            type="button"
+            className="app-mark-suite-trigger"
+            aria-label="Open the Formstr app desk"
+            title="Formstr app desk"
+            onClick={(event) => {
+              event.stopPropagation();
+              openDesk(event.currentTarget);
+            }}
+          />
+        </span>
         <Breadcrumb currentFolder={currentFolder} onNavigate={setCurrentFolder} />
       </div>
 

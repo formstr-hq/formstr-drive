@@ -4,13 +4,13 @@ import { findOrphanedDrivePubkeys, onDriveKeysChanged } from "../../services/dri
 import "./DriveKeyWarningBanner.css";
 
 /**
- * Surfaces the drive-key-mint hazard (see driveKey.ts's restoreDriveKey doc
- * comment) the moment it's detectable, instead of it silently looking like
- * an empty or partial drive — which is exactly how it presented before this
- * existed. Only possible because saveCachedDrivePubkeys accumulates a union
- * of every drive pubkey this device has ever seen for the identity, rather
- * than overwriting: a pubkey the current keyring no longer resolves to a
- * secret for is evidence something was lost, not evidence it never existed.
+ * Surfaces a Drive Key this device has seen before that the current keyring
+ * doesn't hold — e.g. its version sits only on a relay that hasn't answered
+ * yet — instead of it silently looking like a partial drive. Only possible
+ * because saveCachedDrivePubkeys keeps a union of every drive pubkey this
+ * device has ever seen for the identity. Usually transient: driveKey.ts's
+ * background sync merges the key back the moment a relay holding it answers,
+ * and onDriveKeysChanged then clears this banner.
  */
 export function DriveKeyWarningBanner() {
   const { pubkey, isSignedIn } = useProfileContext();
@@ -37,14 +37,9 @@ export function DriveKeyWarningBanner() {
     };
 
     check();
-    // Re-run whenever the keyring's pubkey set changes — there is no manual
-    // import path any more, so this fires only from automatic recovery:
-    // refreshDriveKeyring's background top-up finding the missing key on its
-    // own (see its doc comment: a tab that already resolved a keyring
-    // otherwise never rechecks relays again), or another device's self-heal
-    // publish (driveKey.ts's syncWithRelays) landing here. Without this the
-    // banner only ever reflected the state at mount, so it wouldn't clear
-    // itself even after the underlying problem resolved on its own.
+    // Re-run whenever the keyring's pubkey set changes — i.e. when a sync
+    // (driveKey.ts's syncDriveKeys) or an import merges the missing key in.
+    // Without this the banner would only reflect the state at mount.
     const unsubscribe = onDriveKeysChanged(check);
 
     return () => {
@@ -59,7 +54,8 @@ export function DriveKeyWarningBanner() {
     <div className="drive-key-warning-banner" role="alert">
       <span>
         A previous Drive Key for this account is missing ({orphaned.length} key
-        {orphaned.length === 1 ? "" : "s"}) — files under it may be hidden until it's restored.
+        {orphaned.length === 1 ? "" : "s"}) — files under it are hidden until it's found. Drive keeps
+        checking the relays and restores it automatically.
       </span>
     </div>
   );
