@@ -48,6 +48,7 @@ class SignerManager {
   /** True during a switch, so the package's intermediate events don't flash a
    *  half-switched state at the UI. */
   private switching = false;
+  private switchQueue: Promise<unknown> = Promise.resolve();
 
   private requireSigner(): PackageSigner {
     if (!this.signer) {
@@ -145,6 +146,14 @@ class SignerManager {
    * current account stays active and the reason comes back for the UI to ask.
    */
   async switchAccount(pubkey: string): Promise<SwitchResult> {
+    // One switch at a time: a second pick made while the first is still checking
+    // the extension waits its turn instead of interleaving with it.
+    const run = this.switchQueue.then(() => this.doSwitchAccount(pubkey));
+    this.switchQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async doSwitchAccount(pubkey: string): Promise<SwitchResult> {
     const signer = this.requireSigner();
     const target = signer.listAccounts().find((account) => account.pubkey === pubkey);
     if (!target) throw new Error("That account is no longer on this device");

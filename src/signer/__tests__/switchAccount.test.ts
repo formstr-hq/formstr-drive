@@ -118,6 +118,22 @@ describe("signerManager.switchAccount", () => {
     expect(manager.isLocked()).toBe(false);
   });
 
+  it("runs overlapping switches one at a time and ends on the last one picked", async () => {
+    const manager = await freshManager();
+    const a = newKey();
+    const b = newKey();
+    const c = newKey();
+    await manager.importNsec(a.nsec, "pw");
+    await manager.importNsec(b.nsec, "pw");
+    await manager.importNsec(c.nsec, "pw");
+
+    const results = await Promise.all([manager.switchAccount(a.pubkey), manager.switchAccount(b.pubkey)]);
+
+    expect(results).toEqual([{ ok: true }, { ok: true }]);
+    expect(manager.getPubkey()).toBe(b.pubkey);
+    expect(manager.isLocked()).toBe(false);
+  });
+
   it("forgets a removed account's signer", async () => {
     const manager = await freshManager();
     const a = newKey();
