@@ -7,6 +7,7 @@ import { ProfileProvider } from "./Provider/ProfileProvider";
 import { Header } from './components/Header/Header';
 import { DriveKeyWarningBanner } from './components/Header/DriveKeyWarningBanner';
 import { DriveSetupModal } from './components/DriveSetup/DriveSetupModal';
+import { ServerChooserModal } from './components/ServerChooser/ServerChooserModal';
 import { FolderSidebar } from './components/Folders/FolderSidebar';
 import { FileList } from './components/Files/FileList';
 import { SharedByMeView } from './components/Shared/SharedByMeView';
@@ -55,6 +56,7 @@ function DriveLayout() {
       <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
       <DriveKeyWarningBanner />
       <DriveSetupModal />
+      <ServerChooserModal />
       <div className="drive-content">
         <FolderSidebar
           isOpen={sidebarOpen}

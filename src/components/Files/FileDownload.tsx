@@ -47,6 +47,7 @@ export const FileDownload: React.FC = () => {
     setContent(null);
 
     try {
+      if (!selectedServer) throw new Error("Choose a storage server first.");
       const client = new BlossomClient(selectedServer);
       const blob = await client.download(sha256);
       const ciphertext = new TextDecoder().decode(blob);

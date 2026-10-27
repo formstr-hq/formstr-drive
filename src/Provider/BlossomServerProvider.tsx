@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 import { dataLayer, type Event } from "@formstr/local-relay";
@@ -14,6 +15,7 @@ import {
 } from "../utils/persistence";
 import { observeServerList, publishServerList } from "../services/blossomServerList";
 import { useProfileContext } from "../hooks/useProfileContext";
+import { setUploadServerResolver } from "../transfers/transferQueue";
 
 const DEFAULT_SERVERS = [
   "https://nostr.download",
@@ -27,31 +29,16 @@ export interface ServerInfo {
   source: "default" | "relay" | "custom";
 }
 
-/**
- * The candidate list for automatic upload fallback: the selected server
- * first, then the user's other known DEFAULT/custom servers. Deliberately
- * excludes relay-discovered ("relay" source) servers unless one is already
- * the selection — those are arbitrary third-party URLs the user never
- * reviewed, and while file content is end-to-end encrypted before upload, the
- * BUD-02 auth event still exposes the identity pubkey, blob hash, and timing
- * to whatever server receives it. Automatically fanning that out beyond the
- * trusted (default + user-added) set isn't a call this function should make
- * on its own.
- */
-export function getUploadCandidateServers(
-  selectedServer: string,
-  servers: ServerInfo[],
-): string[] {
-  const rest = servers
-    .filter((s) => s.source !== "relay" && s.url !== selectedServer)
-    .map((s) => s.url);
-  return [selectedServer, ...rest];
-}
-
 export interface BlossomServerContextType {
   servers: ServerInfo[];
-  selectedServer: string;
+  /** The user's chosen upload server; null until they choose one. */
+  selectedServer: string | null;
   setSelectedServer: (url: string) => void;
+  /** Signed in, settings loaded, and no server chosen yet. */
+  needsServerChoice: boolean;
+  chooserOpen: boolean;
+  openServerChooser: () => void;
+  closeServerChooser: () => void;
   addCustomServer: (url: string) => void;
   loading: boolean;
   error: string | null;
@@ -77,7 +64,8 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   const [servers, setServers] = useState<ServerInfo[]>(
     DEFAULT_SERVERS.map((url) => ({ url, source: "default" })),
   );
-  const [selectedServer, setSelectedServer] = useState(DEFAULT_SERVERS[0]);
+  const [selectedServer, setSelectedServer] = useState<string | null>(null);
+  const [chooserOpen, setChooserOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Whose custom servers and selection `servers` / `selectedServer` currently
@@ -125,7 +113,8 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     const resetSettings = () => {
       setSettingsOwner(null);
       setServers((prev) => prev.filter((s) => s.source !== "custom"));
-      setSelectedServer(DEFAULT_SERVERS[0]);
+      // Nothing is chosen until the user chooses one.
+      setSelectedServer(null);
     };
     resetSettings();
     if (!pubkey) return;
@@ -143,9 +132,9 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
           return undefined;
         };
         const customUrls = pick<string[]>(storedCustom, Array.isArray) ?? [];
-        const selected = normalizeServerUrl(
-          pick<string>(storedSelected, (v) => typeof v === "string") ?? DEFAULT_SERVERS[0],
-        );
+        // No server is chosen until the user chooses one.
+        const storedUrl = pick<string>(storedSelected, (v) => typeof v === "string");
+        const selected = typeof storedUrl === "string" ? normalizeServerUrl(storedUrl) : null;
         if (cancelled) return;
 
         const custom = customUrls.map((url) => ({
@@ -153,7 +142,7 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
           source: "custom" as const,
         }));
         const ensured =
-          custom.some((c) => c.url === selected) || DEFAULT_SERVERS.includes(selected)
+          !selected || custom.some((c) => c.url === selected) || DEFAULT_SERVERS.includes(selected)
             ? custom
             : [...custom, { url: selected, source: "custom" as const }];
 
@@ -265,9 +254,29 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   }, [pubkey]);
 
   useEffect(() => {
-    if (!pubkey || settingsOwner !== pubkey) return;
+    if (!pubkey || settingsOwner !== pubkey || !selectedServer) return;
     void saveForAccount(STORAGE_KEYS.SELECTED_SERVER, selectedServer);
   }, [selectedServer, settingsOwner, pubkey, saveForAccount]);
+
+  const needsServerChoice = !!pubkey && settingsOwner === pubkey && !selectedServer;
+
+  const openServerChooser = useCallback(() => setChooserOpen(true), []);
+  const closeServerChooser = useCallback(() => setChooserOpen(false), []);
+
+  // A retried upload follows the user's current choice (see transferQueue).
+  // Not registered while this provider's settings belong to nobody.
+  const selectedServerRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedServerRef.current = settingsOwner === pubkey ? selectedServer : null;
+  }, [selectedServer, settingsOwner, pubkey]);
+  useEffect(
+    () =>
+      setUploadServerResolver({
+        current: () => selectedServerRef.current,
+        ask: () => setChooserOpen(true),
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!pubkey || settingsOwner !== pubkey) return;
@@ -285,6 +294,10 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
         servers,
         selectedServer,
         setSelectedServer,
+        needsServerChoice,
+        chooserOpen,
+        openServerChooser,
+        closeServerChooser,
         addCustomServer,
         loading,
         error,

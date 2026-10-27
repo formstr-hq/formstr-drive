@@ -151,7 +151,9 @@ export function describeAllServersFailed(
 
   if (classified.length === 1) {
     const { server, classified: c } = classified[0];
-    const reason = c.serverReason ? `: ${c.serverReason}` : "";
+    // userMessage already ends in a full stop, so the server's own words go in
+    // a sentence of their own rather than after a colon.
+    const reason = c.serverReason ? ` The server said: "${c.serverReason}".` : "";
     return new Error(`Upload to ${server} failed — ${c.userMessage}${reason}`);
   }
 

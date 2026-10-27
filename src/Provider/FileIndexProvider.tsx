@@ -106,7 +106,7 @@ export const FileIndexContext = createContext<FileIndexContextType | null>(null)
 
 export function FileIndexProvider({ children }: { children: ReactNode }) {
   const { isSignedIn, pubkey, restoring } = useProfileContext();
-  const { selectedServer, servers } = useBlossomServer();
+  const { selectedServer } = useBlossomServer();
 
   const [files, setFiles] = useState<FileMetadata[]>([]);
   const [currentFolder, setCurrentFolder] = useState("/");
@@ -360,7 +360,6 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     settingsLoaded: !!pubkey && foldersOwner === pubkey,
     indexReady: driveStatus === "ready",
     selectedServer,
-    servers,
     onError: setError,
   });
 
