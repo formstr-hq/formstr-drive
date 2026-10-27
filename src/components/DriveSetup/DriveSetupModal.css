@@ -1,0 +1,386 @@
+/* "Setting up your drive" — centred card on wide screens, bottom sheet on
+   phones, two-column compact layout on short landscape screens. Colours and
+   spacing come from tokens only, so every theme and accent palette applies.
+   Animates transform/opacity only. */
+.drive-setup-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-8);
+}
+
+.drive-setup-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--color-scrim);
+  animation: drive-setup-fade 0.18s linear;
+}
+
+.drive-setup {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  max-height: min(560px, calc(100dvh - 2 * var(--space-8)));
+  overflow: hidden;
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  backdrop-filter: var(--surface-blur);
+  -webkit-backdrop-filter: var(--surface-blur);
+  outline: none;
+  animation: drive-setup-rise 0.22s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.drive-setup-root.is-closing .drive-setup {
+  animation: drive-setup-out 0.2s ease forwards;
+}
+
+.drive-setup-root.is-closing .drive-setup-scrim {
+  animation: drive-setup-fade-out 0.2s linear forwards;
+}
+
+/* Indeterminate progress along the top edge — no percentage on purpose. */
+.drive-setup-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  background: var(--color-accent-subtle);
+  transition: opacity 0.2s ease;
+}
+
+.drive-setup-bar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  border-radius: 3px;
+  background: var(--color-accent);
+  animation: drive-setup-bar 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.drive-setup.is-ready .drive-setup-bar {
+  opacity: 0;
+}
+
+.drive-setup-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-10);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-16) var(--space-12) var(--space-12);
+}
+
+.drive-setup-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+}
+
+.drive-setup-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-full);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.drive-setup-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid var(--color-accent);
+  opacity: 0;
+  animation: drive-setup-pulse 1.8s ease-out infinite;
+}
+
+.drive-setup.is-ready .drive-setup-mark::after {
+  animation: none;
+}
+
+.drive-setup-title {
+  margin: 0;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-snug);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.drive-setup-subtitle {
+  max-width: 34ch;
+  margin: 0;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.drive-setup-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drive-setup-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: 40px;
+  padding: var(--space-3) var(--space-6);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-snug);
+  /* Not --color-text-muted: too faint for body text on a light theme. The
+     icon (empty ring / spinner / check) carries pending vs done. */
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.drive-setup-step.is-active {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.drive-setup-step.is-done {
+  color: var(--color-text-secondary);
+}
+
+.drive-setup-step-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+}
+
+.drive-setup-step.is-pending .drive-setup-step-icon {
+  border: 2px solid var(--color-border-strong);
+}
+
+.drive-setup-step.is-active .drive-setup-step-icon {
+  border: 2px solid var(--color-accent-border);
+  border-top-color: var(--color-accent);
+  animation: drive-setup-spin 0.8s linear infinite;
+}
+
+.drive-setup-step.is-done .drive-setup-step-icon {
+  background: var(--color-success);
+  color: var(--color-text-on-accent);
+}
+
+.drive-setup-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Touch: roomier rows. */
+@media (pointer: coarse) {
+  .drive-setup-step {
+    min-height: 48px;
+  }
+}
+
+/* Phones: a bottom sheet, like the file action sheet, clear of the home
+   indicator and side notches. */
+@media (max-width: 768px) {
+  .drive-setup-root {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .drive-setup {
+    width: 100%;
+    max-height: 88dvh;
+    border-bottom: none;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    animation: drive-setup-up 0.26s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .drive-setup-root.is-closing .drive-setup {
+    animation: drive-setup-down 0.2s ease forwards;
+  }
+
+  /* A full-width sheet on a tablet shouldn't stretch the rows edge to edge. */
+  .drive-setup-steps {
+    max-width: 440px;
+  }
+
+  .drive-setup-body {
+    padding:
+      var(--space-12)
+      calc(var(--space-10) + var(--safe-area-right))
+      calc(var(--space-12) + var(--safe-area-bottom))
+      calc(var(--space-10) + var(--safe-area-left));
+  }
+}
+
+/* Short screens (phones in landscape, small laptop windows): drop the mark
+   and tighten everything so the whole thing fits without scrolling. */
+@media (max-height: 500px) {
+  .drive-setup {
+    max-height: calc(100dvh - var(--space-8));
+  }
+
+  .drive-setup-mark {
+    display: none;
+  }
+
+  .drive-setup-body {
+    gap: var(--space-6);
+    padding-top: var(--space-10);
+    padding-bottom: calc(var(--space-8) + var(--safe-area-bottom));
+  }
+
+  .drive-setup-step {
+    min-height: 36px;
+  }
+}
+
+/* Short AND wide enough: intro beside the steps instead of above them. */
+@media (max-height: 500px) and (min-width: 560px) {
+  .drive-setup-root {
+    align-items: center;
+    padding: var(--space-4);
+  }
+
+  .drive-setup {
+    width: min(640px, 100%);
+    border-bottom: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-lg);
+    animation: drive-setup-rise 0.22s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .drive-setup-root.is-closing .drive-setup {
+    animation: drive-setup-out 0.2s ease forwards;
+  }
+
+  .drive-setup-body {
+    display: grid;
+    grid-template-columns: 1fr 1.1fr;
+    align-items: center;
+    column-gap: var(--space-12);
+    padding-left: calc(var(--space-12) + var(--safe-area-left));
+    padding-right: calc(var(--space-12) + var(--safe-area-right));
+  }
+
+  .drive-setup-intro {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drive-setup,
+  .drive-setup-scrim,
+  .drive-setup-root.is-closing .drive-setup,
+  .drive-setup-root.is-closing .drive-setup-scrim {
+    animation: none;
+  }
+
+  .drive-setup-mark::after {
+    animation: none;
+  }
+
+  .drive-setup-bar::before {
+    width: 100%;
+    opacity: 0.55;
+    animation: none;
+  }
+
+  /* A static ring instead of a spinner. */
+  .drive-setup-step.is-active .drive-setup-step-icon {
+    border-color: var(--color-accent);
+    animation: none;
+  }
+}
+
+@keyframes drive-setup-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes drive-setup-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes drive-setup-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes drive-setup-down {
+  to { transform: translateY(100%); }
+}
+
+@keyframes drive-setup-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes drive-setup-fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes drive-setup-bar {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+@keyframes drive-setup-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes drive-setup-spin {
+  to { transform: rotate(360deg); }
+}

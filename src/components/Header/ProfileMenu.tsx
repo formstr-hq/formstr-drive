@@ -13,6 +13,8 @@ import { useBlossomServer } from "../../hooks/useBlossomServer";
 import { useNostrProfile, getProfileDisplayName } from "../../hooks/useNostrProfile";
 import { PALETTES, type Palette } from "../../context/ThemeProvider";
 import { SunIcon, MoonIcon } from "../ui/ThemeIcons";
+import { AppstoreOutlined } from "@ant-design/icons";
+import { useAppDesk } from "@formstr/common-ui";
 import "./ProfileMenu.css";
 
 const PALETTE_LABEL: Record<Palette, string> = {
@@ -98,6 +100,8 @@ export function ProfileMenu() {
   const [customUrl, setCustomUrl] = useState("");
   const [customServerError, setCustomServerError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const openDesk = useAppDesk();
 
   useEffect(() => {
     if (!open) return;
@@ -141,6 +145,7 @@ export function ProfileMenu() {
   return (
     <div className="profile-menu" ref={rootRef}>
       <button
+        ref={triggerRef}
         className="profile-menu-trigger"
         onClick={(e) => {
           e.preventDefault();
@@ -215,6 +220,19 @@ export function ProfileMenu() {
               )}
             </div>
           )}
+
+          <div className="profile-menu-section">
+            <button
+              className="profile-menu-row-btn"
+              onClick={() => {
+                if (triggerRef.current) openDesk(triggerRef.current);
+                setOpen(false);
+              }}
+            >
+              <AppstoreOutlined />
+              Apps
+            </button>
+          </div>
 
           <div className="profile-menu-section">
             <div className="profile-menu-appearance">

@@ -14,7 +14,7 @@ import {
   extractFolders,
   clearFileIndexStore,
 } from "../services/fileIndex";
-import { ensureDriveKeyMinted, type DriveKeyStatus } from "../services/driveKey";
+import { ensureDriveKeyMinted, type DriveKeyIssue, type DriveKeyStatus } from "../services/driveKey";
 import {
   getRelayRefresh,
   subscribeRelayRefresh,
@@ -54,8 +54,9 @@ export type DriveIndexStatus = "resolving" | "degraded" | "ready";
 /**
  * Why `status` is "degraded" — always paired with `status`, never read alone.
  *  - "uncertain": Drive Key resolution genuinely doesn't know yet — could not
- *    reach enough of the network to tell whether a key exists, or found an
- *    event this build can't read. NEVER means "confirmed no key" — a proven
+ *    reach enough of the network to tell whether a key exists, found an
+ *    event this build can't read, or a mint attempt failed (e.g. a signer
+ *    without NIP-44). NEVER means "confirmed no key" — a proven
  *    first-time user (no key found, and that absence is proven) is `ready`
  *    with an empty file list, not `degraded`; see driveKey.ts's
  *    DriveKeyStatus for how that distinction is established. `degradedMessage`
@@ -67,14 +68,11 @@ export type DriveIndexStatus = "resolving" | "degraded" | "ready";
  *    file list came back empty — the signature of the WRONG (but
  *    successfully-resolved) key being active, not of an empty drive.
  *
- * Deliberately NOT included: "identity has no prior history" as a reason to
- * distrust an empty list. That signal (identityHistory.ts) answers "should
- * we ever mint a replacement key" correctly, but it is too coarse for this
- * decision — an identity that has published a Drive Key event but never
- * uploaded a single file is `existing` by that check and STILL has a
- * genuinely, correctly empty drive. Using it here would flag every
- * brand-new user's real empty state as suspicious the moment their own
- * key-creation event round-trips back to them.
+ * Deliberately NOT included: "this identity has published before" as a reason
+ * to distrust an empty list. An identity with a Drive Key but no uploads yet
+ * — or with a Nostr profile and a freshly minted Drive Key — has a genuinely,
+ * correctly empty drive; flagging that would make every new user's real empty
+ * state look suspicious.
  */
 export type DriveIndexDegradedReason = "uncertain" | "undecryptable";
 
@@ -91,6 +89,10 @@ export interface FileIndexContextType {
   /** The specific reason, when `degradedReason === "uncertain"` — driveKey.ts's
    *  actual message, not a generic line. Null otherwise. */
   degradedMessage: string | null;
+  /** Which Drive Key problem it is, when `degradedReason === "uncertain"` —
+   *  lets the UI offer the one action that fits (e.g. starting a new key
+   *  only for "seen-on-device"). Null otherwise. */
+  degradedIssue: DriveKeyIssue | null;
   error: string | null;
   deleteFile: (hash: string) => Promise<DeleteResult>;
   deleteFiles: (hashes: string[]) => Promise<DeleteResult>;
@@ -128,6 +130,8 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   // (proven, safe) and "unresolved" (genuinely unknown, carries a reason) stay
   // distinguishable all the way to the UI.
   const [keyStatus, setKeyStatus] = useState<DriveKeyStatus | null>(null);
+  // Which identity `keyStatus` describes — see the subscription effect.
+  const keyStatusPubkeyRef = useRef<string | null>(null);
   // True once at least one EOSE has been received for the current
   // subscription — the local relay's cache-or-network replay is done.
   const [hydrated, setHydrated] = useState(false);
@@ -141,33 +145,35 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
 
   // The single source of truth every consumer must use instead of combining
   // the raw signals above by hand — see DriveIndexStatus's doc comment for
-  // what each branch means and why identityHistory is deliberately NOT
-  // consulted here (it is the right signal for driveKey.ts's mint decision,
-  // and the wrong one for this: an existing identity's genuinely-empty
-  // drive must never be flagged as suspicious just because that identity
-  // has published something, anything, before).
+  // what each branch means and why an identity's publishing history is
+  // deliberately NOT consulted here.
   //
   // "empty-confirmed" deliberately falls through to the SAME hydration/
   // decrypt-failure checks as "ready" rather than being its own terminal
   // branch: a proven-empty keyring still needs the file-index subscription
   // to hydrate before the (correctly empty) file list can be trusted, same
   // as any other keyring would.
-  const { driveStatus, degradedReason, degradedMessage } = useMemo<{
+  const { driveStatus, degradedReason, degradedMessage, degradedIssue } = useMemo<{
     driveStatus: DriveIndexStatus;
     degradedReason: DriveIndexDegradedReason | null;
     degradedMessage: string | null;
+    degradedIssue: DriveKeyIssue | null;
   }>(() => {
-    if (keyStatus === null) {
-      return { driveStatus: "resolving", degradedReason: null, degradedMessage: null };
-    }
+    const none = { degradedReason: null, degradedMessage: null, degradedIssue: null };
+    if (keyStatus === null) return { driveStatus: "resolving", ...none };
     if (keyStatus.kind === "unresolved") {
-      return { driveStatus: "degraded", degradedReason: "uncertain", degradedMessage: keyStatus.reason };
+      return {
+        driveStatus: "degraded",
+        degradedReason: "uncertain",
+        degradedMessage: keyStatus.reason,
+        degradedIssue: keyStatus.issue,
+      };
     }
-    if (!hydrated) return { driveStatus: "resolving", degradedReason: null, degradedMessage: null };
+    if (!hydrated) return { driveStatus: "resolving", ...none };
     if (files.length === 0 && hadDecryptFailures) {
-      return { driveStatus: "degraded", degradedReason: "undecryptable", degradedMessage: null };
+      return { driveStatus: "degraded", ...none, degradedReason: "undecryptable" };
     }
-    return { driveStatus: "ready", degradedReason: null, degradedMessage: null };
+    return { driveStatus: "ready", ...none };
   }, [keyStatus, hydrated, hadDecryptFailures, files.length]);
 
   // Bumps when the relay worker can newly serve cached data it couldn't a
@@ -251,6 +257,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setFiles([]);
       setKeyStatus(null);
+      keyStatusPubkeyRef.current = null;
       setHydrated(false);
       setHadDecryptFailures(false);
       return;
@@ -265,13 +272,19 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     }
     shownPubkeyRef.current = pubkey;
 
-    // Fresh subscription: none of the raw signals from a previous
-    // identity/subscription is valid evidence about this one.
-    setKeyStatus(null);
+    // Fresh subscription: none of the file-index signals from a previous
+    // subscription is valid evidence about this one. The key verdict is kept
+    // across a re-check of the SAME identity (retry, relay refresh) until the
+    // new one arrives — clearing it would flip a degraded screen to
+    // "resolving" and back every auto-retry, resetting anything the user was
+    // in the middle of there.
+    if (keyStatusPubkeyRef.current !== pubkey) setKeyStatus(null);
+    keyStatusPubkeyRef.current = pubkey;
     setHydrated(false);
     setHadDecryptFailures(false);
     setError(null);
 
+    let active = true;
     const unobserve = observeFileIndex(pubkey, {
       onFiles: setFiles,
       onKeyStatus: (status) => {
@@ -280,16 +293,25 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
         // the read path itself, never a guess or a timeout. ensureDriveKeyMinted
         // is idempotent per identity (in-session + persisted guards), so
         // calling it again on every relayRefresh-triggered resubscribe is
-        // harmless — it only ever actually mints once.
+        // harmless — it only ever actually mints once. A failed mint would
+        // otherwise leave a "ready" empty drive that can't upload, so it's
+        // surfaced as uncertain instead, which also arms the auto-retry below.
         if (status.kind === "empty-confirmed") {
-          void ensureDriveKeyMinted();
+          void ensureDriveKeyMinted().then((result) => {
+            if (active && !result.ok) {
+              setKeyStatus({ kind: "unresolved", reason: result.reason, issue: result.issue });
+            }
+          });
         }
       },
       onReady: () => setHydrated(true),
       onDecryptFailures: () => setHadDecryptFailures(true),
     });
 
-    return unobserve;
+    return () => {
+      active = false;
+      unobserve();
+    };
   }, [isSignedIn, pubkey, restoring, relayRefresh, manualRefreshCount]);
 
   // With a standing observe the worker keeps the index synced on its own;
@@ -356,6 +378,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       driveStatus,
       degradedReason,
       degradedMessage,
+      degradedIssue,
       error,
       deleteFile,
       deleteFiles,
@@ -373,6 +396,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       driveStatus,
       degradedReason,
       degradedMessage,
+      degradedIssue,
       error,
       deleteFile,
       deleteFiles,
