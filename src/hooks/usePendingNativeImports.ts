@@ -5,6 +5,7 @@ import {
   removePendingNativeImport,
 } from "../native/driveManifest";
 import { queueUpload } from "../transfers/transferQueue";
+import { DuplicateUploadError } from "../services/uploadErrors";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 
 interface PendingNativeImportsOptions {
@@ -108,6 +109,13 @@ export function usePendingNativeImports({
             {
               onComplete: () => {
                 void removePendingNativeImport(importPayload.id);
+              },
+              // The file is already in the drive on this server: the import has
+              // been dealt with, so it must not come back on every launch.
+              onSettled: (outcome, error) => {
+                if (outcome === "failed" && error instanceof DuplicateUploadError) {
+                  void removePendingNativeImport(importPayload.id);
+                }
               },
             },
           );

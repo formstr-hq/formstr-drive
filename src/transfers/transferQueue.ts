@@ -9,6 +9,7 @@ import { downloadFileStreaming } from "../services/downloadFile";
 import { downloadFileToDownloads, ensureNotificationPermission } from "../native/driveManifest";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
+import { DuplicateUploadError } from "../services/uploadErrors";
 import { type FileMetadata } from "../types/metadata";
 import { uploadDriver } from "./uploadDriver";
 import { nativeUploadDriver } from "./nativeUploadDriver";
@@ -139,6 +140,14 @@ async function startTransfer(id: string) {
     if (isAbortError(e)) {
       updateTransfer(id, { status: "cancelled", stage: "Cancelled" });
       if (job.kind === "upload") job.callbacks?.onSettled?.("cancelled", e);
+    } else if (e instanceof DuplicateUploadError) {
+      // Not a failure: the same file is already in the drive on this server and
+      // nothing was uploaded. A neutral row - no error, no Retry (retrying would
+      // just say the same thing) - that clears itself.
+      updateTransfer(id, { status: "cancelled", stage: undefined, error: undefined, note: "Already in your drive" });
+      if (job.kind === "upload") job.callbacks?.onSettled?.("failed", e);
+      jobs.delete(id);
+      scheduleRemoval(id, 8000);
     } else {
       const message = e instanceof Error ? e.message : String(e);
       updateTransfer(id, { status: "failed", stage: "Failed", error: message });

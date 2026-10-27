@@ -6,6 +6,7 @@ import { previewFile } from "../services/Preview/previewManager";
 import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive, hasSameSizeFile } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
+import { DuplicateUploadError } from "../services/uploadErrors";
 import { captureUploader, assertSameAccount } from "./accountGuard";
 import {
   showUploadNotification,
@@ -48,7 +49,7 @@ export async function uploadDriver(
     if (hasSameSizeFile(file.size)) {
       onProgress({ stage: "Checking for duplicates...", progress: 0 });
       plaintextHash = await computePlaintextHash(file, signal);
-      const candidate = findDuplicateByHash(plaintextHash);
+      const candidate = findDuplicateByHash(plaintextHash, servers[0], targetFolder);
       // findDuplicateByHash is a pure local-index lookup — confirm the blob it
       // points at is actually still on the server before reusing it. Skipping
       // this would let a stale/deleted blob mint a new metadata entry that's
@@ -56,32 +57,12 @@ export async function uploadDriver(
       duplicate = candidate && (await duplicateBlobIsLive(candidate)) ? candidate : undefined;
     }
 
+    // Already in the drive, on this same server, and still live there: say so
+    // instead of uploading it again or minting a second entry that points at
+    // the same blob. (The same bytes on a DIFFERENT server aren't a duplicate
+    // — findDuplicateByHash only matches the server being uploaded to.)
     if (duplicate) {
-      onProgress({ stage: "Saving metadata...", progress: 90 });
-      // Reuses every storage field verbatim (blobHash/chunkSize or legacy
-      // chunks, server(s), encryptionKey, previewHash) — it's the exact same
-      // underlying blob, so nothing needs re-uploading, only a fresh
-      // metadata event under this upload's own id/name/folder.
-      const metadata: FileMetadata = {
-        ...duplicate,
-        id: generateFileId(),
-        name: file.name,
-        folder: targetFolder,
-        uploadedAt: Date.now(),
-      };
-
-      assertSameAccount(uploaderPubkey);
-
-      const publishResult = await saveFileMetadata(metadata);
-      if (publishResult.accepted < publishResult.total) {
-        console.warn(`[Upload] Metadata saved to ${publishResult.accepted}/${publishResult.total} relays`);
-      }
-
-      onProgress({ stage: "Upload complete", progress: 100 });
-      if (isAndroidPlatform) {
-        void finishUploadNotification(uploadNotifId, file.name, true);
-      }
-      return metadata;
+      throw new DuplicateUploadError(duplicate.name, servers[0]);
     }
 
     const previewPromise = previewFile(file).catch((e: unknown) => {

@@ -119,7 +119,7 @@ function TransferRow({
     transfer.status === "failed"
       ? transfer.error || "Failed"
       : transfer.status === "cancelled"
-        ? "Cancelled"
+        ? transfer.note ?? "Cancelled"
         : transfer.stage || transfer.status;
   // A running stage gets animated dots (CSS) instead of its own static "...".
   const isActiveStage = transfer.status === "running" || transfer.status === "pending";

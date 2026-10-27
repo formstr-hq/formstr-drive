@@ -3,7 +3,7 @@ import { useFileIndex } from '../../hooks/useFileContext';
 import { useBlossomServer } from '../../hooks/useBlossomServer';
 import { queueUpload } from '../../transfers/transferQueue';
 import { useToast } from '../../hooks/useToast';
-import { AccountChangedError } from '../../services/uploadErrors';
+import { AccountChangedError, DuplicateUploadError } from '../../services/uploadErrors';
 
 interface UploadZoneProps {
   /** True while the drive is in a "degraded" (uncertain Drive Key / partial
@@ -44,6 +44,17 @@ export function UploadZone({ disabled = false }: UploadZoneProps) {
             // Not a server problem: choosing another server isn't the fix.
             if (error instanceof AccountChangedError) {
               toast.error(error.message, { duration: 10000 });
+              return;
+            }
+            // Not a server problem: the same file is already here on this
+            // server. Say so plainly - choosing another server isn't the fix.
+            if (error instanceof DuplicateUploadError) {
+              toast.info(
+                error.existingName === file.name
+                  ? `${error.message}`
+                  : `"${file.name}" is the same file as "${error.existingName}", which already exists in your drive on this server.`,
+                { duration: 8000 },
+              );
               return;
             }
             const raw = (error instanceof Error ? error.message : "The upload failed.").trim();

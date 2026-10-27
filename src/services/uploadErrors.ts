@@ -12,6 +12,30 @@ import { BlossomError } from "../blossom";
  */
 
 /**
+ * The file being uploaded is already in the drive on the server it would be
+ * uploaded to. Not a failure of the server — nothing is uploaded and no second
+ * entry is created; callers show it as "already exists" rather than as an
+ * upload error with advice to pick another server.
+ */
+export class DuplicateUploadError extends Error {
+  readonly existingName: string;
+  readonly server: string;
+
+  constructor(existingName: string, server: string) {
+    let host = server;
+    try {
+      host = new URL(server).host;
+    } catch {
+      // not a URL - show it as given
+    }
+    super(`"${existingName}" already exists in your drive on ${host}.`);
+    this.name = "DuplicateUploadError";
+    this.existingName = existingName;
+    this.server = server;
+  }
+}
+
+/**
  * The active account changed while an upload was running. Signing its metadata
  * would use the NEW account's Drive Key and save the file into the wrong
  * drive, so the upload stops before anything is signed or queued.
