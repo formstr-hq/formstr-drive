@@ -48,6 +48,19 @@ class SignerManager {
     return this.signer;
   }
 
+  private removedListeners = new Set<(pubkey: string) => void>();
+
+  /** Fires when an account is removed from this device (logout or removal),
+   *  with its pubkey — not on a switch or a lock, where the account stays. */
+  onAccountRemoved(listener: (pubkey: string) => void) {
+    this.removedListeners.add(listener);
+    return () => this.removedListeners.delete(listener);
+  }
+
+  private notifyRemoved(pubkey: string) {
+    for (const listener of this.removedListeners) listener(pubkey);
+  }
+
   private notify() {
     const pubkey = this.getPubkey();
     for (const listener of this.listeners) {
@@ -91,6 +104,7 @@ class SignerManager {
   async removeAccount(pubkey: string): Promise<void> {
     const signer = this.requireSigner();
     await signer.logout(pubkey);
+    this.notifyRemoved(pubkey);
   }
 
   isLocked(): boolean {
@@ -247,7 +261,9 @@ class SignerManager {
       return;
     }
 
+    const removed = this.getPubkey();
     await this.signer.logout();
+    if (removed) this.notifyRemoved(removed);
   }
 
   async getSigner(): Promise<NostrSigner> {
