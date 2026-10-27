@@ -206,7 +206,6 @@ function newSession(pubkey: string): Session {
 }
 
 function getSession(pubkey: string): Session {
-  knownAccounts.add(pubkey);
   if (!session || session.pubkey !== pubkey) {
     if (session?.sync.timer) clearTimeout(session.sync.timer);
     session = newSession(pubkey);
@@ -229,18 +228,27 @@ signerManager.onChange((pubkey) => {
     lastSetupStep = null;
   }
   if (!pubkey) decryptMemo.clear();
-  void forgetRemovedAccounts();
 });
 
-const knownAccounts = new Set<string>();
+// Logging out (or removing) an account takes ITS cached keys off this device —
+// driven by the signer's own removal event, not by diffing account lists, so it
+// holds on a cold start too and a storage hiccup can never wipe another
+// account's caches. The "created" marker stays: it is only evidence this
+// device has used Drive for that identity.
+signerManager.onAccountRemoved((removed) => {
+  for (const key of [...decryptMemo.keys()]) {
+    if (key.startsWith(`${removed}:`)) decryptMemo.delete(key);
+  }
+  if (session?.pubkey === removed) {
+    if (session.sync.timer) clearTimeout(session.sync.timer);
+    session = null;
+    inFlightResolve = null;
+    lastSetupStep = null;
+  }
+  void forgetAccountCaches(removed);
+});
 
-async function forgetRemovedAccounts(): Promise<void> {
-  const present = new Set(signerManager.listAccounts().map((a) => a.pubkey));
-  const removed = [...knownAccounts].filter((pk) => !present.has(pk));
-  present.forEach((pk) => knownAccounts.add(pk));
-  if (removed.length === 0) return;
-  removed.forEach((pk) => knownAccounts.delete(pk));
-
+async function forgetAccountCaches(removed: string): Promise<void> {
   for (const [key, legacyField] of [
     [STORAGE_KEYS.DRIVE_KEY_CACHE, "payloads"],
     [STORAGE_KEYS.DRIVE_PUBKEY_CACHE, "drivePubkeys"],
@@ -248,7 +256,7 @@ async function forgetRemovedAccounts(): Promise<void> {
     try {
       const stored = await getStoredItem<unknown>(key, null);
       const accounts = readAllAccountEntries<unknown>(stored, legacyField);
-      removed.forEach((pk) => delete accounts[pk]);
+      delete accounts[removed];
       if (Object.keys(accounts).length === 0) await removeStoredItem(key);
       else await setStoredItem(key, { version: 2, accounts });
     } catch (e) {
@@ -1224,7 +1232,10 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
   try {
     return await withDriveKeyWriteLock(pubkey, async () => {
       const signer = await signerManager.getSigner();
-      if ((await signer.getPublicKey()) !== pubkey) return { ok: true }; // switched mid-flight
+      if ((await signer.getPublicKey()) !== pubkey) {
+        emitSetupProgress("stopped");
+        return { ok: true }; // switched mid-flight
+      }
       const s = getSession(pubkey);
 
       // Always a fresh resolve, right here inside the lock — never a cached
@@ -1233,8 +1244,18 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
       // relays) instead of creating a second one. Its `emptyRelays` are the
       // write targets.
       const status = await resolveDriveKeyStatus({ ignoreDeviceHistory: options.userRequested });
-      if (status.kind === "ready") return { ok: true };
-      if (status.kind === "unresolved") return { ok: false, reason: status.reason, issue: status.issue };
+      // Every way out of here reports an end to the onboarding, so it can never
+      // be left on screen: a key that turned up (another tab created it, or the
+      // relays answered after all) is "found", anything unresolved is "stopped".
+      if (status.kind === "ready") {
+        emitSetupProgress("found");
+        emitSetupProgress("ready");
+        return { ok: true };
+      }
+      if (status.kind === "unresolved") {
+        emitSetupProgress("stopped");
+        return { ok: false, reason: status.reason, issue: status.issue };
+      }
 
       const secretKeyHex = bytesToHex(generateSecretKey());
       console.log("[DriveKey] Creating a new Drive Key");

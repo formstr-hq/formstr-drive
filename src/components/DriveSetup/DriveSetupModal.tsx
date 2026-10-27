@@ -14,6 +14,8 @@ const SHOW_DELAY_MS = 600;
 const MIN_VISIBLE_MS = 800;
 const READY_HOLD_MS = 900;
 const EXIT_MS = 200;
+// If no end is ever reported, never leave a full-screen modal up forever.
+const SAFETY_TIMEOUT_MS = 90_000;
 
 type Phase = "hidden" | "open" | "closing";
 type KeyStep = "found" | "creating" | null;
@@ -76,6 +78,7 @@ export function DriveSetupModal() {
             openedAt = Date.now();
             setPhase("open");
           }, SHOW_DELAY_MS);
+          later(() => close(0), SAFETY_TIMEOUT_MS);
           return;
         case "found":
           setKeyStep((current) => current ?? "found");
