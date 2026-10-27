@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 import { dataLayer, type Event } from "@formstr/local-relay";
@@ -14,6 +15,7 @@ import {
 } from "../utils/persistence";
 import { observeServerList, publishServerList } from "../services/blossomServerList";
 import { useProfileContext } from "../hooks/useProfileContext";
+import { setUploadServerResolver } from "../transfers/transferQueue";
 
 const DEFAULT_SERVERS = [
   "https://nostr.download",
@@ -64,9 +66,6 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   );
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
-  // Accounts already asked this session, so "Not now" isn't followed by the
-  // prompt popping straight back up.
-  const [promptedFor, setPromptedFor] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Whose custom servers and selection `servers` / `selectedServer` currently
@@ -261,18 +260,23 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
 
   const needsServerChoice = !!pubkey && settingsOwner === pubkey && !selectedServer;
 
-  // Ask once per account per session, a moment after the drive comes up.
-  useEffect(() => {
-    if (!needsServerChoice || !pubkey || promptedFor.has(pubkey)) return;
-    const timer = setTimeout(() => {
-      setPromptedFor((prev) => new Set(prev).add(pubkey));
-      setChooserOpen(true);
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [needsServerChoice, pubkey, promptedFor]);
-
   const openServerChooser = useCallback(() => setChooserOpen(true), []);
   const closeServerChooser = useCallback(() => setChooserOpen(false), []);
+
+  // A retried upload follows the user's current choice (see transferQueue).
+  // Not registered while this provider's settings belong to nobody.
+  const selectedServerRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedServerRef.current = settingsOwner === pubkey ? selectedServer : null;
+  }, [selectedServer, settingsOwner, pubkey]);
+  useEffect(
+    () =>
+      setUploadServerResolver({
+        current: () => selectedServerRef.current,
+        ask: () => setChooserOpen(true),
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!pubkey || settingsOwner !== pubkey) return;

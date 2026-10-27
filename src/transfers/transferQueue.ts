@@ -57,6 +57,22 @@ type Job = DownloadJob | UploadJob;
 // Runtime-only job data (File objects, callbacks) kept out of the display store.
 const jobs = new Map<string, Job>();
 
+// Where uploads go is the user's CURRENT choice, which can change after a job
+// was queued (typically right after it failed: "choose another server"). A
+// retry must follow it instead of replaying the server captured at queue time.
+// Registered by the server provider; `ask` opens the chooser when none is set.
+interface UploadServerResolver {
+  current: () => string | null;
+  ask: () => void;
+}
+let uploadServerResolver: UploadServerResolver | null = null;
+export function setUploadServerResolver(resolver: UploadServerResolver): () => void {
+  uploadServerResolver = resolver;
+  return () => {
+    if (uploadServerResolver === resolver) uploadServerResolver = null;
+  };
+}
+
 // Listeners notified when any upload completes successfully, so the file index
 // can insert the new file optimistically instead of waiting on the relay tail.
 const uploadCompleteListeners = new Set<(metadata: FileMetadata) => void>();
@@ -262,6 +278,17 @@ export function retryTransfer(id: string): boolean {
   const job = jobs.get(id);
   if (!item || !job) return false;
   if (item.status !== "failed" && item.status !== "cancelled") return false;
+
+  if (job.kind === "upload" && uploadServerResolver) {
+    const server = uploadServerResolver.current();
+    if (!server) {
+      // Nothing is chosen (any more): ask, rather than retrying somewhere else.
+      uploadServerResolver.ask();
+      return false;
+    }
+    job.server = server;
+    job.candidateServers = [server];
+  }
 
   const timer = removalTimers.get(id);
   if (timer) {

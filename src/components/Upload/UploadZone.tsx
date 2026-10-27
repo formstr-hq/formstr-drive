@@ -3,6 +3,7 @@ import { useFileIndex } from '../../hooks/useFileContext';
 import { useBlossomServer } from '../../hooks/useBlossomServer';
 import { queueUpload } from '../../transfers/transferQueue';
 import { useToast } from '../../hooks/useToast';
+import { AccountChangedError } from '../../services/uploadErrors';
 
 interface UploadZoneProps {
   /** True while the drive is in a "degraded" (uncertain Drive Key / partial
@@ -40,6 +41,11 @@ export function UploadZone({ disabled = false }: UploadZoneProps) {
           // say what to do about it. Say why it failed and offer the way out.
           onSettled: (outcome, error) => {
             if (outcome !== "failed") return;
+            // Not a server problem: choosing another server isn't the fix.
+            if (error instanceof AccountChangedError) {
+              toast.error(error.message, { duration: 10000 });
+              return;
+            }
             const raw = (error instanceof Error ? error.message : "The upload failed.").trim();
             const reason = /[.!?]$/.test(raw) ? raw : `${raw}.`;
             toast.error(`${reason} Choose another server, then upload "${file.name}" again.`, {

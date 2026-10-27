@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useBlossomServer } from "../../hooks/useBlossomServer";
+import { useFileIndex } from "../../hooks/useFileContext";
+import { useProfileContext } from "../../hooks/useProfileContext";
 import {
   formatLimit,
   getServerLimitsSnapshot,
@@ -8,6 +10,9 @@ import {
   subscribeServerLimits,
 } from "../../services/serverLimits";
 import "./ServerChooserModal.css";
+
+// After the drive reports ready: past the setup dialog's own closing hold.
+const AUTO_OPEN_DELAY_MS = 1800;
 
 function hostOf(url: string): string {
   try {
@@ -24,8 +29,18 @@ function hostOf(url: string): string {
  * and whenever they try to upload without one.
  */
 export function ServerChooserModal() {
-  const { servers, selectedServer, setSelectedServer, addCustomServer, chooserOpen, closeServerChooser } =
-    useBlossomServer();
+  const {
+    servers,
+    selectedServer,
+    setSelectedServer,
+    addCustomServer,
+    chooserOpen,
+    openServerChooser,
+    closeServerChooser,
+    needsServerChoice,
+  } = useBlossomServer();
+  const { driveStatus } = useFileIndex();
+  const { pubkey } = useProfileContext();
   const limits = useSyncExternalStore(subscribeServerLimits, getServerLimitsSnapshot);
   // The user's pick in this dialog; null means "nothing changed yet" (show the
   // current selection, if any).
@@ -35,6 +50,19 @@ export function ServerChooserModal() {
   const selectRef = useRef<HTMLSelectElement>(null);
 
   const choice = picked ?? selectedServer ?? "";
+
+  // Ask once per account per session, but only once the drive itself has
+  // finished coming up - never on top of the drive-key setup, which has the
+  // screen until then (and for a moment after it reaches "ready").
+  const askedFor = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!needsServerChoice || !pubkey || driveStatus !== "ready" || askedFor.current.has(pubkey)) return;
+    const timer = setTimeout(() => {
+      askedFor.current.add(pubkey);
+      openServerChooser();
+    }, AUTO_OPEN_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [needsServerChoice, pubkey, driveStatus, openServerChooser]);
 
   const close = () => {
     setPicked(null);
