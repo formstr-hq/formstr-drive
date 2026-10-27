@@ -9,6 +9,8 @@ import "../components/SignIn/SignIn.css";
 interface Pending extends Partial<LockInfo> {
   pubkey: string;
   reason: LockReason;
+  /** An account to remove once this switch has actually happened. */
+  removeAfter?: string;
 }
 
 /**
@@ -17,24 +19,50 @@ interface Pending extends Partial<LockInfo> {
  * key, a reachable signer) a full-screen prompt asks for it on an opaque
  * backdrop — nothing of the current drive shows behind it — and Cancel leaves
  * you on the account you were on.
+ *
+ * `signOut` removes an account from this device. If it is the one you're on and
+ * another account remains, it moves you to that account first - you only reach
+ * the login screen when there is nobody left to be.
  */
-export function useAccountSwitcher(): { switchTo: (pubkey: string) => Promise<void>; dialog: ReactNode } {
-  const { switchAccount, unlockAndSwitch } = useProfileContext();
+export function useAccountSwitcher(): {
+  switchTo: (pubkey: string, removeAfter?: string) => Promise<void>;
+  signOut: (pubkey: string) => Promise<void>;
+  dialog: ReactNode;
+} {
+  const { pubkey: activePubkey, accounts, switchAccount, unlockAndSwitch, removeAccount } = useProfileContext();
   const toast = useToast();
   const [pending, setPending] = useState<Pending | null>(null);
 
   const switchTo = useCallback(
-    async (pubkey: string) => {
+    async (pubkey: string, removeAfter?: string) => {
       try {
         const result = await switchAccount(pubkey);
-        if (!result.ok) {
-          setPending({ pubkey, reason: result.need, extensionPubkey: result.extensionPubkey });
+        if (result.ok) {
+          if (removeAfter) await removeAccount(removeAfter);
+        } else {
+          setPending({ pubkey, reason: result.need, extensionPubkey: result.extensionPubkey, removeAfter });
         }
       } catch (e) {
         toast.error(e instanceof Error && e.message ? e.message : "Couldn't switch account");
       }
     },
-    [switchAccount, toast],
+    [switchAccount, removeAccount, toast],
+  );
+
+  const signOut = useCallback(
+    async (pubkey: string) => {
+      const next = pubkey === activePubkey ? accounts.find((account) => account.pubkey !== pubkey) : undefined;
+      if (next) {
+        await switchTo(next.pubkey, pubkey);
+        return;
+      }
+      try {
+        await removeAccount(pubkey);
+      } catch (e) {
+        toast.error(e instanceof Error && e.message ? e.message : "Couldn't remove account");
+      }
+    },
+    [activePubkey, accounts, switchTo, removeAccount, toast],
   );
 
   const dialog = pending
@@ -48,12 +76,17 @@ export function useAccountSwitcher(): { switchTo: (pubkey: string) => Promise<vo
               extensionPubkey={pending.extensionPubkey}
               onPassphrase={async (passphrase) => {
                 await unlockAndSwitch(pending.pubkey, passphrase);
+                if (pending.removeAfter) await removeAccount(pending.removeAfter);
                 setPending(null);
               }}
               onRetry={async () => {
                 const result = await switchAccount(pending.pubkey);
-                if (result.ok) setPending(null);
-                else setPending({ pubkey: pending.pubkey, reason: result.need, extensionPubkey: result.extensionPubkey });
+                if (result.ok) {
+                  if (pending.removeAfter) await removeAccount(pending.removeAfter);
+                  setPending(null);
+                } else {
+                  setPending({ ...pending, reason: result.need, extensionPubkey: result.extensionPubkey });
+                }
               }}
             >
               <button type="button" className="sign-in-link-btn" onClick={() => setPending(null)}>
@@ -66,5 +99,5 @@ export function useAccountSwitcher(): { switchTo: (pubkey: string) => Promise<vo
       )
     : null;
 
-  return { switchTo, dialog };
+  return { switchTo, signOut, dialog };
 }

@@ -91,12 +91,12 @@ const AccountRow = memo(function AccountRow({
 });
 
 export function ProfileMenu() {
-  const { pubkey, logout, requestPubkey, accounts, removeAccount } =
+  const { pubkey, requestPubkey, accounts } =
     useProfileContext();
   const { theme, toggleTheme, palette, setPalette } = useTheme();
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
   const serverLimits = useSyncExternalStore(subscribeServerLimits, getServerLimitsSnapshot);
-  const { switchTo, dialog: switchDialog } = useAccountSwitcher();
+  const { switchTo, signOut, dialog: switchDialog } = useAccountSwitcher();
   const [open, setOpen] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
@@ -128,9 +128,9 @@ export function ProfileMenu() {
 
   const handleRemoveAccount = useCallback(
     (accountPubkey: string) => {
-      void removeAccount(accountPubkey);
+      void signOut(accountPubkey);
     },
-    [removeAccount]
+    [signOut]
   );
 
   const handleAddCustomServer = () => {
@@ -189,7 +189,7 @@ export function ProfileMenu() {
                 <button
                   className="profile-menu-row-btn profile-menu-row-btn--danger"
                   onClick={() => {
-                    void logout();
+                    if (pubkey) void signOut(pubkey);
                     setOpen(false);
                   }}
                 >
@@ -203,7 +203,7 @@ export function ProfileMenu() {
                 <button
                   className="profile-menu-row-btn"
                   onClick={() => {
-                    void logout();
+                    void signOut(pubkey);
                     setOpen(false);
                   }}
                 >

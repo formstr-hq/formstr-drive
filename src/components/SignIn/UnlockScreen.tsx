@@ -14,8 +14,8 @@ function shortNpub(pubkey: string): string {
  * out: pick another account, or remove this one on purpose.
  */
 export function UnlockScreen() {
-  const { pubkey, lockInfo, unlockWithPassphrase, retryUnlock, accounts, logout } = useProfileContext();
-  const { switchTo, dialog } = useAccountSwitcher();
+  const { pubkey, lockInfo, unlockWithPassphrase, retryUnlock, accounts } = useProfileContext();
+  const { switchTo, signOut, dialog } = useAccountSwitcher();
 
   if (!pubkey) return null;
   const others = accounts.filter((account) => account.pubkey !== pubkey);
@@ -46,7 +46,7 @@ export function UnlockScreen() {
             ))}
           </div>
         )}
-        <button type="button" className="sign-in-link-btn unlock-remove" onClick={() => void logout()}>
+        <button type="button" className="sign-in-link-btn unlock-remove" onClick={() => void signOut(pubkey)}>
           Remove this account from this device
         </button>
       </AccountLockPrompt>
