@@ -58,35 +58,58 @@ function storageKeyOwner(): string | undefined {
   return signerManager.getPubkey();
 }
 
-async function loadEntries(owner: string): Promise<OutboxEntry[]> {
+// One entry list PER account: { version: 2, accounts: { [pubkey]: entries } }.
+// A single slot meant the next account to queue or drain overwrote another
+// account's still-queued writes. The old single-slot shape, { pubkey, entries },
+// is read as that one account's list and rewritten as v2 on the next save.
+function readAccounts(stored: unknown): Record<string, OutboxEntry[]> {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const obj = stored as {
+    version?: number;
+    accounts?: Record<string, OutboxEntry[]>;
+    pubkey?: string;
+    entries?: OutboxEntry[];
+  };
+  if (obj.version === 2 && obj.accounts && typeof obj.accounts === "object") return { ...obj.accounts };
+  if (typeof obj.pubkey === "string" && Array.isArray(obj.entries)) return { [obj.pubkey]: obj.entries };
+  return {};
+}
+
+async function loadAccounts(): Promise<Record<string, OutboxEntry[]>> {
   const stored = await withTimeout(
     getStoredItem<unknown>(STORAGE_KEYS.METADATA_OUTBOX, null),
     IO_TIMEOUT_MS,
     null,
   );
-
-  if (
-    stored &&
-    typeof stored === "object" &&
-    !Array.isArray(stored) &&
-    (stored as { pubkey?: string }).pubkey === owner &&
-    Array.isArray((stored as { entries?: unknown }).entries)
-  ) {
-    return (stored as { entries: OutboxEntry[] }).entries;
-  }
-  return [];
+  return readAccounts(stored);
 }
 
-async function persistEntries(owner: string, entries: OutboxEntry[]): Promise<void> {
+async function loadEntries(owner: string): Promise<OutboxEntry[]> {
+  const list = (await loadAccounts())[owner];
+  return Array.isArray(list) ? list : [];
+}
+
+async function writeAccounts(accounts: Record<string, OutboxEntry[]>): Promise<void> {
   try {
-    await withTimeout(
-      setStoredItem(STORAGE_KEYS.METADATA_OUTBOX, { pubkey: owner, entries }),
-      IO_TIMEOUT_MS,
-      undefined,
-    );
+    if (Object.keys(accounts).length === 0) {
+      await withTimeout(removeStoredItem(STORAGE_KEYS.METADATA_OUTBOX), IO_TIMEOUT_MS, undefined);
+    } else {
+      await withTimeout(
+        setStoredItem(STORAGE_KEYS.METADATA_OUTBOX, { version: 2, accounts }),
+        IO_TIMEOUT_MS,
+        undefined,
+      );
+    }
   } catch (e) {
     console.warn("[MetadataOutbox] Failed to persist outbox", e);
   }
+}
+
+async function persistEntries(owner: string, entries: OutboxEntry[]): Promise<void> {
+  const accounts = await loadAccounts();
+  if (entries.length === 0) delete accounts[owner];
+  else accounts[owner] = entries;
+  await writeAccounts(accounts);
 }
 
 // Serialize all read-modify-write access to the persisted list: uploads are
@@ -360,12 +383,20 @@ export async function getMetadataOutboxSize(): Promise<number> {
   return (await loadEntries(owner)).length;
 }
 
-// Clear on logout, matching the Drive Key caches — a queued write must never
-// leak across an account switch on a shared device.
-let lastKnownOwner: string | undefined;
+// An account that is no longer on this device takes its queued writes with it,
+// matching the Drive Key caches - and ONLY its own: other accounts' queued
+// writes are untouched. Only runs once an account has been seen this session
+// (so a not-yet-loaded account list can never look like "everyone is gone").
+let sawAnAccount = false;
 signerManager.onChange((pubkey) => {
-  if (!pubkey && lastKnownOwner) {
-    void removeStoredItem(STORAGE_KEYS.METADATA_OUTBOX);
-  }
-  lastKnownOwner = pubkey ?? undefined;
+  if (pubkey) sawAnAccount = true;
+  if (!sawAnAccount) return;
+  const present = new Set(signerManager.listAccounts().map((a) => a.pubkey));
+  void withIoLock(async () => {
+    const accounts = await loadAccounts();
+    const gone = Object.keys(accounts).filter((owner) => !present.has(owner));
+    if (gone.length === 0) return;
+    gone.forEach((owner) => delete accounts[owner]);
+    await writeAccounts(accounts);
+  });
 });

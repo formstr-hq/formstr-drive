@@ -35,6 +35,21 @@ export class DuplicateUploadError extends Error {
   }
 }
 
+/**
+ * The active account changed while an upload was running. Signing its metadata
+ * would use the NEW account's Drive Key and save the file into the wrong
+ * drive, so the upload stops before anything is signed or queued.
+ */
+export class AccountChangedError extends Error {
+  constructor() {
+    super(
+      "The account changed while this file was uploading, so it wasn't saved. " +
+        "Switch back to the original account and upload it again.",
+    );
+    this.name = "AccountChangedError";
+  }
+}
+
 export type UploadFailureKind =
   | "rejected-too-large"
   | "rejected-auth"

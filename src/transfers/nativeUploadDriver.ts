@@ -20,6 +20,7 @@ import { createAuthEvent, BACKGROUND_UPLOAD_AUTH_EXPIRATION_SECONDS } from "../a
 import { APP_RELAYS, defaultRelays, mergeRelayLists } from "../utils/common";
 import { isAbortError } from "../utils/abortError";
 import { signerManager } from "../signer/manager";
+import { assertSameAccount } from "./accountGuard";
 import { describeAllServersFailed, DuplicateUploadError } from "../services/uploadErrors";
 import {
   cancelNativeUpload,
@@ -110,6 +111,8 @@ export async function nativeUploadDriver(
     survivesAppClose?: boolean;
   }) => void,
 ): Promise<FileMetadata> {
+  // Whose upload this is — the active account can change while it runs.
+  const uploaderPubkey = signerManager.getPubkey();
   // NIP-FS client-level dedup: the encrypted blobHash is unique per upload
   // (fresh ephemeral key + nonces every time), so it can never catch a
   // re-upload of identical content — only the plaintext hash can. Checked
@@ -180,8 +183,6 @@ export async function nativeUploadDriver(
     }
   });
 
-  // Whose upload this is — the active account can change while it runs.
-  const uploaderPubkey = signerManager.getPubkey();
   let queuedEvent: Event | null = null;
   let metadataByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
 
@@ -287,6 +288,9 @@ export async function nativeUploadDriver(
     // One pre-signed metadata event per candidate. The worker publishes the one
     // matching the server the blobs actually landed on — the whole reason a
     // background upload can fall back without a signer being available.
+    // Signing uses whichever Drive Key is active right now - it must still be
+    // the account that started this upload.
+    assertSameAccount(uploaderPubkey);
     metadataByServer = new Map<string, { metadata: FileMetadata; event: Event }>();
     const metadataEvents: NativeUploadMetadataEvent[] = [];
     for (const server of servers) {
