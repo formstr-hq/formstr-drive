@@ -6,6 +6,7 @@ import { previewFile } from "../services/Preview/previewManager";
 import { saveFileMetadata, findDuplicateByHash, duplicateBlobIsLive, hasSameSizeFile } from "../services/fileIndex";
 import { isAndroidPlatform } from "../utils/platform";
 import { isAbortError } from "../utils/abortError";
+import { captureUploader, assertSameAccount } from "./accountGuard";
 import {
   showUploadNotification,
   finishUploadNotification,
@@ -22,6 +23,8 @@ export async function uploadDriver(
 ): Promise<FileMetadata> {
   const uploadNotifId = crypto.randomUUID();
   let lastNotifPercent = -1;
+  // Whose upload this is - the active account can change while it runs.
+  const uploaderPubkey = captureUploader();
 
   if (isAndroidPlatform) {
     await ensureNotificationPermission();
@@ -66,6 +69,8 @@ export async function uploadDriver(
         folder: targetFolder,
         uploadedAt: Date.now(),
       };
+
+      assertSameAccount(uploaderPubkey);
 
       const publishResult = await saveFileMetadata(metadata);
       if (publishResult.accepted < publishResult.total) {
@@ -133,6 +138,8 @@ export async function uploadDriver(
       encryptionKey: privateKeyHex,
       encryptionAlgorithm: "aes-gcm",
     };
+
+    assertSameAccount(uploaderPubkey);
 
     const publishResult = await saveFileMetadata(metadata);
     if (publishResult.accepted < publishResult.total) {

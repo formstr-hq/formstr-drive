@@ -116,13 +116,19 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   // belongs to whichever account is active the first time it's read.
   useEffect(() => {
     if (restoring) return;
-    if (!pubkey) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when the active account changes
+
+    // Whatever the previous account had — its custom servers and its selection
+    // — must not outlive the switch, not even for the moment the new account's
+    // settings are loading, and not if loading them fails: uploads would go
+    // to the previous account's server under the new account's auth. Reset
+    // first, synchronously, then load.
+    const resetSettings = () => {
       setSettingsOwner(null);
       setServers((prev) => prev.filter((s) => s.source !== "custom"));
       setSelectedServer(DEFAULT_SERVERS[0]);
-      return;
-    }
+    };
+    resetSettings();
+    if (!pubkey) return;
 
     let cancelled = false;
     void (async () => {
@@ -162,6 +168,8 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
         console.error("Failed to load server settings:", e);
         if (!cancelled) {
           setError("Failed to load your server settings");
+          // Defaults, never the previous account's state.
+          resetSettings();
           setSettingsOwner(pubkey);
         }
       }
