@@ -1,84 +1,56 @@
-import { useState } from "react";
 import { nip19 } from "nostr-tools";
 import { useProfileContext } from "../../hooks/useProfileContext";
+import { useAccountSwitcher } from "../../hooks/useAccountSwitcher";
+import { AccountLockPrompt } from "./AccountLockPrompt";
 
+function shortNpub(pubkey: string): string {
+  const npub = nip19.npubEncode(pubkey);
+  return `${npub.slice(0, 12)}…${npub.slice(-6)}`;
+}
+
+/**
+ * Shown on a cold start when the account you were last on can't sign yet. It is
+ * never shown for a switch (see useAccountSwitcher) - and it always has a way
+ * out: pick another account, or remove this one on purpose.
+ */
 export function UnlockScreen() {
-  const { pubkey, unlockWithPassphrase, logout } = useProfileContext();
-  const [passphrase, setPassphrase] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { pubkey, lockInfo, unlockWithPassphrase, retryUnlock, accounts, logout } = useProfileContext();
+  const { switchTo, dialog } = useAccountSwitcher();
 
-  const npub = pubkey ? nip19.npubEncode(pubkey) : "";
-  const shortNpub = npub ? `${npub.slice(0, 12)}…${npub.slice(-6)}` : "";
-
-  const handleUnlock = async () => {
-    if (!passphrase) {
-      setError("Enter your passphrase");
-      return;
-    }
-
-    setError(null);
-    setLoading(true);
-
-    try {
-      await unlockWithPassphrase(passphrase);
-    } catch (unlockError) {
-      setError(
-        unlockError instanceof Error
-          ? unlockError.message
-          : "Incorrect passphrase",
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+  if (!pubkey) return null;
+  const others = accounts.filter((account) => account.pubkey !== pubkey);
 
   return (
     <div className="sign-in-container">
-      <div className="sign-in-card">
-        <h1>Unlock your key</h1>
-        <p className="sign-in-subtitle">Signed in as {shortNpub}</p>
-
-        <div className="sign-in-method-section sign-in-secondary-section">
-          <div className="sign-in-input-column">
-            <input
-              className="sign-in-text-input"
-              type="password"
-              value={passphrase}
-              onChange={(event) => setPassphrase(event.target.value)}
-              placeholder="Passphrase"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              disabled={loading}
-              autoFocus
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void handleUnlock();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="sign-in-btn sign-in-btn-block"
-              onClick={() => void handleUnlock()}
-              disabled={loading || !passphrase}
-            >
-              {loading ? "Unlocking..." : "Unlock"}
-            </button>
+      <AccountLockPrompt
+        pubkey={pubkey}
+        reason={lockInfo?.reason ?? "passphrase"}
+        extensionPubkey={lockInfo?.extensionPubkey}
+        onPassphrase={async (passphrase) => {
+          await unlockWithPassphrase(passphrase);
+        }}
+        onRetry={retryUnlock}
+      >
+        {others.length > 0 && (
+          <div className="unlock-other-accounts">
+            <p className="unlock-other-accounts-label">Use another account</p>
+            {others.map((account) => (
+              <button
+                key={account.pubkey}
+                type="button"
+                className="sign-in-btn sign-in-btn-block unlock-other-account"
+                onClick={() => void switchTo(account.pubkey)}
+              >
+                {shortNpub(account.pubkey)}
+              </button>
+            ))}
           </div>
-        </div>
-
-        <button
-          type="button"
-          className="sign-in-link-btn"
-          onClick={() => void logout()}
-        >
-          Log out and use another account
+        )}
+        <button type="button" className="sign-in-link-btn unlock-remove" onClick={() => void logout()}>
+          Remove this account from this device
         </button>
-
-        {error && <p className="sign-in-error">{error}</p>}
-      </div>
+      </AccountLockPrompt>
+      {dialog}
     </div>
   );
 }
