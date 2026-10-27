@@ -80,93 +80,105 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   const [selectedServer, setSelectedServer] = useState(DEFAULT_SERVERS[0]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  // Whose custom servers and selection `servers` / `selectedServer` currently
+  // hold. They belong to one account: a server added or synced for one identity
+  // must never show up under — or, worse, be published in the server list of —
+  // another identity on the same device.
+  const [settingsOwner, setSettingsOwner] = useState<string | null>(null);
 
+  // Public Blossom server lists (kind 36363) — discovery, the same for everyone.
+  // Cache replay makes them available instantly on repeat loads and the live
+  // tail keeps finding new ones; deduped against whatever is already listed.
   useEffect(() => {
     let cancelled = false;
-    let unobserve: (() => void) | null = null;
+    const handle = dataLayer.observe([{ kinds: [36363], limit: 50 }], {
+      onEvent: (event: Event) => {
+        if (cancelled) return;
+        const dTag = event.tags.find((t) => t[0] === "d");
+        if (!dTag?.[1]) return;
+        const url = normalizeServerUrl(dTag[1]);
+        setServers((prev) =>
+          prev.some((s) => s.url === url) ? prev : [...prev, { url, source: "relay" }],
+        );
+      },
+      onEose: () => {
+        if (!cancelled) setLoading(false);
+      },
+    });
+    return () => {
+      cancelled = true;
+      handle.unobserve();
+    };
+  }, []);
 
-    const queryServers = async () => {
+  // This account's own custom servers and selected server. Stored per identity
+  // ({ [pubkey]: … }); the first release kept one device-wide value, which
+  // belongs to whichever account is active the first time it's read.
+  useEffect(() => {
+    if (restoring) return;
+
+    // Whatever the previous account had — its custom servers and its selection
+    // — must not outlive the switch, not even for the moment the new account's
+    // settings are loading, and not if loading them fails: uploads would go
+    // to the previous account's server under the new account's auth. Reset
+    // first, synchronously, then load.
+    const resetSettings = () => {
+      setSettingsOwner(null);
+      setServers((prev) => prev.filter((s) => s.source !== "custom"));
+      setSelectedServer(DEFAULT_SERVERS[0]);
+    };
+    resetSettings();
+    if (!pubkey) return;
+
+    let cancelled = false;
+    void (async () => {
       try {
-        const storedCustomServers = await getStoredItem<string[]>(
-          STORAGE_KEYS.CUSTOM_SERVERS,
-          [],
+        const storedCustom = await getStoredItem<unknown>(STORAGE_KEYS.CUSTOM_SERVERS, null);
+        const storedSelected = await getStoredItem<unknown>(STORAGE_KEYS.SELECTED_SERVER, null);
+        const pick = <T,>(stored: unknown, isLegacy: (v: unknown) => boolean): T | undefined => {
+          if (isLegacy(stored)) return stored as T;
+          if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+            return (stored as Record<string, T>)[pubkey];
+          }
+          return undefined;
+        };
+        const customUrls = pick<string[]>(storedCustom, Array.isArray) ?? [];
+        const selected = normalizeServerUrl(
+          pick<string>(storedSelected, (v) => typeof v === "string") ?? DEFAULT_SERVERS[0],
         );
-        const storedSelectedServer = normalizeServerUrl(
-          await getStoredItem<string>(
-            STORAGE_KEYS.SELECTED_SERVER,
-            DEFAULT_SERVERS[0],
-          ),
-        );
+        if (cancelled) return;
 
-        const customServers = storedCustomServers.map((url) => ({
+        const custom = customUrls.map((url) => ({
           url: normalizeServerUrl(url),
           source: "custom" as const,
         }));
-        const ensuredCustomServers = customServers.some(
-          (server) => server.url === storedSelectedServer,
-        )
-          ? customServers
-          : DEFAULT_SERVERS.includes(storedSelectedServer)
-            ? customServers
-            : [
-                ...customServers,
-                { url: storedSelectedServer, source: "custom" as const },
-              ];
+        const ensured =
+          custom.some((c) => c.url === selected) || DEFAULT_SERVERS.includes(selected)
+            ? custom
+            : [...custom, { url: selected, source: "custom" as const }];
 
-        if (cancelled) return;
-        setServers([
-          ...DEFAULT_SERVERS.map((url) => ({
-            url,
-            source: "default" as const,
-          })),
-          ...ensuredCustomServers,
-        ]);
-        setSelectedServer(storedSelectedServer);
-        setSettingsLoaded(true);
-
-        // Standing interest in published Blossom server lists (kind 36363):
-        // cache replay makes them available instantly on repeat loads, and the
-        // live tail keeps discovering new ones. Dedupe against whatever is
-        // already in the list (defaults, customs, earlier discoveries).
-        const handle = dataLayer.observe(
-          [{ kinds: [36363], limit: 50 }],
-          {
-            onEvent: (event: Event) => {
-              if (cancelled) return;
-              const dTag = event.tags.find((t) => t[0] === "d");
-              if (!dTag?.[1]) return;
-              const url = normalizeServerUrl(dTag[1]);
-              setServers((prev) =>
-                prev.some((s) => s.url === url)
-                  ? prev
-                  : [...prev, { url, source: "relay" }],
-              );
-            },
-            onEose: () => {
-              if (!cancelled) setLoading(false);
-            },
-          },
-        );
-        unobserve = () => {
-          handle.unobserve();
-        };
+        setServers((prev) => {
+          const kept = prev.filter((s) => s.source !== "custom");
+          const known = new Set(kept.map((s) => s.url));
+          return [...kept, ...ensured.filter((c) => !known.has(c.url))];
+        });
+        setSelectedServer(selected);
+        setSettingsOwner(pubkey);
       } catch (e) {
-        console.error("Failed to query relay servers:", e);
+        console.error("Failed to load server settings:", e);
         if (!cancelled) {
-          setError("Failed to fetch servers from relays");
-          setSettingsLoaded(true);
-          setLoading(false);
+          setError("Failed to load your server settings");
+          // Defaults, never the previous account's state.
+          resetSettings();
+          setSettingsOwner(pubkey);
         }
       }
-    };
+    })();
 
-    void queryServers();
     return () => {
       cancelled = true;
-      unobserve?.();
     };
-  }, []);
+  }, [pubkey, restoring]);
 
   // The user's own BUD-03 server list (kind 10063), so a server added on one
   // device shows up on all of them. Kept in its own effect, gated on `pubkey`
@@ -178,7 +190,7 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
   // `pubkey` instead means this activates the moment it's actually known, and
   // correctly re-subscribes under a switched account's own list.
   useEffect(() => {
-    if (restoring || !pubkey) return;
+    if (restoring || !pubkey || settingsOwner !== pubkey) return;
 
     const unobserveServerList = observeServerList(pubkey, (syncedUrls) => {
       setServers((prev) => {
@@ -196,7 +208,7 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
     });
 
     return unobserveServerList;
-  }, [pubkey, restoring]);
+  }, [pubkey, restoring, settingsOwner]);
 
   // Custom servers whose probe was inconclusive (offline when added, a timeout)
   // get another try. probeServerLimit no-ops for any server with a known limit
@@ -241,20 +253,31 @@ export function BlossomServerProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  useEffect(() => {
-    if (!settingsLoaded) return;
-    void setStoredItem(STORAGE_KEYS.SELECTED_SERVER, selectedServer);
-  }, [selectedServer, settingsLoaded]);
+  const saveForAccount = useCallback(async (key: string, value: unknown) => {
+    if (!pubkey) return;
+    const stored = await getStoredItem<unknown>(key, null);
+    const byAccount: Record<string, unknown> =
+      stored && typeof stored === "object" && !Array.isArray(stored)
+        ? { ...(stored as Record<string, unknown>) }
+        : {};
+    byAccount[pubkey] = value;
+    await setStoredItem(key, byAccount);
+  }, [pubkey]);
 
   useEffect(() => {
-    if (!settingsLoaded) return;
+    if (!pubkey || settingsOwner !== pubkey) return;
+    void saveForAccount(STORAGE_KEYS.SELECTED_SERVER, selectedServer);
+  }, [selectedServer, settingsOwner, pubkey, saveForAccount]);
+
+  useEffect(() => {
+    if (!pubkey || settingsOwner !== pubkey) return;
 
     const customServerUrls = servers
       .filter((server) => server.source === "custom")
       .map((server) => server.url);
 
-    void setStoredItem(STORAGE_KEYS.CUSTOM_SERVERS, customServerUrls);
-  }, [servers, settingsLoaded]);
+    void saveForAccount(STORAGE_KEYS.CUSTOM_SERVERS, customServerUrls);
+  }, [servers, settingsOwner, pubkey, saveForAccount]);
 
   return (
     <BlossomServerContext.Provider

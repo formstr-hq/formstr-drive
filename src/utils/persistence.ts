@@ -21,6 +21,9 @@ export const STORAGE_KEYS = {
   // in-memory per-session guard, since a reload must not re-attempt it.
   DRIVE_KEY_MINTED_MARKER: "formstr-drive-drive-key-minted",
   METADATA_OUTBOX: "formstr-drive-metadata-outbox",
+  // Which account first saw each pending Android import (import id -> pubkey),
+  // so an import queued for one account is never uploaded into another.
+  PENDING_IMPORT_OWNERS: "formstr-drive-pending-import-owners",
   PROFILE_CACHE: "formstr-drive-profile-cache",
 } as const;
 

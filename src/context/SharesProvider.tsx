@@ -32,19 +32,27 @@ const SharesContext = createContext<SharesApi | null>(null);
  * makes ShareModal's "does this already have a link" check fast on open.
  */
 export function SharesProvider({ children }: { children: ReactNode }) {
-  const { isSignedIn } = useProfileContext();
+  const { isSignedIn, pubkey } = useProfileContext();
   const [entries, setEntries] = useState<SharedByMeEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [version, setVersion] = useState(0);
 
+  // Keyed on the account, not just signed-in state: adding or switching
+  // accounts changes `pubkey` without ever being signed out in between, and
+  // the previous account's shares (and share badges) must not carry over.
   useEffect(() => {
-    if (!isSignedIn) {
+    if (!isSignedIn || !pubkey) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setEntries([]);
       setLoaded(false);
       setLoadedShareEntries(null);
       return;
     }
+    // Drop the previous account's list immediately instead of leaving it up
+    // until the new one finishes loading.
+    setEntries([]);
+    setLoaded(false);
+    setLoadedShareEntries(null);
     let cancelled = false;
     void loadSharedByMe()
       .then((result) => {
@@ -64,7 +72,7 @@ export function SharesProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isSignedIn, version]);
+  }, [isSignedIn, pubkey, version]);
 
   useEffect(() => {
     const onChanged = () => setVersion((v) => v + 1);

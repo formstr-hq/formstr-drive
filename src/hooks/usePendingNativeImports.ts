@@ -5,6 +5,7 @@ import {
   removePendingNativeImport,
 } from "../native/driveManifest";
 import { queueUpload } from "../transfers/transferQueue";
+import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import { getUploadCandidateServers, type ServerInfo } from "../Provider/BlossomServerProvider";
 
 interface PendingNativeImportsOptions {
@@ -55,11 +56,39 @@ export function usePendingNativeImports({
     processingRef.current = true;
     try {
       const pendingImports = await listPendingNativeImports();
+
+      // An import belongs to the account that first saw it. The native side
+      // doesn't say who shared a file, so the account that's active when it is
+      // first seen is the best answer - but from then on it is only ever
+      // uploaded for THAT account, never into whichever one is active after a
+      // switch. Entries for imports that are gone are pruned.
+      const stored = await getStoredItem<unknown>(STORAGE_KEYS.PENDING_IMPORT_OWNERS, null);
+      const owners: Record<string, string> =
+        stored && typeof stored === "object" && !Array.isArray(stored)
+          ? { ...(stored as Record<string, string>) }
+          : {};
+      const pendingIds = new Set(pendingImports.map((p) => p.id));
+      let ownersChanged = false;
+      for (const id of Object.keys(owners)) {
+        if (!pendingIds.has(id)) {
+          delete owners[id];
+          ownersChanged = true;
+        }
+      }
+      for (const { id } of pendingImports) {
+        if (!owners[id]) {
+          owners[id] = pubkey;
+          ownersChanged = true;
+        }
+      }
+      if (ownersChanged) await setStoredItem(STORAGE_KEYS.PENDING_IMPORT_OWNERS, owners);
+
       if (pendingImports.length === 0) {
         return;
       }
 
       for (const pendingImport of pendingImports) {
+        if (owners[pendingImport.id] !== pubkey) continue; // someone else's import
         const importPayload = await readPendingNativeImport(pendingImport.id);
         if (!importPayload) {
           continue;

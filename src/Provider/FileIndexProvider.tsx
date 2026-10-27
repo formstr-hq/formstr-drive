@@ -112,7 +112,13 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   const [currentFolder, setCurrentFolder] = useState("/");
   const [error, setError] = useState<string | null>(null);
   const [customFolders, setCustomFolders] = useState<string[]>([]);
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  // Custom (empty) folders belong to one account. `foldersOwner` is whose list
+  // `customFolders` currently holds, so a list loaded for one account is never
+  // saved under another while the active account changes.
+  const [foldersOwner, setFoldersOwner] = useState<string | null>(null);
+  // The account the file list currently shows, so a switch can drop the
+  // previous account's files before the new one's arrive.
+  const shownPubkeyRef = useRef<string | null>(null);
 
   // The raw signals driveStatus is computed from. None of these is
   // meaningful read alone — that was the problem with the flags they
@@ -187,22 +193,47 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
   }, [files, customFolders]);
 
   useEffect(() => {
-    const loadCustomFolders = async () => {
-      const storedCustomFolders = await getStoredItem<string[]>(
-        STORAGE_KEYS.CUSTOM_FOLDERS,
-        [],
-      );
-      setCustomFolders(storedCustomFolders);
-      setSettingsLoaded(true);
-    };
+    if (restoring) return;
+    if (!pubkey) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when the active account changes
+      setCustomFolders([]);
+      setFoldersOwner(null);
+      return;
+    }
 
-    void loadCustomFolders();
-  }, []);
+    let cancelled = false;
+    void (async () => {
+      const stored = await getStoredItem<unknown>(STORAGE_KEYS.CUSTOM_FOLDERS, null);
+      // The first release kept one list for the whole device. It belongs to
+      // whichever account is active the first time it's read — the only
+      // account that could have created it on a device with a single login.
+      const byAccount: Record<string, string[]> = Array.isArray(stored)
+        ? { [pubkey]: stored as string[] }
+        : stored && typeof stored === "object"
+          ? (stored as Record<string, string[]>)
+          : {};
+      if (cancelled) return;
+      setCustomFolders(Array.isArray(byAccount[pubkey]) ? byAccount[pubkey]! : []);
+      setFoldersOwner(pubkey);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pubkey, restoring]);
 
   useEffect(() => {
-    if (!settingsLoaded) return;
-    void setStoredItem(STORAGE_KEYS.CUSTOM_FOLDERS, customFolders);
-  }, [customFolders, settingsLoaded]);
+    if (!pubkey || foldersOwner !== pubkey) return;
+    void (async () => {
+      const stored = await getStoredItem<unknown>(STORAGE_KEYS.CUSTOM_FOLDERS, null);
+      const byAccount: Record<string, string[]> =
+        stored && typeof stored === "object" && !Array.isArray(stored)
+          ? { ...(stored as Record<string, string[]>) }
+          : {};
+      byAccount[pubkey] = customFolders;
+      await setStoredItem(STORAGE_KEYS.CUSTOM_FOLDERS, byAccount);
+    })();
+  }, [customFolders, foldersOwner, pubkey]);
 
   const addCustomFolder = useCallback((path: string) => {
     setCustomFolders((prev) => {
@@ -222,6 +253,7 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       // (possibly a different account) would see the previous account's
       // files replayed immediately on subscribe.
       clearFileIndexStore();
+      shownPubkeyRef.current = null;
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous reset when the subscription key changes
       setFiles([]);
       setKeyStatus(null);
@@ -230,6 +262,15 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
       setHadDecryptFailures(false);
       return;
     }
+
+    // A different account than the one being shown — e.g. one just added while
+    // signed in, which never passes through a signed-out state — must not be
+    // handed the previous account's decrypted files by the shared store.
+    if (shownPubkeyRef.current !== null && shownPubkeyRef.current !== pubkey) {
+      clearFileIndexStore();
+      setFiles([]);
+    }
+    shownPubkeyRef.current = pubkey;
 
     // Fresh subscription: none of the file-index signals from a previous
     // subscription is valid evidence about this one. The key verdict is kept
@@ -309,14 +350,14 @@ export function FileIndexProvider({ children }: { children: ReactNode }) {
     isSignedIn,
     pubkey,
     restoring,
-    settingsLoaded,
+    settingsLoaded: !!pubkey && foldersOwner === pubkey,
     indexReady: driveStatus === "ready",
   });
   usePendingNativeImports({
     isSignedIn,
     pubkey,
     restoring,
-    settingsLoaded,
+    settingsLoaded: !!pubkey && foldersOwner === pubkey,
     indexReady: driveStatus === "ready",
     selectedServer,
     servers,
