@@ -6,6 +6,7 @@ import { useProfileContext } from "./hooks/useProfileContext";
 import { ProfileProvider } from "./Provider/ProfileProvider";
 import { Header } from './components/Header/Header';
 import { DriveKeyWarningBanner } from './components/Header/DriveKeyWarningBanner';
+import { DriveSetupModal } from './components/DriveSetup/DriveSetupModal';
 import { FolderSidebar } from './components/Folders/FolderSidebar';
 import { FileList } from './components/Files/FileList';
 import { SharedByMeView } from './components/Shared/SharedByMeView';
@@ -17,6 +18,7 @@ import { DownloadManager } from './components/Upload/DownloadManager';
 import { ToastProvider } from "./context/ToastProvider";
 import { ThemeProvider } from "./context/ThemeProvider";
 import { AntdThemeBridge } from "./components/ui/AntdThemeBridge";
+import { AppDeskProvider } from "./Provider/AppDeskProvider";
 import { SharedView } from "./components/Shared/SharedView";
 import { SharesProvider } from "./context/SharesProvider";
 import { decodeShareLink } from "./services/sharing";
@@ -52,6 +54,7 @@ function DriveLayout() {
     <div className="drive-layout">
       <Header onMenuClick={() => setSidebarOpen((prev) => !prev)} />
       <DriveKeyWarningBanner />
+      <DriveSetupModal />
       <div className="drive-content">
         <FolderSidebar
           isOpen={sidebarOpen}
@@ -108,21 +111,23 @@ function App() {
   return (
     <ThemeProvider>
       <AntdThemeBridge>
-        <ToastProvider>
-          {isSharedRoute ? (
-            <SharedView />
-          ) : (
-            <ProfileProvider>
-              <BlossomServerProvider>
-                <FileIndexProvider>
-                  <SharesProvider>
-                    <DriveLayout />
-                  </SharesProvider>
-                </FileIndexProvider>
-              </BlossomServerProvider>
-            </ProfileProvider>
-          )}
-        </ToastProvider>
+        <AppDeskProvider>
+          <ToastProvider>
+            {isSharedRoute ? (
+              <SharedView />
+            ) : (
+              <ProfileProvider>
+                <BlossomServerProvider>
+                  <FileIndexProvider>
+                    <SharesProvider>
+                      <DriveLayout />
+                    </SharesProvider>
+                  </FileIndexProvider>
+                </BlossomServerProvider>
+              </ProfileProvider>
+            )}
+          </ToastProvider>
+        </AppDeskProvider>
       </AntdThemeBridge>
     </ThemeProvider>
   );
