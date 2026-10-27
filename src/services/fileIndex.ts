@@ -197,19 +197,31 @@ export function hasSameSizeFile(size: number): boolean {
  * Best-effort against whatever the client currently has loaded (not a
  * network round trip) — matches "client-level" in the spec's own phrasing.
  *
- * Scoped to ONE server: a file only counts as already uploaded if its copy is
- * on `server` (the one this upload is about to use). The same bytes on a
- * different server are not a duplicate — uploading there is the point — and
- * must never be referenced from here, so a copy can be on two servers
- * independently. An exact duplicate on the same server is refused outright
- * (see DuplicateUploadError) instead of minting a second entry for it.
+ * Scoped to ONE server AND ONE folder: a file only counts as already uploaded
+ * if its copy is on `server` (the one this upload is about to use) in `folder`.
+ * The same bytes on a different server are not a duplicate - uploading there is
+ * the point - and neither are they in a different folder: putting a file in a
+ * second folder uploads its own copy rather than referencing the first.
+ * Neither is ever referenced from here. An exact duplicate (same bytes, same
+ * server, same folder) is refused outright (see DuplicateUploadError) instead
+ * of minting a second entry for it.
  */
-export function findDuplicateByHash(unencryptedFileHash: string, server: string): FileMetadata | undefined {
-  const sameServer = (url: string | undefined) =>
-    !!url && url.replace(/\/+$/, "") === server.replace(/\/+$/, "");
+export function findDuplicateByHash(
+  unencryptedFileHash: string,
+  server: string,
+  folder: string,
+): FileMetadata | undefined {
+  const trimSlashes = (value: string) => value.replace(/\/+$/, "");
+  const sameServer = (url: string | undefined) => !!url && trimSlashes(url) === trimSlashes(server);
+  const folderKey = (value: string | undefined) => (value ?? "").replace(/^\/+|\/+$/g, "");
   return fileIndexStore
     .snapshot()
-    .find((f) => f.unencryptedFileHash === unencryptedFileHash && sameServer(f.server));
+    .find(
+      (f) =>
+        f.unencryptedFileHash === unencryptedFileHash &&
+        sameServer(f.server) &&
+        folderKey(f.folder) === folderKey(folder),
+    );
 }
 
 /**

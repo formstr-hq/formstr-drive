@@ -14,6 +14,8 @@ export interface TransferItem {
   progress: number; // 0 to 100
   stage?: string;
   error?: string;
+  /** A neutral outcome worth showing in the row (not an error), e.g. a skipped duplicate. */
+  note?: string;
   abortController: AbortController;
   // Native (Android) downloads: content:// uri of the finished file, for a
   // "View" action on the completed row.

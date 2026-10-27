@@ -49,7 +49,7 @@ export async function uploadDriver(
     if (hasSameSizeFile(file.size)) {
       onProgress({ stage: "Checking for duplicates...", progress: 0 });
       plaintextHash = await computePlaintextHash(file, signal);
-      const candidate = findDuplicateByHash(plaintextHash, servers[0]);
+      const candidate = findDuplicateByHash(plaintextHash, servers[0], targetFolder);
       // findDuplicateByHash is a pure local-index lookup — confirm the blob it
       // points at is actually still on the server before reusing it. Skipping
       // this would let a stale/deleted blob mint a new metadata entry that's

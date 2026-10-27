@@ -129,7 +129,7 @@ export async function nativeUploadDriver(
   if (hasSameSizeFile(file.size)) {
     onProgress({ stage: "Checking for duplicates...", progress: 0 });
     dedupHash = await computePlaintextHash(file, signal);
-    const dedupCandidate = findDuplicateByHash(dedupHash, servers[0]);
+    const dedupCandidate = findDuplicateByHash(dedupHash, servers[0], targetFolder);
     // findDuplicateByHash is a pure local-index lookup — confirm the blob it
     // points at is actually still on the server before reusing it. See
     // uploadDriver.ts's identical check / fileIndex.ts's doc comment.
