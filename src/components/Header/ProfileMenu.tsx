@@ -9,6 +9,7 @@ import { NostrAvatar } from "./NostrAvatar";
 import { AddAccountModal } from "./AddAccountModal";
 import { useProfileContext } from "../../hooks/useProfileContext";
 import { useTheme } from "../../hooks/useTheme";
+import { useAccountSwitcher } from "../../hooks/useAccountSwitcher";
 import { useBlossomServer } from "../../hooks/useBlossomServer";
 import { useNostrProfile, getProfileDisplayName } from "../../hooks/useNostrProfile";
 import { PALETTES, type Palette } from "../../context/ThemeProvider";
@@ -90,11 +91,12 @@ const AccountRow = memo(function AccountRow({
 });
 
 export function ProfileMenu() {
-  const { pubkey, logout, requestPubkey, accounts, switchAccount, removeAccount } =
+  const { pubkey, requestPubkey, accounts } =
     useProfileContext();
   const { theme, toggleTheme, palette, setPalette } = useTheme();
   const { servers, selectedServer, setSelectedServer, addCustomServer } = useBlossomServer();
   const serverLimits = useSyncExternalStore(subscribeServerLimits, getServerLimitsSnapshot);
+  const { switchTo, signOut, dialog: switchDialog } = useAccountSwitcher();
   const [open, setOpen] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
@@ -117,18 +119,18 @@ export function ProfileMenu() {
   const handleSwitchAccount = useCallback(
     (accountPubkey: string) => {
       if (accountPubkey !== pubkey) {
-        void switchAccount(accountPubkey);
+        void switchTo(accountPubkey);
       }
       setOpen(false);
     },
-    [pubkey, switchAccount]
+    [pubkey, switchTo]
   );
 
   const handleRemoveAccount = useCallback(
     (accountPubkey: string) => {
-      void removeAccount(accountPubkey);
+      void signOut(accountPubkey);
     },
-    [removeAccount]
+    [signOut]
   );
 
   const handleAddCustomServer = () => {
@@ -187,7 +189,7 @@ export function ProfileMenu() {
                 <button
                   className="profile-menu-row-btn profile-menu-row-btn--danger"
                   onClick={() => {
-                    void logout();
+                    if (pubkey) void signOut(pubkey);
                     setOpen(false);
                   }}
                 >
@@ -201,7 +203,7 @@ export function ProfileMenu() {
                 <button
                   className="profile-menu-row-btn"
                   onClick={() => {
-                    void logout();
+                    void signOut(pubkey);
                     setOpen(false);
                   }}
                 >
@@ -308,6 +310,7 @@ export function ProfileMenu() {
       )}
 
       {showAddAccount && <AddAccountModal onClose={() => setShowAddAccount(false)} />}
+      {switchDialog}
     </div>
   );
 }
