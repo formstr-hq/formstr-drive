@@ -25,6 +25,9 @@ export interface NativeUploadEvent {
   /** On `complete`: the Blossom server the blobs actually landed on, which may
    *  be a fallback candidate rather than the primary. */
   server?: string;
+  /** On `complete`: true when the thumbnail blob failed and the published
+   *  metadata is the variant without `previewHash`. */
+  previewSkipped?: boolean;
   /** On `error`: the server's HTTP status, when the failure was an actual
    *  rejection rather than a network-level or relay-publish failure. Lets
    *  callers run the failure through the same classifyUploadFailure() the web
@@ -67,6 +70,11 @@ export interface NativeUploadMetadataEvent {
   server: string;
   eventJson: string;
 }
+
+/** Appended to a server URL to key the metadata variant WITHOUT `previewHash`.
+ *  The worker publishes it instead when the thumbnail blob failed to upload.
+ *  Must match DriveUploadWorker.NO_PREVIEW_SUFFIX on the native side. */
+export const NATIVE_NO_PREVIEW_SUFFIX = "#no-preview";
 
 type DriveFilesPlugin = {
   updateManifest(options: { manifestJson: string }): Promise<void>;
@@ -116,7 +124,7 @@ type DriveFilesPlugin = {
     metadataEvents: NativeUploadMetadataEvent[];
     blobs: NativeUploadBlob[];
     relays: string[];
-  }): Promise<{ server: string }>;
+  }): Promise<{ server: string; previewSkipped?: boolean }>;
   getActiveUploads(): Promise<{ uploads: NativeActiveUpload[] }>;
   cancelNativeUpload(options: { uploadId: string }): Promise<void>;
   showUploadNotification(options: { id: string; fileName: string; percent: number }): Promise<void>;
@@ -662,7 +670,7 @@ export async function startNativeUpload(
     relays: string[];
   },
   onEvent?: (event: NativeUploadEvent) => void,
-): Promise<{ server: string }> {
+): Promise<{ server: string; previewSkipped?: boolean }> {
   if (!isAndroidPlatform || !driveFilesPlugin) {
     throw new Error("Native upload is only available on Android");
   }

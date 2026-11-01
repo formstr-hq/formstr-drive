@@ -4,6 +4,8 @@ import { bytesToHex } from "nostr-tools/utils";
 import { BlossomClient, BlossomError } from "../blossom";
 import { encryptSegment, deriveConversationKeyFromHex, encryptFileWithExistingKey, segmentCount } from "../crypto";
 import { createAuthEvent } from "../auth";
+import { abortable } from "./thumbnails/abort";
+import type { PendingThumbnail } from "./thumbnails/generate";
 import { describeAllServersFailed, isPermanentFailure } from "./uploadErrors";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -167,6 +169,43 @@ async function encryptSegments(
   }
 }
 
+/** Extra time a still-running thumbnail gets once encryption has finished. */
+export function thumbnailGraceMs(fileSize: number): number {
+  const BASE_MS = 10_000;
+  const MAX_MS = 30_000;
+  return Math.min(MAX_MS, BASE_MS + Math.floor(fileSize / (100 * 1024 * 1024)) * 1000);
+}
+
+/**
+ * Waits for the thumbnail, but never longer than the grace period: the signer
+ * prompt and the upload itself must not be held hostage by thumbnail generation.
+ * On a timeout the thumbnail is cancelled and the upload goes ahead without one.
+ */
+export async function awaitThumbnail(
+  pending: PendingThumbnail | undefined,
+  fileSize: number,
+): Promise<Uint8Array | null> {
+  if (!pending) return null;
+  const graceMs = thumbnailGraceMs(fileSize);
+  try {
+    return await abortable(() => pending.promise, { timeoutMs: graceMs });
+  } catch {
+    console.info(`[thumb] not ready ${graceMs}ms after encryption finished, uploading without one`);
+    pending.cancel();
+    return null;
+  }
+}
+
+/** Encrypts a thumbnail under the file key. The hash is what the metadata and auth event reference. */
+export async function encryptThumbnail(
+  bytes: Uint8Array,
+  encryptionKeyHex: string,
+): Promise<{ bytes: Uint8Array; hash: string }> {
+  const encrypted = new TextEncoder().encode(await encryptFileWithExistingKey(bytes, encryptionKeyHex));
+  const digest = await crypto.subtle.digest("SHA-256", encrypted as unknown as BufferSource);
+  return { bytes: encrypted, hash: toHexHash(digest) };
+}
+
 export interface PreparedUpload {
   blobHash: string;
   totalSize: number;
@@ -211,7 +250,7 @@ export async function prepareUpload(
   encryptionKeyHex: string,
   signal?: AbortSignal,
   onProgress?: (info: UploadProgressInfo) => void,
-  preview?: Uint8Array | null | Promise<Uint8Array | null>,
+  preview?: PendingThumbnail,
   onBlob?: (index: number, bytes: Uint8Array) => Promise<string>,
   chunkSize: number = SEGMENT_SIZE,
   knownPlaintextHash?: string,
@@ -251,20 +290,18 @@ export async function prepareUpload(
     result.blobParts = blobParts;
   }
 
-  const previewBytesIn = await preview;
-  if (previewBytesIn) {
+  const thumbnail = await awaitThumbnail(preview, totalSize);
+  if (thumbnail) {
     throwIfAborted(signal);
-    const encryptedPreview = await encryptFileWithExistingKey(previewBytesIn, encryptionKeyHex);
-    const previewBytes = new TextEncoder().encode(encryptedPreview);
-    const hashBuffer = await crypto.subtle.digest("SHA-256", previewBytes as unknown as BufferSource);
-    result.previewHash = toHexHash(hashBuffer);
+    const encrypted = await encryptThumbnail(thumbnail, encryptionKeyHex);
+    result.previewHash = encrypted.hash;
     if (onBlob) {
       // A distinct index from every chunk (which use 0..totalSegments-1), so
-      // the preview lands at its own destination rather than appending onto
+      // the thumbnail lands at its own destination rather than appending onto
       // the file blob.
-      result.previewRef = await onBlob(totalSegments, previewBytes);
+      result.previewRef = await onBlob(totalSegments, encrypted.bytes);
     } else {
-      result.previewBlob = previewBytes;
+      result.previewBlob = encrypted.bytes;
     }
   }
 
@@ -441,7 +478,7 @@ export async function uploadFile(
   encryptionKeyHex: string,
   onProgress?: (info: UploadProgressInfo) => void,
   signal?: AbortSignal,
-  previewPromise?: Promise<Uint8Array | null>,
+  previewPromise?: PendingThumbnail,
   chunkSize: number = SEGMENT_SIZE,
   knownPlaintextHash?: string,
 ): Promise<UploadResult> {
@@ -486,15 +523,10 @@ export async function uploadFile(
   // preview generation overlaps segment encryption; best-effort — a failed
   // preview upload never fails the file.
   throwIfAborted(signal);
-  const previewBytesIn = previewPromise ? await previewPromise : null;
-  let previewHash: string | undefined;
-  let encryptedPreview: Uint8Array | undefined;
-  if (previewBytesIn) {
-    const encrypted = await encryptFileWithExistingKey(previewBytesIn, encryptionKeyHex);
-    encryptedPreview = new TextEncoder().encode(encrypted);
-    const digest = await crypto.subtle.digest("SHA-256", encryptedPreview as unknown as BufferSource);
-    previewHash = toHexHash(digest);
-  }
+  const thumbnail = await awaitThumbnail(previewPromise, totalSize);
+  const encryptedThumbnail = thumbnail ? await encryptThumbnail(thumbnail, encryptionKeyHex) : undefined;
+  const previewHash = encryptedThumbnail?.hash;
+  const encryptedPreview = encryptedThumbnail?.bytes;
 
   onProgress?.({
     stage: "Waiting for signature approval...",
