@@ -1,4 +1,3 @@
-import heic2any from "heic2any"; // For converting HEIC to JPEG before passing into canva
 import { canvasToBlobWithFallback } from "../../utils/canvas";
 
 function isHeic(file: File): boolean {
@@ -15,6 +14,8 @@ function isHeic(file: File): boolean {
 async function resolveImageFile(file: File): Promise<File> {
   if (!isHeic(file)) return file;
 
+  const heic2anyModule = await import("heic2any");
+  const heic2any = heic2anyModule.default ?? heic2anyModule;
   const converted = await heic2any({
     blob: file,
     toType: "image/jpeg",

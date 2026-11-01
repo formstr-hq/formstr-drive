@@ -117,7 +117,7 @@ export function SharedView() {
     // size cap only applies to modes without that seekable path — checked
     // here, before the modal opens, so it doesn't open just to show a
     // one-line "too large" notice.
-    const mode = resolvePreviewMode(file.type);
+    const mode = resolvePreviewMode(file.type, file.name);
     const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
     if (!canStream && file.size > MAX_PREVIEW_SIZE) {
       toast.error(PREVIEW_UNAVAILABLE_MESSAGE);
@@ -236,7 +236,7 @@ export function SharedView() {
   };
 
   const fileRow = (file: FileMetadata) => {
-    const mode = resolvePreviewMode(file.type);
+    const mode = resolvePreviewMode(file.type, file.name);
     // Say so when the file can be opened in the page: a bare Download button
     // reads as "download only", though video/PDF stream from the share itself.
     const canPreview =
