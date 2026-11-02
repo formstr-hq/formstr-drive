@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { decodeShareLink, resolveSharedLink } from "../../services/sharing";
+import { rememberOpenedShare } from "../../services/sharedWithMe";
 import { downloadFileStreaming, type DownloadProgressInfo } from "../../services/downloadFile";
 import { downloadFileToDownloads } from "../../native/driveManifest";
 import { isAndroidPlatform } from "../../utils/platform";
@@ -156,12 +157,24 @@ export function SharedView() {
           setState({ status: "revoked", target: resolved.target, at: resolved.at });
         } else if (resolved.kind === "file") {
           setState({ status: "file", file: resolved.file });
+          void rememberOpenedShare({
+            url: window.location.href,
+            name: resolved.file.name,
+            kind: "file",
+            openedAt: Date.now(),
+          });
         } else {
           setState({
             status: "folder",
             name: resolved.result.name,
             files: resolved.result.files,
             partial: resolved.result.partial,
+          });
+          void rememberOpenedShare({
+            url: window.location.href,
+            name: resolved.result.name,
+            kind: "folder",
+            openedAt: Date.now(),
           });
         }
       } catch (e) {

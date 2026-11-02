@@ -4,14 +4,25 @@ import { useFileIndex } from '../../hooks/useFileContext';
 interface FolderSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentView?: "files" | "shared-by-me";
+  currentView?: "files" | "shared-by-me" | "shared-with-me" | "mail-attachments";
   onSelectSharedByMe?: () => void;
+  onSelectSharedWithMe?: () => void;
+  onSelectMailAttachments?: () => void;
   onSelectFolder?: () => void;
 }
 
 import { isDirectChildFolder, getFolderName, ancestorsOf, getFolderItemCount } from '../../utils/folder';
 import { FILE_HASH_MIME } from '../../utils/constants';
 import { HomeIcon, FolderIcon, ChevronIcon, ShareIcon } from '../icons/Icons';
+
+function MailIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m3 7 9 6 9-6" />
+    </svg>
+  );
+}
 
 // Folder sharing is set aside for now (see services/sharing/folder) — this
 // sidebar no longer offers a "Share folder" entry point. It used to accept
@@ -122,6 +133,8 @@ export function FolderSidebar({
   onClose,
   currentView = "files",
   onSelectSharedByMe,
+  onSelectSharedWithMe,
+  onSelectMailAttachments,
   onSelectFolder
 }: FolderSidebarProps) {
   const { folders, currentFolder, setCurrentFolder, files, addCustomFolder, moveFiles } =
@@ -313,6 +326,44 @@ export function FolderSidebar({
                   <ShareIcon />
                 </span>
                 <span className="folder-name">Shared by me</span>
+              </button>
+            </div>
+
+            <div
+              className={`folder-item ${currentView === "shared-with-me" ? "active" : ""}`}
+              style={{ paddingLeft: 12, marginBottom: 8 }}
+            >
+              <span className="folder-toggle folder-toggle--spacer" />
+              <button
+                className="folder-item-btn"
+                onClick={() => {
+                  onSelectSharedWithMe?.();
+                  onClose();
+                }}
+              >
+                <span className="folder-item-icon">
+                  <ShareIcon />
+                </span>
+                <span className="folder-name">Shared with me</span>
+              </button>
+            </div>
+
+            <div
+              className={`folder-item ${currentView === "mail-attachments" ? "active" : ""}`}
+              style={{ paddingLeft: 12, marginBottom: 8 }}
+            >
+              <span className="folder-toggle folder-toggle--spacer" />
+              <button
+                className="folder-item-btn"
+                onClick={() => {
+                  onSelectMailAttachments?.();
+                  onClose();
+                }}
+              >
+                <span className="folder-item-icon">
+                  <MailIcon />
+                </span>
+                <span className="folder-name">Mail attachments</span>
               </button>
             </div>
           </nav>

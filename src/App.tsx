@@ -11,6 +11,8 @@ import { ServerChooserModal } from './components/ServerChooser/ServerChooserModa
 import { FolderSidebar } from './components/Folders/FolderSidebar';
 import { FileList } from './components/Files/FileList';
 import { SharedByMeView } from './components/Shared/SharedByMeView';
+import { SharedWithMeView } from './components/Shared/SharedWithMeView';
+import { MailAttachmentsView } from './components/Shared/MailAttachmentsView';
 import { SignIn } from "./components/SignIn/SignIn";
 import { UnlockScreen } from "./components/SignIn/UnlockScreen";
 import { NsecMigrationPrompt } from "./components/SignIn/NsecMigrationPrompt";
@@ -29,7 +31,9 @@ function DriveLayout() {
   const { isSignedIn, restoring, locked, pendingNsecMigration } =
     useProfileContext();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [view, setView] = useState<"files" | "shared-by-me">("files");
+  const [view, setView] = useState<
+    "files" | "shared-by-me" | "shared-with-me" | "mail-attachments"
+  >("files");
 
   if (restoring) {
     return (
@@ -63,11 +67,17 @@ function DriveLayout() {
           onClose={() => setSidebarOpen(false)}
           currentView={view}
           onSelectSharedByMe={() => setView("shared-by-me")}
+          onSelectSharedWithMe={() => setView("shared-with-me")}
+          onSelectMailAttachments={() => setView("mail-attachments")}
           onSelectFolder={() => setView("files")}
         />
         <main className="drive-main">
           {view === "shared-by-me" ? (
             <SharedByMeView onBack={() => setView("files")} />
+          ) : view === "shared-with-me" ? (
+            <SharedWithMeView onBack={() => setView("files")} />
+          ) : view === "mail-attachments" ? (
+            <MailAttachmentsView onBack={() => setView("files")} />
           ) : (
             <FileList />
           )}

@@ -25,6 +25,14 @@ export const STORAGE_KEYS = {
   // so an import queued for one account is never uploaded into another.
   PENDING_IMPORT_OWNERS: "formstr-drive-pending-import-owners",
   PROFILE_CACHE: "formstr-drive-profile-cache",
+  // Share links this device has opened through SharedView. Device-local by
+  // design: "Shared with me" is a history of links you opened, not a synced
+  // inbox (there is no recipient-addressed share protocol).
+  OPENED_SHARES: "formstr-drive-opened-shares",
+  // Mail-attachment share URLs this device has already revoked/deleted. The
+  // self-copy still carries their keys, so this local marker keeps them out of
+  // the management list after a reload.
+  REMOVED_MAIL_ATTACHMENTS: "formstr-drive-removed-mail-attachments",
 } as const;
 
 function parseStoredValue<T>(value: string | null, defaultValue: T): T {
