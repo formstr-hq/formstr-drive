@@ -4,6 +4,7 @@ import { dataLayer } from "@formstr/local-relay";
 import { BlossomClient } from "../blossom";
 import { deriveConversationKeyFromHex } from "../crypto";
 import { signerManager } from "../signer/manager";
+import { getLocalRelayClient } from "../dataLayer/bootstrap";
 import { getStoredItem, setStoredItem, STORAGE_KEYS } from "../utils/persistence";
 import { buildShareEvent } from "./sharing/event";
 import { decodeShareLink, METADATA_KIND } from "./sharing/link";
@@ -37,6 +38,19 @@ export interface MailAttachmentKey {
 const HEX64 = /^[0-9a-f]{64}$/i;
 const HTTP_URL = /^https?:\/\//i;
 
+/** Last DM relay set pushed to the worker. Re-setting it re-opens the kind-1059
+ *  stream, so avoid doing that on every live-triggered reload. */
+let appliedDmRelays = "";
+
+function applyDmRelays(relays: string[]): void {
+  const key = [...relays].sort().join("\n");
+  if (key === appliedDmRelays) return;
+  const client = getLocalRelayClient();
+  if (!client) return;
+  client.setDmRelays(relays);
+  appliedDmRelays = key;
+}
+
 function isManage(value: unknown): value is MailAttachmentKey {
   if (!value || typeof value !== "object") return false;
   const m = value as Record<string, unknown>;
@@ -64,10 +78,19 @@ async function dmRelayHints(pubkey: string): Promise<string[]> {
     5000,
   );
   const latest = events.sort((a, b) => b.created_at - a.created_at)[0];
-  if (!latest) return [];
-  return latest.tags
+  if (!latest) {
+    applyDmRelays([]);
+    return [];
+  }
+  const relays = latest.tags
     .filter((tag) => tag[0] === "relay" && typeof tag[1] === "string" && tag[1])
     .map((tag) => tag[1]);
+  // The drive relay was bootstrapped without DM relays (it only reads the
+  // drive index). A kind-1059 read is routed through the DM stream, so without
+  // this the mail self-copies are never fetched — which is why new attachments
+  // did not appear. Setting them also makes a standing observe live-update.
+  applyDmRelays(relays);
+  return relays;
 }
 
 async function loadRemoved(): Promise<Set<string>> {
@@ -171,6 +194,28 @@ export async function loadMailAttachmentKeys(): Promise<MailAttachmentKey[]> {
   }
 
   return [...byUrl.values()].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * Standing interest in the user's own mail self-copies. With DM relays set by
+ * `loadMailAttachmentKeys`, this surfaces a new self-copy (and therefore a new
+ * mail attachment) without reopening the view.
+ */
+export function observeMailAttachmentKeys(
+  pubkey: string,
+  onChange: () => void,
+): () => void {
+  const handle = dataLayer.observe(
+    [
+      {
+        kinds: [GIFTWRAP_KIND],
+        "#p": [pubkey],
+        "#k": [String(MAIL_KIND)],
+      },
+    ],
+    { onEvent: () => onChange() },
+  );
+  return () => handle.unobserve();
 }
 
 /**

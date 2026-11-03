@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   deleteMailAttachmentKey,
   loadMailAttachmentKeys,
+  observeMailAttachmentKeys,
   type MailAttachmentKey,
 } from "../../services/mailAttachments";
+import { signerManager } from "../../signer/manager";
 import { useToast } from "../../hooks/useToast";
 import "./SharedByMeView.css";
 import "../Dialogs/MoveDialog.css";
@@ -26,18 +28,21 @@ function FileGenericIcon() {
 /**
  * The sender-side management list for mail attachments. The mail app retains
  * each attachment's throwaway upload/share signing keys in the encrypted
- * mail-settings event; this view can therefore revoke the share and delete the
- * Blob without ever linking the public share to the user's npub.
+ * self-copy (the Sent message); this view unwraps those self-copies so it can
+ * revoke the share and delete the Blob without ever linking the public share
+ * to the user's npub.
  */
 export function MailAttachmentsView({ onBack }: MailAttachmentsViewProps) {
   const [items, setItems] = useState<MailAttachmentKey[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reload, setReload] = useState(0);
   const [confirmTarget, setConfirmTarget] = useState<MailAttachmentKey | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const toast = useToast();
 
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     void loadMailAttachmentKeys()
       .then((keys) => {
         if (alive) setItems(keys);
@@ -51,8 +56,27 @@ export function MailAttachmentsView({ onBack }: MailAttachmentsViewProps) {
     return () => {
       alive = false;
     };
-    // Toast is stable; this runs once on mount.
+    // Toast is stable; this runs on mount and whenever the user or a new
+    // self-copy asks for a refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reload]);
+
+  // A one-shot read settles on the local-relay cache, which can be older than
+  // the relays. Keep a standing interest instead so a newly sent attachment
+  // appears without leaving and reopening this view. Debounced because one
+  // relay burst delivers several events.
+  useEffect(() => {
+    const pubkey = signerManager.getPubkey();
+    if (!pubkey) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = observeMailAttachmentKeys(pubkey, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setReload((n) => n + 1), 400);
+    });
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
   }, []);
 
   async function copyKeys(item: MailAttachmentKey) {
@@ -94,6 +118,14 @@ export function MailAttachmentsView({ onBack }: MailAttachmentsViewProps) {
           ←
         </button>
         <h2>Mail attachments</h2>
+        <button
+          className="shared-by-me-copy-btn"
+          style={{ marginLeft: "auto" }}
+          onClick={() => setReload((n) => n + 1)}
+          disabled={loading}
+        >
+          Refresh
+        </button>
       </header>
 
       <p className="bulk-action-hint" style={{ padding: "0 16px" }}>
