@@ -666,7 +666,9 @@ export function FileList() {
               </p>
               <p className="empty-hint">
                 {degradedReason === "uncertain"
-                  ? "Retrying automatically — nothing will be lost or created in the meantime."
+                  ? degradedIssue === "key-relay-silent"
+                    ? "One of your relays didn't answer. Retry once it's back — nothing will be created in the meantime."
+                    : "Retrying automatically — nothing will be lost or created in the meantime."
                   : "Check your connection and retry, or open the drive on a device that already has " +
                     "the right key."}
               </p>
@@ -685,7 +687,9 @@ export function FileList() {
               >
                 Retry
               </button>
-              {degradedIssue === "seen-on-device" && <StartNewDriveKey onStarted={refresh} />}
+              {(degradedIssue === "seen-on-device" || degradedIssue === "key-relay-silent") && (
+                <StartNewDriveKey onStarted={refresh} />
+              )}
             </div>
           ) : (
             <div className="empty-state">

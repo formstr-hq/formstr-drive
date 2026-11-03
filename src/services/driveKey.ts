@@ -103,6 +103,12 @@ export type DriveKeyIssue =
   // pubkey or payload), but no relay that answered has it now. Not created
   // automatically; the user may choose to start a new one (startNewDriveKey).
   | "seen-on-device"
+  // One of the relays that may hold the key (an app relay or one of the
+  // identity's own write relays) did not answer. Creating a new key is blocked
+  // until it answers (or the user explicitly chooses to start one). A new key
+  // is never written to that silent relay, so its old version is still there to
+  // merge later.
+  | "key-relay-silent"
   // Creating a first key was attempted and failed (see FileIndexProvider).
   | "create-failed";
 
@@ -121,6 +127,15 @@ export type DriveKeyStatus =
 
 type EmptyKeyringVerdict = Exclude<DriveKeyStatus, { kind: "ready" }>;
 
+export interface KeyringReadClassification {
+  sawUnreadableVersion: boolean;
+  deviceHasUsedDrive: boolean;
+  ignoreDeviceHistory: boolean;
+  ignoreSilentKeyRelays: boolean;
+  states: RelayState[];
+  writeRelays: string[];
+}
+
 const REASONS: Record<Exclude<DriveKeyIssue, "create-failed">, string> = {
   checking: "Still checking for your Drive Key…",
   "not-enough-relays": "Can't reach enough relays to check whether this account already has a Drive Key.",
@@ -129,10 +144,54 @@ const REASONS: Record<Exclude<DriveKeyIssue, "create-failed">, string> = {
     "or it's in a format this version of the app doesn't recognize.",
   "seen-on-device":
     "This device has used a Drive Key for this account before, but it can't be found on any relay that answered.",
+  "key-relay-silent":
+    "A relay that may hold your Drive Key didn't answer. We won't create a new key until it responds — " +
+    "retry once your relay is back, or explicitly choose to start a new Drive Key.",
 };
 
 function unresolved(issue: Exclude<DriveKeyIssue, "create-failed">): EmptyKeyringVerdict {
   return { kind: "unresolved", reason: REASONS[issue], issue };
+}
+
+/**
+ * Pure decision for an empty keyring. Kept separate from relay/device-history
+ * reads so the safety rules can be tested without network or signer mocks.
+ */
+export function classifyKeyringRead(input: KeyringReadClassification): EmptyKeyringVerdict {
+  // A version exists but couldn't be read — a key exists; never create over it.
+  if (input.sawUnreadableVersion) return unresolved("unreadable");
+
+  if (!input.ignoreDeviceHistory && input.deviceHasUsedDrive) {
+    return unresolved("seen-on-device");
+  }
+
+  // A relay that never answered may hold the only copy of the key. Do not
+  // silently replace it just because the other app relays said "none": wait for
+  // it, and let the user explicitly start a new key if it stays down. A new
+  // key is never written to a relay in this set, so even that explicit path
+  // leaves the old version there to merge when it returns.
+  //
+  // Default relays are extra read sources, not part of the proof: they are a
+  // long tail with unreliable members, and a silent one must not block every
+  // first run. The app relays and the identity's own write relays are the set
+  // where a Drive Key is expected to live.
+  const appSet = new Set(CREATE_QUORUM_RELAYS);
+  const writeSet = new Set(input.writeRelays.map(normalizeRelayUrl));
+  const silentKeyRelays = input.states.filter((r) => {
+    if (r.answered) return false;
+    const relay = normalizeRelayUrl(r.relay);
+    return appSet.has(relay) || writeSet.has(relay);
+  });
+  if (!input.ignoreSilentKeyRelays && silentKeyRelays.length > 0) {
+    return unresolved("key-relay-silent");
+  }
+
+  const emptyRelays = input.states.filter((r) => r.answered && !r.hasVersions).map((r) => r.relay);
+  const emptyQuorumAnswers = emptyRelays.filter((url) => CREATE_QUORUM_RELAYS.includes(normalizeRelayUrl(url)));
+  if (emptyQuorumAnswers.length >= MIN_EMPTY_QUORUM_ANSWERS) {
+    return { kind: "empty-confirmed", emptyRelays };
+  }
+  return unresolved("not-enough-relays");
 }
 
 // Cached ENCRYPTED payload (never decrypted key material) plus its timestamp.
@@ -733,7 +792,7 @@ async function driveKeyRelays(pubkey: string): Promise<string[]> {
 }
 
 /** What one relay holds right now, as far as a write decision is concerned. */
-interface RelayState {
+export interface RelayState {
   relay: string;
   /** The relay genuinely answered, so its content is known. */
   answered: boolean;
@@ -839,21 +898,32 @@ async function readRelayStates(s: Session, signer: Signer): Promise<RelayState[]
 async function classifyEmptyKeyring(
   s: Session,
   states: RelayState[],
-  options: { ignoreDeviceHistory: boolean },
+  options: { ignoreDeviceHistory: boolean; ignoreSilentKeyRelays: boolean },
 ): Promise<EmptyKeyringVerdict> {
-  // A version exists but couldn't be read — a key exists; never create over it.
-  if (s.sawUnreadableVersion) return unresolved("unreadable");
-
-  if (!options.ignoreDeviceHistory && (await hasUsedDriveOnThisDevice(s.pubkey))) {
-    return unresolved("seen-on-device");
+  const deviceHasUsedDrive = options.ignoreDeviceHistory
+    ? false
+    : await hasUsedDriveOnThisDevice(s.pubkey);
+  const verdict = classifyKeyringRead({
+    sawUnreadableVersion: s.sawUnreadableVersion,
+    deviceHasUsedDrive,
+    ignoreDeviceHistory: options.ignoreDeviceHistory,
+    ignoreSilentKeyRelays: options.ignoreSilentKeyRelays,
+    states,
+    writeRelays: s.writeRelays,
+  });
+  if (verdict.kind === "unresolved" && verdict.issue === "key-relay-silent") {
+    const appSet = new Set(CREATE_QUORUM_RELAYS);
+    const writeSet = new Set(s.writeRelays.map(normalizeRelayUrl));
+    const silent = states
+      .filter((r) => {
+        if (r.answered) return false;
+        const relay = normalizeRelayUrl(r.relay);
+        return appSet.has(relay) || writeSet.has(relay);
+      })
+      .map((r) => r.relay);
+    console.log(`[DriveKey] Not creating a key: no answer from key relay(s) [${silent.join(", ")}]`);
   }
-
-  const emptyRelays = states.filter((r) => r.answered && !r.hasVersions).map((r) => r.relay);
-  const emptyQuorumAnswers = emptyRelays.filter((url) => CREATE_QUORUM_RELAYS.includes(normalizeRelayUrl(url)));
-  if (emptyQuorumAnswers.length >= MIN_EMPTY_QUORUM_ANSWERS) {
-    return { kind: "empty-confirmed", emptyRelays };
-  }
-  return unresolved("not-enough-relays");
+  return verdict;
 }
 
 /**
@@ -863,7 +933,7 @@ async function classifyEmptyKeyring(
  * anything. A resolved keyring starts a background sync (rule 3).
  */
 async function resolveDriveKeyStatus(
-  options: { ignoreDeviceHistory?: boolean } = {},
+  options: { ignoreDeviceHistory?: boolean; ignoreSilentKeyRelays?: boolean } = {},
 ): Promise<DriveKeyStatus> {
   const signer = await signerManager.getSigner();
   const pubkey = await signer.getPublicKey();
@@ -873,7 +943,11 @@ async function resolveDriveKeyStatus(
   s.sawUnreadableVersion = false;
 
   for (const { content, created_at } of await loadPayloadCache(pubkey)) {
-    await ingestPayload(s, content, created_at, signer);
+    const secrets = await ingestPayload(s, content, created_at, signer);
+    // A cached version we cannot currently decrypt is still a version that may
+    // hold a key. Without this, a transient signer failure plus relays that
+    // answer "none" looks like a first run and can mint a replacement key.
+    if (!secrets) s.sawUnreadableVersion = true;
   }
 
   // Cold start (nothing usable cached on this device): ask the local store and
@@ -901,7 +975,10 @@ async function resolveDriveKeyStatus(
     status =
       s.entries.length > 0
         ? { kind: "ready", keyring: [...s.entries] }
-        : await classifyEmptyKeyring(s, states, { ignoreDeviceHistory: options.ignoreDeviceHistory ?? false });
+        : await classifyEmptyKeyring(s, states, {
+            ignoreDeviceHistory: options.ignoreDeviceHistory ?? false,
+            ignoreSilentKeyRelays: options.ignoreSilentKeyRelays ?? false,
+          });
     relayRead = null;
   }
 
@@ -1243,7 +1320,14 @@ async function createFirstKey(options: { userRequested: boolean }): Promise<Driv
       // waited for the lock; this picks it up (shared payload cache, and the
       // relays) instead of creating a second one. Its `emptyRelays` are the
       // write targets.
-      const status = await resolveDriveKeyStatus({ ignoreDeviceHistory: options.userRequested });
+      const status = await resolveDriveKeyStatus({
+        ignoreDeviceHistory: options.userRequested,
+        // An explicit "Start a new Drive Key" is allowed to proceed past a
+        // silent key relay: the new key is still written only to relays that
+        // answered "none", so the silent relay's old version is untouched and
+        // merges back when it returns. Automatic minting never skips this.
+        ignoreSilentKeyRelays: options.userRequested,
+      });
       // Every way out of here reports an end to the onboarding, so it can never
       // be left on screen: a key that turned up (another tab created it, or the
       // relays answered after all) is "found", anything unresolved is "stopped".
