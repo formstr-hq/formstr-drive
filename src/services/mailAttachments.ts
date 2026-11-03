@@ -29,7 +29,10 @@ export interface MailAttachmentKey {
   shareUrl: string;
   filename: string;
   createdAt: number;
-  uploadSecretKey: string;
+  /** New attachments are authorized by the user's identity; older ones by a
+   *  retained throwaway upload key. */
+  uploadAuth?: "identity" | "ephemeral";
+  uploadSecretKey?: string;
   shareSecretKey: string;
   blobHash: string;
   server: string;
@@ -54,6 +57,9 @@ function applyDmRelays(relays: string[]): void {
 function isManage(value: unknown): value is MailAttachmentKey {
   if (!value || typeof value !== "object") return false;
   const m = value as Record<string, unknown>;
+  const hasEphemeralUploadKey =
+    typeof m.uploadSecretKey === "string" && HEX64.test(m.uploadSecretKey);
+  const hasIdentityUpload = m.uploadAuth === "identity";
   return (
     typeof m.shareUrl === "string" &&
     m.shareUrl.includes("#shared=") &&
@@ -61,8 +67,7 @@ function isManage(value: unknown): value is MailAttachmentKey {
     m.filename.length > 0 &&
     typeof m.createdAt === "number" &&
     Number.isFinite(m.createdAt) &&
-    typeof m.uploadSecretKey === "string" &&
-    HEX64.test(m.uploadSecretKey) &&
+    (hasIdentityUpload || hasEphemeralUploadKey) &&
     typeof m.shareSecretKey === "string" &&
     HEX64.test(m.shareSecretKey) &&
     typeof m.blobHash === "string" &&
@@ -244,6 +249,10 @@ export async function deleteMailAttachmentKey(key: MailAttachmentKey): Promise<v
     ? Math.max(nextCreatedAt(), original.created_at + 1)
     : nextCreatedAt();
   const at = Math.floor(Date.now() / 1000);
+  const identityUpload = key.uploadAuth === "identity" || !key.uploadSecretKey;
+  // Resolve the identity signer before revoking: a revoked link whose blob
+  // cannot be deleted because the signer is locked is worse than leaving both.
+  const identitySigner = identityUpload ? await signerManager.getSigner() : null;
   const revoked = buildShareEvent({
     subtype: "shared-file",
     dTag,
@@ -260,21 +269,28 @@ export async function deleteMailAttachmentKey(key: MailAttachmentKey): Promise<v
     throw new Error("Could not revoke the share; the link is still live.");
   }
 
-  const uploadKey = hexToBytes(key.uploadSecretKey);
   const now = Math.floor(Date.now() / 1000);
-  const authEvent = finalizeEvent(
-    {
-      kind: 24242,
-      created_at: now,
-      tags: [
-        ["t", "delete"],
-        ["x", key.blobHash],
-        ["expiration", String(now + 300)],
-      ],
-      content: "Delete mail attachment",
-    },
-    uploadKey,
-  );
+  const tags: string[][] = [
+    ["t", "delete"],
+    ["x", key.blobHash],
+    ["expiration", String(now + 300)],
+  ];
+  const authEvent = identitySigner
+    ? ((await identitySigner.signEvent({
+        kind: 24242,
+        created_at: now,
+        tags,
+        content: "Delete mail attachment",
+      })) as Event)
+    : finalizeEvent(
+        {
+          kind: 24242,
+          created_at: now,
+          tags,
+          content: "Delete mail attachment",
+        },
+        hexToBytes(key.uploadSecretKey!),
+      );
   await new BlossomClient(key.server).delete(
     key.blobHash,
     `Nostr ${btoa(JSON.stringify(authEvent))}`,
