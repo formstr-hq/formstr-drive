@@ -46,11 +46,15 @@ export function SharedWithMeView({ onBack }: SharedWithMeViewProps) {
   }, []);
 
   function open(share: OpenedShare) {
+    let hash = share.url;
     try {
-      window.location.hash = new URL(share.url).hash;
+      hash = new URL(share.url).hash;
     } catch {
-      window.location.hash = share.url;
+      // Keep the raw value; setting a non-URL hash is still a valid fallback.
     }
+    window.history.pushState(null, "", hash);
+    // pushState does not emit hashchange, but SharedView listens for it.
+    window.dispatchEvent(new Event("hashchange"));
   }
 
   async function remove(url: string) {
