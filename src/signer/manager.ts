@@ -197,11 +197,19 @@ class SignerManager {
 
   /** Re-tries opening the active account (the extension was fixed, the signer is back). */
   async retryUnlock(): Promise<LockInfo | null> {
-    this.lockInfo = null;
-    const problem = await this.unlockActive();
-    this.lockInfo = problem;
-    this.notify();
-    return problem;
+    // unlock() emits a switch event synchronously. Hold notifications until the
+    // extension has been verified, or the UI would mount the drive on a signer
+    // that hasn't been checked yet (lockInfo is null while we wait).
+    this.switching = true;
+    try {
+      this.lockInfo = null;
+      const problem = await this.unlockActive();
+      this.lockInfo = problem;
+      return problem;
+    } finally {
+      this.switching = false;
+      this.notify();
+    }
   }
 
   /** Unlocks and switches to a passphrase account in one step, so it is never seen locked. */
@@ -292,6 +300,8 @@ class SignerManager {
     const active = this.signer.getActiveAccount();
     if (active?.method === "extension") {
       this.lockInfo = await this.checkExtension(active.pubkey);
+      // If the UI gave up waiting on init, this result would otherwise never reach it.
+      this.notify();
     }
     return this.getPubkey();
   }

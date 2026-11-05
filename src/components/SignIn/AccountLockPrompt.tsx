@@ -127,7 +127,9 @@ export function AccountLockPrompt({
       </div>
 
       {error && <p className="sign-in-error">{error}</p>}
-      {children}
+      {/* No way out mid-flight: Cancel/remove can't abort an unlock already
+          running, so it would still finish and move or remove the account. */}
+      {!busy && children}
     </div>
   );
 }

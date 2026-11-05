@@ -134,6 +134,34 @@ describe("signerManager.switchAccount", () => {
     expect(manager.isLocked()).toBe(false);
   });
 
+  it("never reports an unverified extension as unlocked while retrying", async () => {
+    const manager = await freshManager();
+    const ext = newKey();
+    extensionOn(ext.pubkey);
+    await manager.requestPubkey();
+
+    // the extension is slow to answer and ends up on another key
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    g.nostr = {
+      getPublicKey: async () => {
+        await gate;
+        return newKey().pubkey;
+      },
+      signEvent: async (e) => e,
+    };
+
+    const seen: boolean[] = [];
+    manager.onChange(() => seen.push(manager.isLocked()));
+    const retry = manager.retryUnlock();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+
+    expect(await retry).toMatchObject({ reason: "extension-other-account" });
+    expect(seen).not.toContain(false);
+    expect(manager.isLocked()).toBe(true);
+  });
+
   it("forgets a removed account's signer", async () => {
     const manager = await freshManager();
     const a = newKey();
