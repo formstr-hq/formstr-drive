@@ -523,3 +523,32 @@
     gap: var(--space-5);
   }
 }
+
+/* Switching to an account that needs something first: an opaque full-screen
+   cover, so nothing of the drive you're leaving shows behind the prompt. */
+.switch-account-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: var(--color-bg-sunken);
+  overflow-y: auto;
+}
+
+.unlock-other-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-9);
+}
+
+.unlock-other-accounts-label {
+  margin: 0;
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+}
+
+.unlock-remove {
+  display: block;
+  margin: var(--space-9) auto 0;
+  color: var(--color-danger);
+}

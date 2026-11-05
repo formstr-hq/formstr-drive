@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { signerManager } from "../signer/manager";
-import type { NativeSignerApp } from "../signer/types";
+import type { LockInfo, NativeSignerApp, SwitchResult } from "../signer/types";
 import { isNativePlatform } from "../utils/platform";
 import type { StoredAccount } from "@formstr/signer";
 
@@ -30,7 +30,10 @@ export interface ProfileContextType {
     importNsec: (nsec: string, passphrase: string) => Promise<string | undefined>;
     logout : () => Promise<void>;
     accounts: StoredAccount[];
-    switchAccount: (pubkey: string) => Promise<void>;
+    switchAccount: (pubkey: string) => Promise<SwitchResult>;
+    unlockAndSwitch: (pubkey: string, passphrase: string) => Promise<string | undefined>;
+    retryUnlock: () => Promise<void>;
+    lockInfo: LockInfo | null;
     removeAccount: (pubkey: string) => Promise<void>;
     isSignedIn : boolean;
     locked: boolean;
@@ -50,6 +53,7 @@ export const ProfileContext = createContext<ProfileContextType | undefined>(unde
 export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
     const [pubkey, setPubkey] = useState<string | undefined>(undefined);
     const [locked, setLocked] = useState(false);
+    const [lockInfo, setLockInfo] = useState<LockInfo | null>(null);
     const [accounts, setAccounts] = useState<StoredAccount[]>([]);
     const [pendingNsecMigration, setPendingNsecMigration] = useState(false);
     const [restoring, setRestoring] = useState(true);
@@ -60,6 +64,7 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
     const syncFromManager = () => {
         setPubkey(signerManager.getPubkey());
         setLocked(signerManager.isLocked());
+        setLockInfo(signerManager.getLockInfo());
         setAccounts(signerManager.listAccounts());
         setPendingNsecMigration(signerManager.hasPendingNsecMigration());
     };
@@ -169,7 +174,19 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
     };
 
     const switchAccount = async (targetPubkey: string) => {
-        await signerManager.switchAccount(targetPubkey);
+        const result = await signerManager.switchAccount(targetPubkey);
+        syncFromManager();
+        return result;
+    };
+
+    const unlockAndSwitch = async (targetPubkey: string, passphrase: string) => {
+        const publicKey = await signerManager.unlockAndSwitch(targetPubkey, passphrase);
+        syncFromManager();
+        return publicKey;
+    };
+
+    const retryUnlock = async () => {
+        await signerManager.retryUnlock();
         syncFromManager();
     };
 
@@ -192,6 +209,9 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
                 logout,
                 accounts,
                 switchAccount,
+                unlockAndSwitch,
+                retryUnlock,
+                lockInfo,
                 removeAccount,
                 isSignedIn,
                 locked,
