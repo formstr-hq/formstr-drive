@@ -16,7 +16,7 @@ Files are encrypted in your browser (or the Android app) before they leave your 
 - Choose your own Blossom servers, including servers discovered on Nostr
 - Folders, bulk actions, rename, move and delete (deletes also remove the blob from the server via Blossom `DELETE`)
 - In-app preview for images, video, PDF and text, plus an "Open in Nostr Docs" deeplink for office documents
-- Chunked uploads and downloads with progress, and duplicate detection per server
+- Chunked uploads and downloads with progress, and background transfers on Android
 - Multiple accounts, with switching between them
 - Sign in with a NIP-07 browser extension, or a native signer app on Android
 - Android app built with Capacitor
