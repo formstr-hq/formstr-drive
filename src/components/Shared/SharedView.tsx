@@ -5,9 +5,12 @@ import { downloadFileToDownloads } from "../../native/driveManifest";
 import { isAndroidPlatform } from "../../utils/platform";
 import { isLegacyBlobFormat, type FileMetadata } from "../../types/metadata";
 import { formatSize, formatUnixSeconds } from "../../utils/format";
-import { getFileIcon, MAX_PREVIEW_SIZE, resolvePreviewMode, PREVIEW_UNAVAILABLE_MESSAGE, browserMayPlayVideo } from "../../utils/fileTypeHelpers";
+import { getFileIcon, resolvePreviewMode, PREVIEW_UNAVAILABLE_MESSAGE, browserMayPlayVideo } from "../../utils/fileTypeHelpers";
 import { fetchFilePreview, getCachedPreview, type PreviewData } from "../../services/Preview/fetchPreview";
 import { FilePreviewModal } from "../Files/FilePreviewModal";
+import { canOpenPreview } from "../Files/FileCard";
+import { fileKind } from "../../services/thumbnails/kinds";
+import "../Files/thumbnailFit.css";
 import { useToast } from "../../hooks/useToast";
 import "../ui/Loader.css";
 import "./SharedView.css";
@@ -83,7 +86,7 @@ function SharedFileThumbnail({ file, onOpen }: { file: FileMetadata; onOpen: () 
       onKeyDown={handleKeyDown}
       title="Preview"
     >
-      <img src={preview.staticUrl ?? preview.url} alt="" />
+      <img src={preview.staticUrl ?? preview.url} alt="" data-thumb-kind={fileKind(file)} />
       {isVideo && <span className="shared-play-badge" aria-hidden="true" />}
     </div>
   );
@@ -112,15 +115,18 @@ export function SharedView() {
   const [previewFile, setPreviewFile] = useState<FileMetadata | null>(null);
 
   const handleOpenPreview = (file: FileMetadata) => {
-    // Mirrors FileCard's own gate: video/PDF on the new blob format can
-    // stream via Range requests (FilePreviewModal / swMediaStream.ts), so the
-    // size cap only applies to modes without that seekable path — checked
-    // here, before the modal opens, so it doesn't open just to show a
-    // one-line "too large" notice.
-    const mode = resolvePreviewMode(file.type, file.name);
-    const canStream = (mode === "video" || mode === "pdf") && !isLegacyBlobFormat(file);
-    if (!canStream && file.size > MAX_PREVIEW_SIZE) {
-      toast.error(PREVIEW_UNAVAILABLE_MESSAGE);
+    // The same gate the signed-in file list uses: unsupported types and over-size
+    // files get a short notice here instead of opening a modal that only says so.
+    const gate = canOpenPreview({
+      fileType: file.type,
+      fileSize: file.size,
+      isLegacyBlob: isLegacyBlobFormat(file),
+      fileName: file.name,
+    });
+    if (!gate.allowed) {
+      const message = gate.reason ?? PREVIEW_UNAVAILABLE_MESSAGE;
+      if (gate.severity === "info") toast.info(message);
+      else toast.error(message);
       return;
     }
     setPreviewFile(file);

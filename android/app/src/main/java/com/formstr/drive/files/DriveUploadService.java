@@ -95,7 +95,8 @@ public class DriveUploadService extends Service {
                 @Nullable Integer percent,
                 @Nullable String message,
                 @Nullable String server,
-                @Nullable Integer status);
+                @Nullable Integer status,
+                @Nullable Boolean previewSkipped);
     }
 
     private static final List<EventListener> LISTENERS = new CopyOnWriteArrayList<>();
@@ -349,8 +350,8 @@ public class DriveUploadService extends Service {
                     }
 
                     @Override
-                    public void onComplete(String server) {
-                        DriveUploadService.this.onComplete(id, fileName, server, notifId, nm);
+                    public void onComplete(String server, boolean previewSkipped) {
+                        DriveUploadService.this.onComplete(id, fileName, server, previewSkipped, notifId, nm);
                     }
 
                     @Override
@@ -411,8 +412,8 @@ public class DriveUploadService extends Service {
         nm.notify(notifId, buildProgressNotification(id, fileName, toOverallPercent(percent), notifId));
     }
 
-    private void onComplete(String id, String fileName, String server, int notifId, NotificationManager nm) {
-        broadcastEvent(EVENT_COMPLETE, id, 100, null, server, null);
+    private void onComplete(String id, String fileName, String server, boolean previewSkipped, int notifId, NotificationManager nm) {
+        broadcastEvent(EVENT_COMPLETE, id, 100, null, server, null, previewSkipped);
         nm.notify(terminalNotificationIdFor(id), buildCompleteNotification(fileName));
     }
 
@@ -442,8 +443,20 @@ public class DriveUploadService extends Service {
             @Nullable String server,
             @Nullable Integer status
     ) {
+        broadcastEvent(type, id, percent, message, server, status, null);
+    }
+
+    private void broadcastEvent(
+            String type,
+            String id,
+            @Nullable Integer percent,
+            @Nullable String message,
+            @Nullable String server,
+            @Nullable Integer status,
+            @Nullable Boolean previewSkipped
+    ) {
         for (EventListener listener : LISTENERS) {
-            listener.onUploadEvent(type, id, percent, message, server, status);
+            listener.onUploadEvent(type, id, percent, message, server, status, previewSkipped);
         }
     }
 

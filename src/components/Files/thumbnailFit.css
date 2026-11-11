@@ -1,0 +1,15 @@
+/* Document thumbnails are portrait pages: anchor them to the top of the tile so
+   the title and header stay visible instead of the middle of the page. Thumbnails
+   of other kinds keep the default centred crop. */
+img[data-thumb-kind="pdf"],
+img[data-thumb-kind="docx"],
+img[data-thumb-kind="office"],
+img[data-thumb-kind="html"],
+img[data-thumb-kind="text"] {
+  object-position: top;
+}
+
+/* Cover art is square-ish artwork: show all of it. */
+img[data-thumb-kind="audio"] {
+  object-fit: contain;
+}

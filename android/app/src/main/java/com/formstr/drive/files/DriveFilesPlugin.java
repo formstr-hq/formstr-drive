@@ -103,7 +103,8 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
             @Nullable Integer percent,
             @Nullable String message,
             @Nullable String server,
-            @Nullable Integer status
+            @Nullable Integer status,
+            @Nullable Boolean previewSkipped
     ) {
         JSObject data = new JSObject();
         data.put("id", id);
@@ -112,6 +113,7 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
         if (message != null) data.put("message", message);
         if (server != null) data.put("server", server);
         if (status != null) data.put("status", status);
+        if (previewSkipped != null) data.put("previewSkipped", previewSkipped);
         notifyListeners("uploadEvent", data);
 
         PluginCall call = pendingUploadCalls.get(id);
@@ -125,6 +127,7 @@ public class DriveFilesPlugin extends Plugin implements DriveDownloadService.Eve
             // published, so the file index records the right one.
             JSObject response = new JSObject();
             response.put("server", server);
+            response.put("previewSkipped", previewSkipped != null && previewSkipped);
             call.resolve(response);
         } else if (DriveUploadService.EVENT_ERROR.equals(type)) {
             pendingUploadCalls.remove(id);
