@@ -51,6 +51,63 @@
   color: var(--color-text-secondary);
 }
 
+.preview-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+.preview-header-pages-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 14px;
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.preview-header-pages-btn:hover {
+  background: var(--color-bg-overlay);
+  border-color: var(--color-text-secondary);
+}
+
+.preview-header-pages-btn img {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+
+.preview-header-tab-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preview-header-tab-btn:hover {
+  background: color-mix(in srgb, var(--color-text-primary) 14%, transparent);
+}
+
+.preview-header-tab-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .preview-modal-close {
   width: 34px;
   height: 34px;
@@ -112,7 +169,8 @@
   background: #050608;
 }
 
-.preview-media-pdf {
+.preview-media-pdf,
+.preview-media-html {
   width: 100%;
   height: 100%;
   border: 0;
@@ -190,3 +248,52 @@
     padding: var(--space-5);
   }
 }
+
+.docx-formatted-content h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 1.5rem 0 0.75rem 0;
+  color: #111827;
+}
+
+.docx-formatted-content h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem 0;
+  color: #1f2937;
+}
+
+.docx-formatted-content h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem 0;
+  color: #374151;
+}
+
+.docx-formatted-content p {
+  margin: 0.6rem 0;
+  color: #374151;
+}
+
+.docx-formatted-content table.docx-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.docx-formatted-content table.docx-table td {
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+}
+
+.docx-formatted-content ul,
+.docx-formatted-content ol {
+  margin: 0.6rem 0;
+  padding-left: 1.5rem;
+}
+
+.docx-formatted-content li {
+  margin: 0.3rem 0;
+}
+
