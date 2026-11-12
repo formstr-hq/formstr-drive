@@ -75,17 +75,28 @@ export const ProfileProvider : FC<ProfileProviderProps> = ({ children }) => {
         });
 
         const restoreSigner = async () => {
+            const init = signerManager.init();
             try {
                 await Promise.race([
-                    signerManager.init(),
+                    init,
                     new Promise<undefined>((resolve) => {
                         setTimeout(() => resolve(undefined), 6000);
                     }),
                 ]);
-            } finally {
-                syncFromManager();
-                setRestoring(false);
+            } catch {
+                // init failed; carry on with whatever state the manager has
             }
+            syncFromManager();
+            // A slow extension check is still running: keep the splash instead of
+            // showing the drive or an unlock screen for an account not yet verified.
+            setRestoring(signerManager.isOpening());
+            void init.then(
+                () => {
+                    syncFromManager();
+                    setRestoring(false);
+                },
+                () => setRestoring(false),
+            );
         };
 
         void restoreSigner();

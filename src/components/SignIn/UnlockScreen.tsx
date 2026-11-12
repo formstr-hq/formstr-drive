@@ -1,12 +1,7 @@
-import { nip19 } from "nostr-tools";
 import { useProfileContext } from "../../hooks/useProfileContext";
 import { useAccountSwitcher } from "../../hooks/useAccountSwitcher";
 import { AccountLockPrompt } from "./AccountLockPrompt";
-
-function shortNpub(pubkey: string): string {
-  const npub = nip19.npubEncode(pubkey);
-  return `${npub.slice(0, 12)}…${npub.slice(-6)}`;
-}
+import { shortNpub } from "../../utils/npub";
 
 /**
  * Shown on a cold start when the account you were last on can't sign yet. It is

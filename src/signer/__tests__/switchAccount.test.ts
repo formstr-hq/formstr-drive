@@ -162,6 +162,149 @@ describe("signerManager.switchAccount", () => {
     expect(manager.isLocked()).toBe(true);
   });
 
+  it("does not hand out the signer while init is still checking the extension", async () => {
+    const first = await freshManager();
+    const ext = newKey();
+    extensionOn(ext.pubkey);
+    await first.requestPubkey();
+
+    // a reload, with an extension that is slow to answer
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    g.nostr = {
+      getPublicKey: async () => {
+        await gate;
+        return ext.pubkey;
+      },
+      signEvent: async (e) => e,
+    };
+    vi.resetModules();
+    const { signerManager: manager } = await import("../manager");
+    const seen: boolean[] = [];
+    manager.onChange(() => seen.push(manager.isLocked()));
+    const init = manager.init();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(manager.isOpening()).toBe(true);
+    expect(manager.isLocked()).toBe(true);
+    await expect(manager.getSigner()).rejects.toThrow();
+    expect(seen).toEqual([]);
+
+    release();
+    await init;
+    expect(manager.isOpening()).toBe(false);
+    expect(manager.isLocked()).toBe(false);
+    await expect(manager.getSigner()).resolves.toBeDefined();
+    expect(seen).toEqual([false]);
+  });
+
+  it("does not hand out the signer while a switch is still checking the extension", async () => {
+    const manager = await freshManager();
+    const pass = newKey();
+    const ext = newKey();
+    await manager.importNsec(pass.nsec, "pw");
+    extensionOn(ext.pubkey);
+    await manager.requestPubkey();
+    await manager.switchAccount(pass.pubkey);
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    g.nostr = {
+      getPublicKey: async () => {
+        await gate;
+        return ext.pubkey;
+      },
+      signEvent: async (e) => e,
+    };
+    const switching = manager.switchAccount(ext.pubkey);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(manager.getSigner()).rejects.toThrow();
+
+    release();
+    expect(await switching).toEqual({ ok: true });
+    await expect(manager.getSigner()).resolves.toBeDefined();
+  });
+
+  it("re-checks the account it falls back to when the extension moved to a third key", async () => {
+    const manager = await freshManager();
+    const k1 = newKey();
+    const k2 = newKey();
+    extensionOn(k1.pubkey);
+    await manager.requestPubkey();
+    extensionOn(k2.pubkey);
+    await manager.requestPubkey(); // k2 is active
+
+    extensionOn(newKey().pubkey); // neither of them any more
+    const result = await manager.switchAccount(k1.pubkey);
+
+    expect(result).toMatchObject({ ok: false, need: "extension-other-account" });
+    expect(manager.getPubkey()).toBe(k2.pubkey);
+    expect(manager.isLocked()).toBe(true);
+    await expect(manager.getSigner()).rejects.toThrow();
+  });
+
+  it("keeps the lock it had when a passphrase is wrong", async () => {
+    const manager = await freshManager();
+    const pass = newKey();
+    const ext = newKey();
+    await manager.importNsec(pass.nsec, "pw");
+    extensionOn(ext.pubkey);
+    await manager.requestPubkey();
+    extensionOn(newKey().pubkey);
+    await manager.retryUnlock();
+    expect(manager.getLockInfo()?.reason).toBe("extension-other-account");
+
+    await expect(manager.unlockAndSwitch(pass.pubkey, "wrong")).rejects.toThrow();
+
+    expect(manager.getPubkey()).toBe(ext.pubkey);
+    expect(manager.getLockInfo()?.reason).toBe("extension-other-account");
+  });
+
+  it("ignores a malformed key reported by the extension", async () => {
+    const manager = await freshManager();
+    const ext = newKey();
+    extensionOn(ext.pubkey);
+    await manager.requestPubkey();
+
+    g.nostr = { getPublicKey: async () => "not-a-key", signEvent: async (e) => e };
+    const problem = await manager.retryUnlock();
+
+    expect(problem).toEqual({ reason: "extension-other-account" });
+    expect(manager.isLocked()).toBe(true);
+  });
+
+  it("runs a retry and a switch one after the other without exposing the unverified account", async () => {
+    const manager = await freshManager();
+    const pass = newKey();
+    const ext = newKey();
+    await manager.importNsec(pass.nsec, "pw");
+    extensionOn(ext.pubkey);
+    await manager.requestPubkey();
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    g.nostr = {
+      getPublicKey: async () => {
+        await gate;
+        return newKey().pubkey;
+      },
+      signEvent: async (e) => e,
+    };
+    const seen: Array<[string | undefined, boolean]> = [];
+    manager.onChange((pubkey) => seen.push([pubkey, manager.isLocked()]));
+
+    const retry = manager.retryUnlock();
+    const swap = manager.switchAccount(pass.pubkey);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+
+    expect(await retry).toMatchObject({ reason: "extension-other-account" });
+    expect(await swap).toEqual({ ok: true });
+    expect(manager.getPubkey()).toBe(pass.pubkey);
+    expect(manager.isLocked()).toBe(false);
+    expect(seen.filter(([pubkey, locked]) => pubkey === ext.pubkey && !locked)).toEqual([]);
+  });
+
   it("forgets a removed account's signer", async () => {
     const manager = await freshManager();
     const a = newKey();

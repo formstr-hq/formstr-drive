@@ -4,6 +4,7 @@ import { useProfileContext } from "./useProfileContext";
 import { useToast } from "./useToast";
 import { AccountLockPrompt } from "../components/SignIn/AccountLockPrompt";
 import type { LockInfo, LockReason } from "../signer/types";
+import { shortNpub } from "../utils/npub";
 import "../components/SignIn/SignIn.css";
 
 interface Pending extends Partial<LockInfo> {
@@ -92,6 +93,27 @@ export function useAccountSwitcher(): {
               <button type="button" className="sign-in-link-btn" onClick={() => setPending(null)}>
                 Cancel
               </button>
+              {pending.removeAfter && (
+                // The account you meant to leave is still here only because the next one
+                // can't be opened - without this there would be no way to remove it.
+                <button
+                  type="button"
+                  className="sign-in-link-btn unlock-remove"
+                  onClick={() => {
+                    const target = pending.removeAfter!;
+                    void (async () => {
+                      try {
+                        await removeAccount(target);
+                        setPending(null);
+                      } catch (e) {
+                        toast.error(e instanceof Error && e.message ? e.message : "Couldn't remove account");
+                      }
+                    })();
+                  }}
+                >
+                  Remove {shortNpub(pending.removeAfter)} instead
+                </button>
+              )}
             </AccountLockPrompt>
           </div>
         </div>,

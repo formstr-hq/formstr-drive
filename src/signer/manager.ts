@@ -45,10 +45,31 @@ class SignerManager {
   private sessionSigners = new Map<string, NostrSigner>();
   /** Set while the active account is selected but can't sign (and why). */
   private lockInfo: LockInfo | null = null;
-  /** True during a switch, so the package's intermediate events don't flash a
-   *  half-switched state at the UI. */
-  private switching = false;
-  private switchQueue: Promise<unknown> = Promise.resolve();
+  /** True while an account is being opened and its signer verified (cold start,
+   *  switch, retry). Nothing can sign meanwhile and the package's intermediate
+   *  events aren't forwarded, so neither the UI nor a caller of getSigner() sees
+   *  an account whose extension/bunker hasn't been checked yet. */
+  private opening = false;
+  private opQueue: Promise<unknown> = Promise.resolve();
+
+  /** One account-changing operation at a time, so two never interleave (a retry
+   *  finishing mid-switch would otherwise end the other's "opening" window). */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.opQueue.then(fn);
+    this.opQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Runs `fn` with the active account unusable, then tells the UI once. */
+  private async whileOpening<T>(fn: () => Promise<T>): Promise<T> {
+    this.opening = true;
+    try {
+      return await fn();
+    } finally {
+      this.opening = false;
+      this.notify();
+    }
+  }
 
   private requireSigner(): PackageSigner {
     if (!this.signer) {
@@ -72,7 +93,7 @@ class SignerManager {
   }
 
   private notify() {
-    if (this.switching) return;
+    if (this.opening) return;
     const pubkey = this.getPubkey();
     for (const listener of this.listeners) {
       listener(pubkey);
@@ -98,7 +119,7 @@ class SignerManager {
 
   /** The signer that can sign for the active account right now, if any. */
   private activeSigner(): NostrSigner | null {
-    if (this.lockInfo) return null;
+    if (this.opening || this.lockInfo) return null;
     const active = this.signer?.getActiveAccount();
     if (!active) return null;
     return (this.signer?.getActiveSigner() as NostrSigner | null) ?? this.sessionSigners.get(active.pubkey) ?? null;
@@ -106,6 +127,7 @@ class SignerManager {
 
   /** Why the active account can't sign, or null if it can (or there is none). */
   getLockInfo(): LockInfo | null {
+    if (this.opening) return null;
     const active = this.signer?.getActiveAccount();
     if (!active || this.activeSigner()) return null;
     if (this.lockInfo) return this.lockInfo;
@@ -121,7 +143,13 @@ class SignerManager {
         nostr.getPublicKey(),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 15_000)),
       ]);
-      return current === pubkey ? null : { reason: "extension-other-account", extensionPubkey: current };
+      if (current === pubkey) return null;
+      // The extension is untrusted input: only a real key may reach the UI, which
+      // encodes it as an npub while rendering.
+      const valid = typeof current === "string" && /^[0-9a-f]{64}$/i.test(current);
+      return valid
+        ? { reason: "extension-other-account", extensionPubkey: current }
+        : { reason: "extension-other-account" };
     } catch {
       return { reason: "extension-missing" };
     }
@@ -148,9 +176,7 @@ class SignerManager {
   async switchAccount(pubkey: string): Promise<SwitchResult> {
     // One switch at a time: a second pick made while the first is still checking
     // the extension waits its turn instead of interleaving with it.
-    const run = this.switchQueue.then(() => this.doSwitchAccount(pubkey));
-    this.switchQueue = run.catch(() => undefined);
-    return run;
+    return this.serial(() => this.doSwitchAccount(pubkey));
   }
 
   private async doSwitchAccount(pubkey: string): Promise<SwitchResult> {
@@ -166,60 +192,73 @@ class SignerManager {
     }
 
     const previousLock = this.lockInfo;
-    this.switching = true;
-    try {
-      await signer.switchAccount(pubkey);
-      this.lockInfo = null;
-      const problem = await this.unlockActive();
-      if (problem) {
-        await this.restore(previous, previousLock);
-        return { ok: false, need: problem.reason, ...problem };
+    return this.whileOpening<SwitchResult>(async () => {
+      try {
+        await signer.switchAccount(pubkey);
+        this.lockInfo = null;
+        const problem = await this.unlockActive();
+        if (problem) {
+          await this.restore(previous, previousLock, problem);
+          return { ok: false, need: problem.reason, ...problem };
+        }
+        return { ok: true };
+      } catch (error) {
+        await this.restore(previous, previousLock, { reason: "signer-unreachable" });
+        throw error;
       }
-      return { ok: true };
-    } catch (error) {
-      await this.restore(previous, previousLock);
-      throw error;
-    } finally {
-      this.switching = false;
-      this.notify();
-    }
+    });
   }
 
-  /** Puts the account you were on back exactly as it was after a failed switch. */
-  private async restore(previous: StoredAccount | null, lock: LockInfo | null) {
+  /**
+   * Puts the account you were on back after a failed switch, re-checking it: an
+   * extension may have moved to a third key meanwhile, so the old "usable" verdict
+   * can't be trusted. With no previous account the target stays selected, locked.
+   */
+  private async restore(previous: StoredAccount | null, lock: LockInfo | null, fallback: LockInfo) {
     const signer = this.requireSigner();
-    if (!previous) return;
+    if (!previous) {
+      this.lockInfo = fallback;
+      return;
+    }
     await signer.switchAccount(previous.pubkey);
     this.lockInfo = null;
-    await this.unlockActive().catch(() => null);
-    this.lockInfo = lock;
+    const restored = await this.unlockActive().catch((): LockInfo => ({ reason: "signer-unreachable" }));
+    // A passphrase account can't be silently reopened; keep the lock it had.
+    this.lockInfo = previous.method === "ncryptsec" ? lock : restored;
   }
 
   /** Re-tries opening the active account (the extension was fixed, the signer is back). */
   async retryUnlock(): Promise<LockInfo | null> {
-    // unlock() emits a switch event synchronously. Hold notifications until the
-    // extension has been verified, or the UI would mount the drive on a signer
-    // that hasn't been checked yet (lockInfo is null while we wait).
-    this.switching = true;
-    try {
-      this.lockInfo = null;
-      const problem = await this.unlockActive();
-      this.lockInfo = problem;
-      return problem;
-    } finally {
-      this.switching = false;
-      this.notify();
-    }
+    // unlock() emits a switch event synchronously, before the extension has been
+    // checked; whileOpening keeps that unverified state away from the UI and from
+    // getSigner() until lockInfo is set.
+    return this.serial(() =>
+      this.whileOpening(async () => {
+        this.lockInfo = null;
+        const problem = await this.unlockActive();
+        this.lockInfo = problem;
+        return problem;
+      }),
+    );
   }
 
   /** Unlocks and switches to a passphrase account in one step, so it is never seen locked. */
   async unlockAndSwitch(pubkey: string, passphrase: string): Promise<string> {
-    const signer = this.requireSigner();
-    const account = signer.listAccounts().find((a) => a.pubkey === pubkey);
-    if (!account?.ncryptsec) throw new Error("No locked account to unlock");
-    this.lockInfo = null;
-    const unlocked = await signer.loginWithNcryptsec(account.ncryptsec, passphrase);
-    return unlocked.pubkey;
+    return this.serial(async () => {
+      const signer = this.requireSigner();
+      const account = signer.listAccounts().find((a) => a.pubkey === pubkey);
+      if (!account?.ncryptsec) throw new Error("No locked account to unlock");
+      // A wrong passphrase throws before anything changes: keep the lock we had.
+      const previousLock = this.lockInfo;
+      this.lockInfo = null;
+      try {
+        const unlocked = await signer.loginWithNcryptsec(account.ncryptsec, passphrase);
+        return unlocked.pubkey;
+      } catch (error) {
+        this.lockInfo = previousLock;
+        throw error;
+      }
+    });
   }
 
   /**
@@ -228,9 +267,16 @@ class SignerManager {
    * pruning a stale entry from the account list without switching to it.
    */
   async removeAccount(pubkey: string): Promise<void> {
-    const signer = this.requireSigner();
-    await signer.logout(pubkey);
-    this.notifyRemoved(pubkey);
+    return this.serial(async () => {
+      const signer = this.requireSigner();
+      await signer.logout(pubkey);
+      this.notifyRemoved(pubkey);
+    });
+  }
+
+  /** True while an account is still being opened and verified. */
+  isOpening(): boolean {
+    return this.opening;
   }
 
   isLocked(): boolean {
@@ -296,13 +342,17 @@ class SignerManager {
       }
     }
 
-    await this.signer.unlock({ pool: this.pool });
-    const active = this.signer.getActiveAccount();
-    if (active?.method === "extension") {
-      this.lockInfo = await this.checkExtension(active.pubkey);
-      // If the UI gave up waiting on init, this result would otherwise never reach it.
-      this.notify();
-    }
+    const signer = this.signer;
+    // unlock() emits login before the extension has been checked. Hold the account
+    // as unusable until it has, then tell the UI once - including a UI that gave
+    // up waiting (see ProfileProvider) and would otherwise never hear the verdict.
+    await this.whileOpening(async () => {
+      await signer.unlock({ pool: this.pool });
+      const active = signer.getActiveAccount();
+      if (active?.method === "extension") {
+        this.lockInfo = await this.checkExtension(active.pubkey);
+      }
+    });
     return this.getPubkey();
   }
 
@@ -376,15 +426,17 @@ class SignerManager {
   }
 
   async unlockWithPassphrase(passphrase: string): Promise<string> {
-    const signer = this.requireSigner();
-    const account = signer.getActiveAccount();
+    return this.serial(async () => {
+      const signer = this.requireSigner();
+      const account = signer.getActiveAccount();
 
-    if (!account?.ncryptsec) {
-      throw new Error("No locked account to unlock");
-    }
+      if (!account?.ncryptsec) {
+        throw new Error("No locked account to unlock");
+      }
 
-    const unlocked = await signer.loginWithNcryptsec(account.ncryptsec, passphrase);
-    return unlocked.pubkey;
+      const unlocked = await signer.loginWithNcryptsec(account.ncryptsec, passphrase);
+      return unlocked.pubkey;
+    });
   }
 
   async importNsec(nsec: string, passphrase: string): Promise<string> {
@@ -406,9 +458,11 @@ class SignerManager {
       return;
     }
 
-    const removed = this.getPubkey();
-    await this.signer.logout();
-    if (removed) this.notifyRemoved(removed);
+    await this.serial(async () => {
+      const removed = this.getPubkey();
+      await this.signer?.logout();
+      if (removed) this.notifyRemoved(removed);
+    });
   }
 
   async getSigner(): Promise<NostrSigner> {

@@ -1,11 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { nip19 } from "nostr-tools";
 import type { LockReason } from "../../signer/types";
-
-function shortNpub(pubkey: string): string {
-  const npub = nip19.npubEncode(pubkey);
-  return `${npub.slice(0, 12)}…${npub.slice(-6)}`;
-}
+import { shortNpub } from "../../utils/npub";
 
 interface ReasonCopy {
   title: string;
